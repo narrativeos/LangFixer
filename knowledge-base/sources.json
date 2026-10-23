@@ -1,0 +1,10 @@
+[
+  {
+    "source_id": "src-sample-en",
+    "title": "LangFixer 示例英语语法指南",
+    "author": "LangFixer Project",
+    "edition": "第一版",
+    "lang": "en",
+    "license_scope": "public"
+  }
+]

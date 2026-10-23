@@ -1,0 +1,214 @@
+{
+  "nodes": [
+    {
+      "id": "input",
+      "name": "input",
+      "type": "inputNode"
+    },
+    {
+      "id": "table",
+      "name": "zh_gec_attribution_table",
+      "type": "decisionTableNode",
+      "content": {
+        "inputs": [
+          {
+            "id": "errorType",
+            "name": "errorType",
+            "field": "errorType"
+          },
+          {
+            "id": "confidence",
+            "name": "confidence",
+            "field": "confidence"
+          },
+          {
+            "id": "history",
+            "name": "studentHistoryCount",
+            "field": "studentHistoryCount"
+          },
+          {
+            "id": "isNovice",
+            "name": "isNovice",
+            "field": "isNovice"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "attribution",
+            "name": "attribution",
+            "field": "attribution"
+          },
+          {
+            "id": "weinerLocus",
+            "name": "weinerLocus",
+            "field": "weiner.locus"
+          },
+          {
+            "id": "weinerStability",
+            "name": "weinerStability",
+            "field": "weiner.stability"
+          },
+          {
+            "id": "weinerControllability",
+            "name": "weinerControllability",
+            "field": "weiner.controllability"
+          },
+          {
+            "id": "remedial",
+            "name": "remedial",
+            "field": "remedial[]"
+          },
+          {
+            "id": "matchedRule",
+            "name": "matchedRule",
+            "field": "matchedRule"
+          },
+          {
+            "id": "cefrLevel",
+            "name": "cefrLevel",
+            "field": "cefrLevel"
+          }
+        ],
+        "rules": [
+          {
+            "_id": "spelling_high_conf_old_hand",
+            "errorType": "== \"spelling\"",
+            "confidence": ">= 0.9",
+            "isNovice": "== false",
+            "history": "> 1",
+            "attribution": "\"habit_solidified\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"对比示例：辨析同音/形近字的语义差异\"",
+            "matchedRule": "\"spelling_high_conf_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "spelling_novice",
+            "errorType": "== \"spelling\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：同音字/形近字辨析\"",
+            "matchedRule": "\"spelling_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "spelling_low_conf",
+            "errorType": "== \"spelling\"",
+            "confidence": "< 0.9",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"复核提示：置信度较低，建议人工确认\"",
+            "matchedRule": "\"spelling_low_conf\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "grammar_novice",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== true",
+            "attribution": "\"rule_missing\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：句子成分与语序\"",
+            "matchedRule": "\"grammar_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "grammar_high_conf_old_hand",
+            "errorType": "== \"grammar\"",
+            "confidence": ">= 0.8",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：针对性回顾语法规则\"",
+            "matchedRule": "\"grammar_high_conf_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "grammar_old_hand",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== false",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：补充缺失的语法知识\"",
+            "matchedRule": "\"grammar_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "collocation_any",
+            "errorType": "== \"collocation\"",
+            "attribution": "\"collocation_weak\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"搭配专项训练：高频搭配强化\"",
+            "matchedRule": "\"collocation_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "punctuation_novice",
+            "errorType": "== \"punctuation\"",
+            "isNovice": "== true",
+            "attribution": "\"rule_missing\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：中文标点使用规范\"",
+            "matchedRule": "\"punctuation_novice\"",
+            "cefrLevel": "\"A1\""
+          },
+          {
+            "_id": "punctuation_old_hand",
+            "errorType": "== \"punctuation\"",
+            "isNovice": "== false",
+            "attribution": "\"habit_solidified\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：标点规范\"",
+            "matchedRule": "\"punctuation_old_hand\"",
+            "cefrLevel": "\"A1\""
+          },
+          {
+            "_id": "default_knowledge_gap",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "matchedRule": "\"default_knowledge_gap\"",
+            "cefrLevel": "\"A1\""
+          }
+        ],
+        "hitPolicy": "first"
+      }
+    },
+    {
+      "id": "output",
+      "name": "output",
+      "type": "outputNode"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceId": "input",
+      "targetId": "table"
+    },
+    {
+      "id": "e2",
+      "sourceId": "table",
+      "targetId": "output"
+    }
+  ]
+}

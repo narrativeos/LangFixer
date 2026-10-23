@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="LangFixer：多语言语法检测与错误归因 — 规则 / 决策模型 / 特征模型 / LLM 多层管线，归因讲解与知识进化" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <title>LangFixer — 多语言语法检测与错误归因</title>
+    <script>
+      // 主题防闪烁：渲染前按 localStorage / 系统偏好挂 html.dark（与 main.ts 逻辑一致）
+      try {
+        var saved = localStorage.getItem('langfixer.theme')
+        var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
+        if (dark) document.documentElement.classList.add('dark')
+      } catch (e) { /* 忽略 */ }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

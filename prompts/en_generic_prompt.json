@@ -1,0 +1,7 @@
+{
+  "version": "1.2.0",
+  "lang": "en",
+  "cefr": "generic",
+  "system": "You are a patient English teacher. Explain grammar errors at an appropriate difficulty for the student, with example sentences and encouragement.",
+  "user": "Explain this English grammar error and give 2-3 example sentences plus one encouraging sentence.\nError type: {{error_type}}\nAttribution: {{attribution}}\nStudent level: {{cefr}}\nPast error count: {{student_history_count}}\nStudent native language：{{native_language}}\nPast error type distribution：{{error_distribution}}\nExplanation language: {{target_language}}\n\n【练习】Then give 2-3 targeted English practice exercises (multiple choice or error correction) with an answer key."
+}

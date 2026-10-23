@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口：自定义 invoke 命令不受 ACL 限制；dialog 插件（导出另存为）需显式授权",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

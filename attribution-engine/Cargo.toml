@@ -1,0 +1,20 @@
+[package]
+name = "attribution-engine"
+description = "LangFixer 教育归因引擎：ZEN Engine (JDM 决策表) + 韦纳维度映射 + 决策表热更新"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shared-model = { workspace = true }
+zen-engine = { workspace = true }
+zip = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

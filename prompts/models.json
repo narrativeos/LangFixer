@@ -1,0 +1,45 @@
+{
+  "version": "1.0.0",
+  "models": [
+    {
+      "id": "generic",
+      "name": "通用（任意 OpenAI 兼容端点）",
+      "base_url": "",
+      "model": "",
+      "prompt_template": "zh_detect",
+      "output_format": "json",
+      "max_tokens": 0,
+      "enabled": true
+    },
+    {
+      "id": "cec4",
+      "name": "CEC4-4B（twnlp/ChineseErrorCorrector4-4B）",
+      "base_url": "http://127.0.0.1:8010/v1",
+      "model": "twnlp/ChineseErrorCorrector4-4B",
+      "prompt_template": "zh_detect_cec",
+      "output_format": "plain",
+      "max_tokens": 2048,
+      "enabled": true
+    },
+    {
+      "id": "cec3",
+      "name": "CEC3-4B（twnlp/ChineseErrorCorrector3-4B）",
+      "base_url": "http://127.0.0.1:8011/v1",
+      "model": "twnlp/ChineseErrorCorrector3-4B",
+      "prompt_template": "zh_detect_cec",
+      "output_format": "plain",
+      "max_tokens": 2048,
+      "enabled": true
+    },
+    {
+      "id": "custom",
+      "name": "自训模型（CPT→COT SFT→GRPO 管线产出）",
+      "base_url": "",
+      "model": "",
+      "prompt_template": "zh_detect_cec",
+      "output_format": "plain",
+      "max_tokens": 2048,
+      "enabled": false
+    }
+  ]
+}

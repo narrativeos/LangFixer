@@ -1,0 +1,12 @@
+[package]
+name = "document-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zip = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+encoding_rs = "0.8"
+pdf-extract = "0.8"

@@ -1,0 +1,9 @@
+{
+  "lang": "zh",
+  "cefr": "detect_cec",
+  "version": "1.0.0",
+  "updated_at": "2026-10-16",
+  "description": "CEC 官方检测模板（cec4/cec3 专用）：逐字取自 twnlp/ChineseErrorCorrector4-4B 模型卡官方推理 instruction（system）+ 原始句子（user）——模型 COT-SFT 训练格式（错误类型/修改原因 think 块 + 纠正句，纯文本无 JSON）。引擎按 plain 分支解析（标记行/末行回退 + 字级 diff 对齐）。官方建议生成参数：do_sample=False（本引擎 temperature 0）、max_new_tokens=512（注册表配 2048 留余量）、repetition_penalty=1.1（llama.cpp 默认值）。",
+  "system": "假如你是一名专业的纠错专家，请分析输入句子的语法错误类型和修改原因，并只输出纠正后的语句，错误类型如下：错别字、词语搭配错误、词性错误、语序错误、成分残缺、成分赘余、关联词使用错误、指代不明、语义逻辑不通、无误。",
+  "user": "{{text}}"
+}

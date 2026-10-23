@@ -1,0 +1,1359 @@
+{
+  "categories": [
+    {
+      "id": "grammar",
+      "name": "语法"
+    },
+    {
+      "id": "style",
+      "name": "风格"
+    },
+    {
+      "id": "spelling",
+      "name": "拼写"
+    }
+  ],
+  "rules": [
+    {
+      "id": "EN_ARTICLE",
+      "category": "grammar",
+      "priority": 10,
+      "enabled": true,
+      "description": "冠词 a/an 误用",
+      "examples": [
+        {
+          "wrong": "I saw a apple.",
+          "right": "I saw an apple."
+        }
+      ]
+    },
+    {
+      "id": "EN_AGREEMENT",
+      "category": "grammar",
+      "priority": 10,
+      "enabled": true,
+      "description": "主谓一致（第三人称单数 -s）",
+      "examples": [
+        {
+          "wrong": "He play football.",
+          "right": "He plays football."
+        }
+      ]
+    },
+    {
+      "id": "EN_TENSE",
+      "category": "grammar",
+      "priority": 10,
+      "enabled": true,
+      "description": "时态错误（过去时间 + 动词原形）",
+      "examples": [
+        {
+          "wrong": "Yesterday I go to the park.",
+          "right": "Yesterday I went to the park."
+        }
+      ]
+    },
+    {
+      "id": "EN_PREPOSITION",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "介词误用",
+      "examples": [
+        {
+          "wrong": "I saw him on the morning.",
+          "right": "I saw him in the morning."
+        }
+      ]
+    },
+    {
+      "id": "EN_ADJECTIVE",
+      "category": "grammar",
+      "priority": 10,
+      "enabled": true,
+      "description": "形容词比较级/最高级误用",
+      "examples": [
+        {
+          "wrong": "This is more better than that.",
+          "right": "This is better than that."
+        }
+      ]
+    },
+    {
+      "id": "EN_ADVERB",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "形副同形（实义动词后误用形容词作状语）",
+      "examples": [
+        {
+          "wrong": "He runs slow.",
+          "right": "He runs slowly."
+        }
+      ]
+    },
+    {
+      "id": "EN_NOUN",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "不可数名词误用",
+      "examples": [
+        {
+          "wrong": "I need some informations.",
+          "right": "I need some information."
+        }
+      ]
+    },
+    {
+      "id": "EN_PRONOUN",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "反身代词缺失",
+      "examples": [
+        {
+          "wrong": "He hurt him yesterday.",
+          "right": "He hurt himself yesterday."
+        }
+      ]
+    },
+    {
+      "id": "EN_VERB_PREP",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "及物动词后多余介词",
+      "examples": [
+        {
+          "wrong": "We discuss about it.",
+          "right": "We discuss it."
+        }
+      ]
+    },
+    {
+      "id": "EN_GERUND",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "后接动名词的动词误用 to-infinitive",
+      "examples": [
+        {
+          "wrong": "I enjoy to play.",
+          "right": "I enjoy playing."
+        }
+      ]
+    },
+    {
+      "id": "EN_INFINITIVE",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "后接不定式的动词误用动名词",
+      "examples": [
+        {
+          "wrong": "I want playing.",
+          "right": "I want to play."
+        }
+      ]
+    },
+    {
+      "id": "EN_SUBJUNCTIVE",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "虚拟语气（wish/if 后 be 动词应用 were）",
+      "examples": [
+        {
+          "wrong": "I wish I was you.",
+          "right": "I wish I were you."
+        }
+      ]
+    },
+    {
+      "id": "EN_NEGATION",
+      "category": "grammar",
+      "priority": 8,
+      "enabled": true,
+      "description": "双重否定",
+      "examples": [
+        {
+          "wrong": "I don't know nothing.",
+          "right": "I don't know anything."
+        }
+      ]
+    },
+    {
+      "id": "EN_SPELLING",
+      "category": "spelling",
+      "priority": 12,
+      "enabled": true,
+      "description": "拼写错误（高频错词表）",
+      "examples": [
+        {
+          "wrong": "I dont like it.",
+          "right": "I don't like it."
+        },
+        {
+          "wrong": "This is a exemple.",
+          "right": "This is an example."
+        }
+      ]
+    }
+  ],
+  "past_tenses": [
+    [
+      "go",
+      "went"
+    ],
+    [
+      "come",
+      "came"
+    ],
+    [
+      "see",
+      "saw"
+    ],
+    [
+      "make",
+      "made"
+    ],
+    [
+      "take",
+      "took"
+    ],
+    [
+      "eat",
+      "ate"
+    ],
+    [
+      "run",
+      "ran"
+    ],
+    [
+      "walk",
+      "walked"
+    ],
+    [
+      "talk",
+      "talked"
+    ],
+    [
+      "write",
+      "wrote"
+    ],
+    [
+      "buy",
+      "bought"
+    ],
+    [
+      "sell",
+      "sold"
+    ],
+    [
+      "open",
+      "opened"
+    ],
+    [
+      "close",
+      "closed"
+    ],
+    [
+      "start",
+      "started"
+    ],
+    [
+      "stop",
+      "stopped"
+    ],
+    [
+      "finish",
+      "finished"
+    ],
+    [
+      "play",
+      "played"
+    ],
+    [
+      "seen",
+      "saw"
+    ],
+    [
+      "get",
+      "got"
+    ],
+    [
+      "give",
+      "gave"
+    ],
+    [
+      "find",
+      "found"
+    ],
+    [
+      "think",
+      "thought"
+    ],
+    [
+      "know",
+      "knew"
+    ],
+    [
+      "say",
+      "said"
+    ],
+    [
+      "tell",
+      "told"
+    ],
+    [
+      "speak",
+      "spoke"
+    ],
+    [
+      "drive",
+      "drove"
+    ],
+    [
+      "sit",
+      "sat"
+    ],
+    [
+      "stand",
+      "stood"
+    ],
+    [
+      "begin",
+      "began"
+    ],
+    [
+      "feel",
+      "felt"
+    ],
+    [
+      "hold",
+      "held"
+    ],
+    [
+      "leave",
+      "left"
+    ],
+    [
+      "pay",
+      "paid"
+    ],
+    [
+      "win",
+      "won"
+    ],
+    [
+      "lose",
+      "lost"
+    ],
+    [
+      "bring",
+      "brought"
+    ],
+    [
+      "build",
+      "built"
+    ],
+    [
+      "catch",
+      "caught"
+    ],
+    [
+      "teach",
+      "taught"
+    ],
+    [
+      "draw",
+      "drew"
+    ],
+    [
+      "grow",
+      "grew"
+    ],
+    [
+      "ride",
+      "rode"
+    ],
+    [
+      "break",
+      "broke"
+    ],
+    [
+      "choose",
+      "chose"
+    ],
+    [
+      "fall",
+      "fell"
+    ],
+    [
+      "forget",
+      "forgot"
+    ],
+    [
+      "swim",
+      "swam"
+    ],
+    [
+      "sleep",
+      "slept"
+    ],
+    [
+      "wear",
+      "wore"
+    ],
+    [
+      "hear",
+      "heard"
+    ],
+    [
+      "lead",
+      "led"
+    ],
+    [
+      "read",
+      "read"
+    ],
+    [
+      "cut",
+      "cut"
+    ],
+    [
+      "hit",
+      "hit"
+    ],
+    [
+      "let",
+      "let"
+    ],
+    [
+      "set",
+      "set"
+    ],
+    [
+      "send",
+      "sent"
+    ],
+    [
+      "spend",
+      "spent"
+    ],
+    [
+      "understand",
+      "understood"
+    ],
+    [
+      "meet",
+      "met"
+    ],
+    [
+      "show",
+      "showed"
+    ],
+    [
+      "shown",
+      "showed"
+    ],
+    [
+      "shut",
+      "shut"
+    ],
+    [
+      "spread",
+      "spread"
+    ],
+    [
+      "turn",
+      "turned"
+    ],
+    [
+      "work",
+      "worked"
+    ],
+    [
+      "help",
+      "helped"
+    ],
+    [
+      "watch",
+      "watched"
+    ],
+    [
+      "call",
+      "called"
+    ],
+    [
+      "ask",
+      "asked"
+    ],
+    [
+      "use",
+      "used"
+    ],
+    [
+      "try",
+      "tried"
+    ],
+    [
+      "want",
+      "wanted"
+    ],
+    [
+      "need",
+      "needed"
+    ],
+    [
+      "like",
+      "liked"
+    ],
+    [
+      "live",
+      "lived"
+    ],
+    [
+      "love",
+      "loved"
+    ],
+    [
+      "learn",
+      "learned"
+    ],
+    [
+      "move",
+      "moved"
+    ],
+    [
+      "change",
+      "changed"
+    ],
+    [
+      "continue",
+      "continued"
+    ],
+    [
+      "develop",
+      "developed"
+    ],
+    [
+      "depend",
+      "depended"
+    ],
+    [
+      "discover",
+      "discovered"
+    ],
+    [
+      "end",
+      "ended"
+    ],
+    [
+      "enter",
+      "entered"
+    ],
+    [
+      "explain",
+      "explained"
+    ],
+    [
+      "fail",
+      "failed"
+    ],
+    [
+      "follow",
+      "followed"
+    ],
+    [
+      "focus",
+      "focused"
+    ],
+    [
+      "gain",
+      "gained"
+    ],
+    [
+      "happen",
+      "happened"
+    ],
+    [
+      "increase",
+      "increased"
+    ],
+    [
+      "include",
+      "included"
+    ],
+    [
+      "improve",
+      "improved"
+    ],
+    [
+      "introduce",
+      "introduced"
+    ],
+    [
+      "keep",
+      "kept"
+    ],
+    [
+      "laugh",
+      "laughed"
+    ],
+    [
+      "look",
+      "looked"
+    ],
+    [
+      "manage",
+      "managed"
+    ],
+    [
+      "matter",
+      "mattered"
+    ],
+    [
+      "notice",
+      "noticed"
+    ],
+    [
+      "offer",
+      "offered"
+    ],
+    [
+      "pass",
+      "passed"
+    ],
+    [
+      "pick",
+      "picked"
+    ],
+    [
+      "point",
+      "pointed"
+    ],
+    [
+      "prepare",
+      "prepared"
+    ],
+    [
+      "present",
+      "presented"
+    ],
+    [
+      "prove",
+      "proved"
+    ],
+    [
+      "provide",
+      "provided"
+    ],
+    [
+      "raise",
+      "raised"
+    ],
+    [
+      "remain",
+      "remained"
+    ],
+    [
+      "remember",
+      "remembered"
+    ],
+    [
+      "report",
+      "reported"
+    ],
+    [
+      "require",
+      "required"
+    ],
+    [
+      "return",
+      "returned"
+    ],
+    [
+      "rise",
+      "rose"
+    ],
+    [
+      "save",
+      "saved"
+    ],
+    [
+      "seem",
+      "seemed"
+    ],
+    [
+      "stay",
+      "stayed"
+    ],
+    [
+      "study",
+      "studied"
+    ],
+    [
+      "suffer",
+      "suffered"
+    ],
+    [
+      "support",
+      "supported"
+    ],
+    [
+      "suppose",
+      "supposed"
+    ],
+    [
+      "train",
+      "trained"
+    ],
+    [
+      "travel",
+      "travelled"
+    ],
+    [
+      "traveled",
+      "traveled"
+    ],
+    [
+      "visit",
+      "visited"
+    ],
+    [
+      "wait",
+      "waited"
+    ],
+    [
+      "wake",
+      "woke"
+    ],
+    [
+      "warn",
+      "warned"
+    ],
+    [
+      "wonder",
+      "wondered"
+    ],
+    [
+      "worry",
+      "worried"
+    ],
+    [
+      "wish",
+      "wished"
+    ]
+  ],
+  "common_verbs": [
+    "play",
+    "go",
+    "run",
+    "eat",
+    "like",
+    "want",
+    "need",
+    "have",
+    "make",
+    "take",
+    "look",
+    "feel",
+    "think",
+    "know",
+    "see",
+    "say",
+    "get",
+    "give",
+    "use",
+    "find",
+    "try",
+    "ask",
+    "work",
+    "call",
+    "keep",
+    "begin",
+    "show",
+    "seem",
+    "help",
+    "talk",
+    "turn",
+    "start",
+    "stop",
+    "watch",
+    "read",
+    "write",
+    "seen",
+    "come",
+    "tell",
+    "buy",
+    "speak",
+    "drive",
+    "sit",
+    "stand",
+    "hold",
+    "leave",
+    "pay",
+    "win",
+    "lose",
+    "bring",
+    "build",
+    "catch",
+    "teach",
+    "draw",
+    "grow",
+    "ride",
+    "break",
+    "choose",
+    "fall",
+    "forget",
+    "swim",
+    "sleep",
+    "wear",
+    "hear",
+    "lead",
+    "cut",
+    "hit",
+    "let",
+    "set",
+    "send",
+    "spend",
+    "understand",
+    "meet",
+    "shown",
+    "shut",
+    "spread",
+    "walk",
+    "finish",
+    "open",
+    "close",
+    "sell",
+    "live",
+    "love",
+    "learn",
+    "move",
+    "change",
+    "continue",
+    "develop",
+    "depend",
+    "discover",
+    "end",
+    "enter",
+    "explain",
+    "fail",
+    "follow",
+    "focus",
+    "gain",
+    "happen",
+    "increase",
+    "include",
+    "improve",
+    "introduce",
+    "laugh",
+    "manage",
+    "matter",
+    "notice",
+    "offer",
+    "pass",
+    "pick",
+    "point",
+    "prepare",
+    "present",
+    "prove",
+    "provide",
+    "raise",
+    "remain",
+    "remember",
+    "report",
+    "require",
+    "return",
+    "rise",
+    "save",
+    "stay",
+    "study",
+    "suffer",
+    "support",
+    "suppose",
+    "train",
+    "travel",
+    "traveled",
+    "visit",
+    "wait",
+    "wake",
+    "warn",
+    "wonder",
+    "worry",
+    "wish"
+  ],
+  "past_time_markers": [
+    "yesterday",
+    "last",
+    "ago",
+    "earlier",
+    "before"
+  ],
+  "adjective_comparatives": [
+    [
+      "more better",
+      "better"
+    ],
+    [
+      "most best",
+      "best"
+    ],
+    [
+      "gooder",
+      "better"
+    ],
+    [
+      "baddest",
+      "worst"
+    ],
+    [
+      "more worse",
+      "worse"
+    ],
+    [
+      "more funnier",
+      "funnier"
+    ],
+    [
+      "more happier",
+      "happier"
+    ],
+    [
+      "more taller",
+      "taller"
+    ]
+  ],
+  "adverb_pairs": [
+    [
+      "quiet",
+      "quietly"
+    ],
+    [
+      "careful",
+      "carefully"
+    ],
+    [
+      "sincere",
+      "sincerely"
+    ],
+    [
+      "eager",
+      "eagerly"
+    ],
+    [
+      "free",
+      "freely"
+    ],
+    [
+      "easy",
+      "easily"
+    ],
+    [
+      "loud",
+      "loudly"
+    ],
+    [
+      "slow",
+      "slowly"
+    ],
+    [
+      "polite",
+      "politely"
+    ],
+    [
+      "gentle",
+      "gently"
+    ]
+  ],
+  "uncountable_nouns": [
+    [
+      "informations",
+      "information"
+    ],
+    [
+      "advices",
+      "advice"
+    ],
+    [
+      "furnitures",
+      "furniture"
+    ],
+    [
+      "luggages",
+      "luggage"
+    ],
+    [
+      "equipments",
+      "equipment"
+    ],
+    [
+      "knowledges",
+      "knowledge"
+    ],
+    [
+      "a information",
+      "information"
+    ],
+    [
+      "an advice",
+      "advice"
+    ],
+    [
+      "a furniture",
+      "furniture"
+    ],
+    [
+      "a luggage",
+      "luggage"
+    ],
+    [
+      "fishes",
+      "fish"
+    ]
+  ],
+  "reflexive_pronouns": [
+    [
+      "He",
+      "him",
+      "himself"
+    ],
+    [
+      "She",
+      "her",
+      "herself"
+    ],
+    [
+      "I",
+      "me",
+      "myself"
+    ],
+    [
+      "They",
+      "them",
+      "themselves"
+    ],
+    [
+      "We",
+      "us",
+      "ourselves"
+    ],
+    [
+      "It",
+      "it",
+      "itself"
+    ]
+  ],
+  "verb_preposition_confusables": [
+    [
+      "discuss about",
+      "discuss"
+    ],
+    [
+      "discuss on",
+      "discuss"
+    ],
+    [
+      "arrive to",
+      "arrive"
+    ],
+    [
+      "enter to",
+      "enter"
+    ],
+    [
+      "mention about",
+      "mention"
+    ]
+  ],
+  "gerund_verbs": [
+    "enjoy",
+    "avoid",
+    "consider",
+    "suggest",
+    "miss",
+    "finish",
+    "practice",
+    "keep",
+    "mind",
+    "appreciate",
+    "involve",
+    "recommend",
+    "fancy"
+  ],
+  "infinitive_verbs": [
+    "want",
+    "decide",
+    "hope",
+    "plan",
+    "expect",
+    "intend",
+    "offer",
+    "refuse",
+    "agree",
+    "promise",
+    "manage",
+    "learn",
+    "pretend"
+  ],
+  "subjunctive_markers": [
+    "wish",
+    "if"
+  ],
+  "negation_operators": [
+    "don't",
+    "doesn't",
+    "didn't",
+    "can't",
+    "couldn't",
+    "won't",
+    "wouldn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't"
+  ],
+  "negation_markers": [
+    [
+      "nothing",
+      "anything"
+    ],
+    [
+      "no one",
+      "anyone"
+    ],
+    [
+      "nobody",
+      "anybody"
+    ],
+    [
+      "never",
+      "ever"
+    ],
+    [
+      "neither",
+      "either"
+    ],
+    [
+      "nowhere",
+      "anywhere"
+    ]
+  ],
+  "misspellings": [
+    [
+      "exemple",
+      "example"
+    ],
+    [
+      "thier",
+      "their"
+    ],
+    [
+      "peole",
+      "people"
+    ],
+    [
+      "poeple",
+      "people"
+    ],
+    [
+      "successfull",
+      "successful"
+    ],
+    [
+      "knowlege",
+      "knowledge"
+    ],
+    [
+      "becouse",
+      "because"
+    ],
+    [
+      "preffer",
+      "prefer"
+    ],
+    [
+      "sosiety",
+      "society"
+    ],
+    [
+      "creat",
+      "create"
+    ],
+    [
+      "alot",
+      "a lot"
+    ],
+    [
+      "cant",
+      "can't"
+    ],
+    [
+      "dont",
+      "don't"
+    ],
+    [
+      "studed",
+      "studied"
+    ],
+    [
+      "studing",
+      "studying"
+    ],
+    [
+      "comming",
+      "coming"
+    ],
+    [
+      "planing",
+      "planning"
+    ],
+    [
+      "somthing",
+      "something"
+    ],
+    [
+      "totaly",
+      "totally"
+    ],
+    [
+      "probbably",
+      "probably"
+    ],
+    [
+      "wich",
+      "which"
+    ],
+    [
+      "recieve",
+      "receive"
+    ],
+    [
+      "seperate",
+      "separate"
+    ],
+    [
+      "occured",
+      "occurred"
+    ],
+    [
+      "definately",
+      "definitely"
+    ],
+    [
+      "untill",
+      "until"
+    ],
+    [
+      "enviroment",
+      "environment"
+    ],
+    [
+      "goverment",
+      "government"
+    ],
+    [
+      "neccessary",
+      "necessary"
+    ],
+    [
+      "achive",
+      "achieve"
+    ],
+    [
+      "arguement",
+      "argument"
+    ],
+    [
+      "begining",
+      "beginning"
+    ],
+    [
+      "calender",
+      "calendar"
+    ],
+    [
+      "comittee",
+      "committee"
+    ],
+    [
+      "concious",
+      "conscious"
+    ],
+    [
+      "existance",
+      "existence"
+    ],
+    [
+      "foriegn",
+      "foreign"
+    ],
+    [
+      "grammer",
+      "grammar"
+    ],
+    [
+      "immediatly",
+      "immediately"
+    ],
+    [
+      "libary",
+      "library"
+    ],
+    [
+      "maintainance",
+      "maintenance"
+    ],
+    [
+      "milage",
+      "mileage"
+    ],
+    [
+      "noticable",
+      "noticeable"
+    ],
+    [
+      "occassion",
+      "occasion"
+    ],
+    [
+      "pronounciation",
+      "pronunciation"
+    ],
+    [
+      "publich",
+      "publish"
+    ],
+    [
+      "realy",
+      "really"
+    ],
+    [
+      "restraunt",
+      "restaurant"
+    ],
+    [
+      "suprise",
+      "surprise"
+    ],
+    [
+      "tommorow",
+      "tomorrow"
+    ],
+    [
+      "tounge",
+      "tongue"
+    ],
+    [
+      "truely",
+      "truly"
+    ],
+    [
+      "wierd",
+      "weird"
+    ]
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "version": "1.2.0",
+  "lang": "ja",
+  "cefr": "A2",
+  "system": "あなたは入門（A2）の日本語学習者向けの先生です。わかりやすい日本語で文法ミスを説明し、基本的な用語は説明を添えて使ってください。",
+  "user": "この日本語の文法ミスを説明し、2〜3 個の例文と励ましの一文をください。\nエラー種別：{{error_type}}\n帰因診断：{{attribution}}\nユーザーレベル：{{cefr}}\n過去のミス回数：{{student_history_count}}\nユーザーの母語：{{native_language}}\n過去の誤りタイプ分布：{{error_distribution}}\n解説言語：{{target_language}}\n\n【练习】最後に、针对性の日本語練習問題を2〜3問出題し、参考答案を付記してください。"
+}

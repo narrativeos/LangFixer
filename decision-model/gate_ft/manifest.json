@@ -1,0 +1,37 @@
+{
+  "seed": 20261019,
+  "test": "gate_eval/zh_gate_1k.jsonl (frozen, 996)",
+  "train": 9866,
+  "train_error": 4933,
+  "train_clean": 4933,
+  "dev": 1000,
+  "dev_error": 500,
+  "dev_clean": 500,
+  "dev_by_source": {
+    "cctc": {
+      "error": 80,
+      "clean": 80
+    },
+    "cscd": {
+      "error": 90,
+      "clean": 90
+    },
+    "cscdns": {
+      "error": 180,
+      "clean": 180
+    },
+    "mucgec": {
+      "error": 20,
+      "clean": 50
+    },
+    "nacgec": {
+      "error": 70,
+      "clean": 40
+    },
+    "nlpcc23": {
+      "error": 60,
+      "clean": 60
+    }
+  },
+  "overlap_with_gate_eval": 0
+}

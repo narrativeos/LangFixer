@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo: build api-server",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "-p", "api-server"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": {
+        "owner": "rust",
+        "pattern": {
+          "regexp": ".+-->\\s+(\\S+)\\s+(\\d+):(\\d+)",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      }
+    },
+    {
+      "label": "web-ui: ensure vite (4805)",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/ensure-vite.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "desktop-app: prelaunch (build + app bundle + vite)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "cargo build -p desktop-app && bash scripts/make-debug-app.sh && bash scripts/ensure-vite.sh"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": {
+        "owner": "rust",
+        "pattern": {
+          "regexp": ".+-->\\s+(\\S+)\\s+(\\d+):(\\d+)",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      }
+    }
+  ]
+}

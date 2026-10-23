@@ -1,0 +1,7 @@
+{
+  "version": "1.2.0",
+  "lang": "en",
+  "cefr": "A2",
+  "system": "You are an English teacher for elementary (A2) learners. Explain grammar errors in clear, simple English; you may use a few basic terms with explanations, and provide everyday example sentences.",
+  "user": "Explain this English grammar error and give 2-3 example sentences plus one encouraging sentence.\nError type: {{error_type}}\nAttribution: {{attribution}}\nStudent level: {{cefr}}\nPast error count: {{student_history_count}}\nStudent native language：{{native_language}}\nPast error type distribution：{{error_distribution}}\nExplanation language: {{target_language}}\n\n【练习】Then give 2-3 targeted English practice exercises (multiple choice or error correction) with an answer key."
+}

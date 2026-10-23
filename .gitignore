@@ -1,0 +1,58 @@
+# Rust
+target/
+
+# SQLite 本地数据库
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 资源包导出产物（含书籍派生内容，不入库；正常走「另存为」到用户选择位置）
+knowledge-base/resource-packs/
+
+# 运行时状态文件（规则开关持久化 / 设置；.migrated 为旧版开关文件的一次性迁移归档）
+langfixer-rule-state.json
+langfixer-settings.json
+*.json.migrated
+lexicons/.lexicon-seed.lock
+
+# Node / Web UI
+node_modules/
+web-ui/node_modules/
+web-ui/dist/
+web-ui/*.tsbuildinfo
+
+# 本地环境
+.env
+*.log
+
+# 外部数据集（体积大，仅本地保留；JFLEG 的 dev/test 已直接入库）
+datasets/nlpcc2018/
+
+# 本地模型权重（CEC 4B GGUF 等；下载脚本 models/download.sh 可入库）
+models/*.gguf
+
+# 测评中心报告（进化中心 P0；按需生成，体积大）
+datasets/eval_reports/
+
+# Python
+__pycache__/
+datasets/.venv/
+decision-model/.venv/
+decision-model/.venv_gate/
+decision-model/models/
+decision-model/data/
+decision-model/vegaml_data/
+feature-model/.venv/
+feature-model/.venv_char/
+feature-model/models/
+feature-model/data/
+feature-model/l3_data/
+feature-model/l3_bg/
+feature-model/l3_pool_raw/
+
+# macOS
+.DS_Store
+
+# 微调语料派生文件（从 datasets/ 可再生）
+decision-model/gate_ft/*.jsonl

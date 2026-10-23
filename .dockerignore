@@ -1,0 +1,12 @@
+# Docker 构建上下文排除项（构建命令：`docker build -f api-server/Dockerfile .`）
+.git/
+target/
+node_modules/
+web-ui/node_modules/
+web-ui/dist/
+web-ui/*.tsbuildinfo
+*.log
+.DS_Store
+desktop-app/icons/
+# 知识库涉及知识产权（教材内容），不进入 Docker 构建上下文
+knowledge-base/

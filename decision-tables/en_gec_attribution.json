@@ -1,0 +1,472 @@
+{
+  "nodes": [
+    {
+      "id": "input",
+      "name": "input",
+      "type": "inputNode"
+    },
+    {
+      "id": "table",
+      "name": "en_gec_attribution_table",
+      "type": "decisionTableNode",
+      "content": {
+        "inputs": [
+          {
+            "id": "errorType",
+            "name": "errorType",
+            "field": "errorType"
+          },
+          {
+            "id": "confidence",
+            "name": "confidence",
+            "field": "confidence"
+          },
+          {
+            "id": "history",
+            "name": "studentHistoryCount",
+            "field": "studentHistoryCount"
+          },
+          {
+            "id": "isNovice",
+            "name": "isNovice",
+            "field": "isNovice"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "attribution",
+            "name": "attribution",
+            "field": "attribution"
+          },
+          {
+            "id": "weinerLocus",
+            "name": "weinerLocus",
+            "field": "weiner.locus"
+          },
+          {
+            "id": "weinerStability",
+            "name": "weinerStability",
+            "field": "weiner.stability"
+          },
+          {
+            "id": "weinerControllability",
+            "name": "weinerControllability",
+            "field": "weiner.controllability"
+          },
+          {
+            "id": "remedial",
+            "name": "remedial",
+            "field": "remedial[]"
+          },
+          {
+            "id": "matchedRule",
+            "name": "matchedRule",
+            "field": "matchedRule"
+          },
+          {
+            "id": "cefrLevel",
+            "name": "cefrLevel",
+            "field": "cefrLevel"
+          }
+        ],
+        "rules": [
+          {
+            "_id": "article_novice",
+            "_meta": "src-sample-en",
+            "errorType": "== \"article\"",
+            "isNovice": "== true",
+            "attribution": "\"rule_missing\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：a/an/the 冠词用法\"",
+            "matchedRule": "\"article_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "article_old_hand",
+            "_meta": "src-sample-en",
+            "errorType": "== \"article\"",
+            "confidence": ">= 0.8",
+            "isNovice": "== false",
+            "attribution": "\"habit_solidified\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：冠词用法回顾\"",
+            "matchedRule": "\"article_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "article_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"article\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：冠词基础\"",
+            "matchedRule": "\"article_any\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "numeral_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"numeral\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：数词（基数词/序数词/分数/主谓一致）用法\"",
+            "matchedRule": "\"numeral_any\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "pronoun_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"pronoun\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：代词（人称/物主/反身/指示）用法\"",
+            "matchedRule": "\"pronoun_any\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "preposition_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"preposition\"",
+            "attribution": "\"collocation_weak\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"搭配专项训练：介词搭配强化\"",
+            "matchedRule": "\"preposition_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "adjective_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"adjective\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：形容词（位置/比较级/最高级）用法\"",
+            "matchedRule": "\"adjective_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "adverb_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"adverb\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：副词（种类/位置/比较）用法\"",
+            "matchedRule": "\"adverb_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "noun_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"noun\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：名词（单复数/所有格/可数与不可数）用法\"",
+            "matchedRule": "\"noun_any\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "verb_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"verb\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：动词（及物与不及物/动词句型）用法\"",
+            "matchedRule": "\"verb_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "tense_novice",
+            "_meta": "src-sample-en",
+            "errorType": "== \"tense\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：一般过去时构成\"",
+            "matchedRule": "\"tense_novice\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "tense_old_hand",
+            "_meta": "src-sample-en",
+            "errorType": "== \"tense\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：时态系统回顾\"",
+            "matchedRule": "\"tense_old_hand\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "passive_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"passive\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：被动语态构成与用法\"",
+            "matchedRule": "\"passive_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "infinitive_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"infinitive\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：不定式（to do）用法\"",
+            "matchedRule": "\"infinitive_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "gerund_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"gerund\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：动名词（-ing 作名词）用法\"",
+            "matchedRule": "\"gerund_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "participle_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"participle\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：现在分词/过去分词用法\"",
+            "matchedRule": "\"participle_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "subjunctive_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"subjunctive\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：虚拟语气（if 条件/wish 等）\"",
+            "matchedRule": "\"subjunctive_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "sentence_structure_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"sentence_structure\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：基本句型与并列句\"",
+            "matchedRule": "\"sentence_structure_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "noun_clause_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"noun_clause\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：名词性从句（主语/宾语/表语/同位语）\"",
+            "matchedRule": "\"noun_clause_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "attributive_clause_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"attributive_clause\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：定语从句（关系词/限制性/非限制性）\"",
+            "matchedRule": "\"attributive_clause_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "adverbial_clause_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"adverbial_clause\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：状语从句（时间/条件/让步/原因）\"",
+            "matchedRule": "\"adverbial_clause_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "agreement_novice",
+            "_meta": "src-sample-en",
+            "errorType": "== \"agreement\"",
+            "isNovice": "== true",
+            "attribution": "\"rule_missing\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：第三人称单数 -s\"",
+            "matchedRule": "\"agreement_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "agreement_old_hand",
+            "_meta": "src-sample-en",
+            "errorType": "== \"agreement\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：主谓一致回顾\"",
+            "matchedRule": "\"agreement_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "inversion_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"inversion\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：倒装（全部倒装/部分倒装）\"",
+            "matchedRule": "\"inversion_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "tag_question_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"tag_question\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：反意疑问句构成\"",
+            "matchedRule": "\"tag_question_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "ellipsis_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"ellipsis\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：省略（重复成分省略）\"",
+            "matchedRule": "\"ellipsis_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "emphasis_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"emphasis\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：强调句型（It is … that）\"",
+            "matchedRule": "\"emphasis_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "negation_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"negation\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：否定（not/no/部分否定/双重否定）\"",
+            "matchedRule": "\"negation_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "rhetoric_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"rhetoric\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：常见修辞（排比/对比/设问）\"",
+            "matchedRule": "\"rhetoric_any\"",
+            "cefrLevel": "\"C1\""
+          },
+          {
+            "_id": "morphology_any",
+            "_meta": "src-sample-en",
+            "errorType": "== \"morphology\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：名词/形容词/副词词形变化\"",
+            "matchedRule": "\"morphology_any\"",
+            "cefrLevel": "\"B2\""
+          },
+          {
+            "_id": "default_knowledge_gap",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"建议结合规则讲解进行针对性练习\"",
+            "matchedRule": "\"default_knowledge_gap\"",
+            "cefrLevel": "\"A1\""
+          }
+        ],
+        "hitPolicy": "first"
+      }
+    },
+    {
+      "id": "output",
+      "name": "output",
+      "type": "outputNode"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceId": "input",
+      "targetId": "table"
+    },
+    {
+      "id": "e2",
+      "sourceId": "table",
+      "targetId": "output"
+    }
+  ]
+}

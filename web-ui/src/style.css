@@ -1,0 +1,392 @@
+:root {
+  --bg: #f2f3f8;
+  --surface: #ffffff;
+  --surface-2: #f6f7fb;
+  --border: #e5e8f0;
+  --border-strong: #d5d9e5;
+  --text: #1c2233;
+  --text-2: #4d5468;
+  --muted: #8b92a6;
+  --primary: #4f5fe8;
+  --primary-hover: #3f4ed6;
+  --primary-soft: #eef0fd;
+  --danger: #e5484d;
+  --danger-soft: #fdebec;
+  --ok: #2f9e63;
+  --ok-soft: #e9f7f0;
+  --warn: #d97b0a;
+  --warn-soft: #fdf3e2;
+  --violet: #7a5af8;
+  --violet-soft: #f1edfe;
+  --blue: #2f6fed;
+  --blue-soft: #e9f1fe;
+  /* 语义卡片边框 / 深文本（ErrorList 等卡片；暗色模式统一在此换值） */
+  --warn-line: #f0d890;
+  --warn-ink: #8a6d00;
+  --ok-line: #c9e7b8;
+  --danger-line: #fbc4c4;
+  --danger-ink: #5c201e;
+  --danger-ink-soft: #7a5c5a;
+  --shadow-sm: 0 1px 2px rgba(23, 30, 54, 0.05);
+  --shadow-md: 0 1px 2px rgba(23, 30, 54, 0.04), 0 6px 20px rgba(23, 30, 54, 0.06);
+  --radius: 12px;
+  --radius-sm: 8px;
+
+  /* ── Element Plus 主题覆写（与设计 token 保持一致） ── */
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: #7d8bee;
+  --el-color-primary-light-5: #a6b0f4;
+  --el-color-primary-light-7: #cdd3fa;
+  --el-color-primary-light-8: #dde1fc;
+  --el-color-primary-light-9: var(--primary-soft);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-color-danger: var(--danger);
+  --el-color-error: var(--danger);
+  --el-color-info: var(--muted);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-radius-base: var(--radius-sm);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--muted);
+  --el-text-color-placeholder: #b3b9c9;
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--bg);
+  --el-font-size-base: 14px;
+
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+}
+
+/* ── 暗色模式（html.dark；main.ts 按 localStorage / prefers-color-scheme 初始化，header 可切换） ──
+   Element Plus 组件暗色由其 dark/css-vars.css 提供（选择器 html.dark，优先级高于 :root 覆写），
+   因此这里同时重声明 EP 关键变量，保证品牌色与设计 token 在暗色下一致 */
+html.dark {
+  --bg: #14161e;
+  --surface: #1d2029;
+  --surface-2: #262a38;
+  --border: #323748;
+  --border-strong: #454b60;
+  --text: #e8eaf2;
+  --text-2: #b9bfd2;
+  --muted: #868da4;
+  --primary: #6c7cf2;
+  --primary-hover: #7d8bf5;
+  --primary-soft: #242a4d;
+  --danger: #f0666b;
+  --danger-soft: #3b2124;
+  --ok: #43b077;
+  --ok-soft: #1c3228;
+  --warn: #e0913a;
+  --warn-soft: #37280f;
+  --violet: #9179ff;
+  --violet-soft: #2a2447;
+  --blue: #5c93f5;
+  --blue-soft: #1d2b47;
+  --warn-line: #6a5222;
+  --warn-ink: #e6c26a;
+  --ok-line: #2d5a3e;
+  --danger-line: #6d3134;
+  --danger-ink: #f2b1af;
+  --danger-ink-soft: #cfa09d;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.5);
+
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: #56639e;
+  --el-color-primary-light-5: #46517e;
+  --el-color-primary-light-7: #363e5e;
+  --el-color-primary-light-8: #2d3450;
+  --el-color-primary-light-9: var(--primary-soft);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-color-danger: var(--danger);
+  --el-color-error: var(--danger);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--muted);
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--bg);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app { max-width: 1240px; margin: 0 auto; padding: 20px 24px 64px; }
+
+/* ── 桌面端（Tauri）自适应：应用壳式布局 ──
+   body 不滚动，主区域内部滚动（无双滚动条）；内容区全宽铺满窗口 */
+html.desktop, html.desktop body { height: 100%; overflow: hidden; }
+html.desktop #app {
+  max-width: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 16px;
+}
+html.desktop .app-header { flex: none; }
+html.desktop .main-area {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+/* 主工作区：检测三列 + 检测历史，各自内部滚动，填满窗口高度 */
+html.desktop .main-area > .detect-layout {
+  flex: 1.5; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(360px, 5fr) minmax(0, 4fr) minmax(0, 5fr);
+  gap: 14px; align-items: stretch;
+}
+html.desktop .main-area > .detect-layout > .el-card {
+  display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+}
+html.desktop .main-area > .detect-layout > .el-card > .el-card__header { flex: none; }
+html.desktop .main-area > .detect-layout > .el-card > .el-card__body {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* 桌面端输入卡片：正文纵向 flex，文本框撑满剩余高度，引擎提示 / 操作 / 参数区沉底；
+   文本框随窗口高度自适应（窗口过矮时回退自然高度，极端情况下卡片正文滚动兜底） */
+html.desktop .input-card > .el-card__body {
+  display: flex; flex-direction: column;
+}
+html.desktop .input-card > .el-card__body > .el-form {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+/* 仅匹配表单直属的「待检测文本」表单项（参数区表单项嵌套在 .options-row 内，不受影响）；
+   覆盖 EP 的 .el-form-item--label-top { display: block } */
+html.desktop .input-card > .el-card__body > .el-form > .el-form-item {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+html.desktop .input-card > .el-card__body > .el-form > .el-form-item > .el-form-item__content {
+  flex: 1; min-height: 0;
+  align-items: stretch;
+}
+html.desktop .input-card > .el-card__body > .el-form > .el-form-item > .el-form-item__content > .el-textarea {
+  flex: 1; min-height: 0;
+  display: flex; width: 100%;
+}
+html.desktop .input-card > .el-card__body > .el-form > .el-form-item > .el-form-item__content > .el-textarea > .el-textarea__inner {
+  flex: 1; min-height: 0;
+}
+/* 检测历史：底部区域，独立滚动 */
+html.desktop .main-area > .history-section {
+  flex: 1; min-height: 0;
+  display: flex;
+}
+html.desktop .main-area > .history-section > .el-card {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+html.desktop .main-area > .history-section > .el-card > .el-card__header { flex: none; }
+html.desktop .main-area > .history-section > .el-card > .el-card__body {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* 规则管理 / 知识维护 / 设置：面板级滚动 */
+html.desktop .main-area > .manage-pane {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+
+/* ── 顶部品牌区 ── */
+.app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.brand-mark {
+  width: 42px; height: 42px; flex: none;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #5b6cf0 0%, #7a5af8 100%);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; box-shadow: var(--shadow-md);
+}
+.app-header h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
+.app-header .tagline { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+.app-header .spacer { flex: 1; }
+
+/* ── 右上角导航（检测 / 规则管理 / 知识维护 / 设置） ── */
+.header-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.header-nav .el-button { border-radius: 8px; font-size: 13.5px; }
+.header-nav .el-button.nav-active {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
+.header-nav .el-button.nav-active:hover {
+  background: var(--primary-hover); border-color: var(--primary-hover); color: #fff;
+}
+
+/* ── 二级子标签（管理面板内的子导航） ── */
+.sub-tabs { --el-tabs-header-height: 38px; }
+.sub-tabs .el-tabs__header { margin-bottom: 10px; }
+.sub-tabs .el-tabs__item { font-size: 13px; height: 38px; color: var(--text-2); }
+.sub-tabs .el-tabs__item.is-active { color: var(--primary); }
+.sub-tabs .el-tabs__active-bar { height: 2px; border-radius: 1px; }
+
+/* ── 操作 / 提示 ── */
+.actions { display: flex; gap: 10px; margin: 4px 0 14px; }
+.options-row { display: flex; gap: 12px; }
+.options-col { flex: 1; min-width: 0; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.engine-hint {
+  margin-top: 8px; font-size: 12.5px; color: var(--muted);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.engine-hint .pipeline-row,
+.engine-hint .preprocess-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.engine-hint .hint-label { flex: none; }
+.char-count { float: right; font-variant-numeric: tabular-nums; }
+
+/* ── 主区域 ── */
+.main-area { display: block; }
+
+/* ── 检测三列工作区：左 输入与参数 / 中 内容预览 / 右 结果·归因·讲解 ── */
+.detect-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 4fr) minmax(0, 3fr) minmax(0, 4fr);
+  gap: 16px; align-items: start;
+}
+.detect-layout > .el-card { margin-bottom: 0; }
+/* 960–1279px：三列 → 两列（输入 | 结果），预览移到下方整行，避免列过窄 */
+@media (max-width: 1279px) and (min-width: 961px) {
+  .detect-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .detect-layout > .input-card { order: 1; }
+  .detect-layout > .results-card { order: 2; }
+  .detect-layout > .preview-card { grid-column: 1 / -1; order: 3; }
+}
+@media (max-width: 960px) {
+  .detect-layout { grid-template-columns: 1fr; }
+  .detect-layout > .el-card { margin-bottom: 16px; }
+}
+
+/* ── 检测历史（主工作区直接展示） ── */
+.history-section { margin-top: 16px; }
+.history-section > .el-card { margin-bottom: 0; }
+/* 窄屏：历史表格横向滚动而非压缩列宽（时间 / 参数标签保持可读） */
+.history-section .history-table { min-width: 760px; }
+.history-section > .el-card > .el-card__body { overflow-x: auto; }
+
+/* ── 内容预览（中列）：检测后按 span 高亮相关内容 ── */
+.preview-text {
+  white-space: pre-wrap; word-break: break-word;
+  line-height: 1.95; font-size: 14.5px; color: var(--text);
+}
+.preview-text mark {
+  background: transparent; color: inherit;
+  padding: 1px 3px; border-radius: 4px; cursor: pointer;
+}
+.preview-text mark.hl-grammar { background: var(--danger-soft); color: var(--danger); }
+.preview-text mark.hl-spelling { background: var(--warn-soft); color: var(--warn); }
+.preview-text mark.hl-typography { background: var(--violet-soft); color: var(--violet); }
+.preview-text mark.hl-style { background: var(--blue-soft); color: var(--blue); }
+.preview-text mark.hl-other {
+  background: var(--surface-2); color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.preview-legend {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 10px; font-size: 12px; color: var(--muted);
+}
+.preview-legend .sw {
+  display: inline-block; width: 10px; height: 10px;
+  border-radius: 3px; margin-right: 5px; vertical-align: -1px;
+}
+.preview-legend .sw-grammar { background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--danger); }
+.preview-legend .sw-spelling { background: var(--warn-soft); box-shadow: inset 0 0 0 1px var(--warn); }
+.preview-legend .sw-typography { background: var(--violet-soft); box-shadow: inset 0 0 0 1px var(--violet); }
+.preview-legend .sw-style { background: var(--blue-soft); box-shadow: inset 0 0 0 1px var(--blue); }
+.preview-empty { padding: 8px 0; }
+
+/* ── 卡片 ── */
+.el-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  --el-card-padding: 18px;
+}
+.card-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 标题行语言切换器（输入卡片）：不参与拉伸，保持按钮组固有宽度 */
+.card-header .el-radio-group { flex: none; }
+.card-header .card-title { font-size: 15px; font-weight: 600; }
+.card-header .sub { color: var(--muted); font-size: 12.5px; }
+.card-header .spacer { flex: 1; }
+
+/* ── 检测结果 ── */
+.summary-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.summary-bar .total { font-size: 13px; color: var(--text-2); }
+.summary-bar .total b { font-size: 15px; color: var(--text); }
+
+.error-item {
+  position: relative; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px 12px 17px; margin-bottom: 10px; background: var(--surface);
+}
+.error-item::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--border-strong); }
+.error-item.cat-grammar::before { background: var(--danger); }
+.error-item.cat-spelling::before { background: var(--warn); }
+.error-item.cat-typography::before { background: var(--violet); }
+.error-item.cat-style::before { background: var(--blue); }
+
+.error-item .line { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.fix { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 14.5px; }
+.original { color: var(--danger); text-decoration: line-through; }
+.correction { color: var(--ok); font-weight: 600; }
+.arrow { color: var(--muted); }
+.message { color: var(--text-2); font-size: 13px; margin-top: 8px; line-height: 1.6; }
+.suggestions { margin-top: 8px; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+.suggestion-item { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.suggestion-text { color: var(--text-2); }
+.suggestion-score { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ── 错误归因 ── */
+.attr-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 10px; background: var(--surface);
+}
+.attr-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.attr-head .fix { margin: 0; }
+.attribution-box { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.attr-main { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dims { margin: 10px 0; }
+.dims .el-descriptions__cell {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px;
+}
+.dims .el-descriptions__label { font-size: 11.5px; color: var(--muted); }
+.remedial-title { font-size: 12.5px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+.attribution-box ul { margin: 0; padding-left: 18px; }
+.attribution-box li { font-size: 13px; line-height: 1.7; color: var(--text-2); }
+.examples { margin-top: 8px; }
+.examples .example {
+  font-size: 13px; color: var(--text-2); background: var(--surface-2);
+  border-radius: 6px; padding: 5px 9px; margin-top: 4px;
+}
+.trace { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+/* ── LLM 个性化讲解 ── */
+.llm-box { margin-top: 12px; border-left: 3px solid var(--primary); }
+.llm-box .el-card__header { padding: 12px 16px; font-size: 14px; }
+.llm-text { margin: 0; line-height: 1.8; font-size: 13.5px; }
+.llm-box.generating .el-card__body {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text-2); font-size: 13.5px;
+}
+.hint { color: var(--muted); font-size: 13px; margin-top: 10px; }
+
+/* ── 表格 / 状态 ── */
+.table-editor .el-textarea__inner {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.7;
+}
+.status { font-size: 13px; color: var(--muted); margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+.status.error { color: var(--danger); }
+.status.ok { color: var(--ok); }
+.loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 12px 0; }

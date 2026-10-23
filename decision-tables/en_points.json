@@ -1,0 +1,2199 @@
+{
+  "article": [
+    {
+      "section": "一.1",
+      "title": "定冠词 the 的基本用法",
+      "remedial": "规则讲解：the 用于特指（已知/独一无二/上文提及）",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "The sun rises in the east. 太阳从东方升起。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "零冠词：泛指与专有名词",
+      "remedial": "规则讲解：复数/不可数泛指及多数专有名词不加冠词",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "Cats like fish. 猫喜欢吃鱼。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "不定冠词 a/an 的选择",
+      "remedial": "规则讲解：a/an 取决于读音而非拼写——元音音素前用 an",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "She is reading an interesting book. 她正在读一本有趣的书。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "元音音素开头的名词短语",
+      "remedial": "规则讲解：university/year 以辅音音素开头用 a",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "泛指单数：a + 职业/身份",
+      "remedial": "规则讲解：职业身份首次提及用 a/an",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "My sister is a doctor. 我姐姐是医生。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "抽象名词具体化",
+      "remedial": "规则讲解：抽象名词表一件具体事情时可加 a/an",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "冠词与最高级/序数词",
+      "remedial": "规则讲解：最高级与序数词前用 the",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "固定短语中的冠词",
+      "remedial": "规则讲解：in the end / at once 等固定短语的冠词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "冠词遗漏常见场景",
+      "remedial": "规则讲解：可数单数名词不能裸用——缺冠词高频错",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.2",
+      "title": "冠词误用小结",
+      "remedial": "规则讲解：a/the/零冠词三选一的判断流程",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "numeral": [
+    {
+      "section": "一.1",
+      "title": "基数词的读写",
+      "remedial": "规则讲解：基数词拼写与数字读法",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "hundred/thousand 的单复数",
+      "remedial": "规则讲解：具体数字后不加 s，hundreds of 除外",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "序数词的构成",
+      "remedial": "规则讲解：序数词拼写规则与 the 搭配",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "序数词的用法",
+      "remedial": "规则讲解：第几……用 the + 序数词",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "分数与百分数",
+      "remedial": "规则讲解：分子基数/分母序数，分子大于一分母加 s",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "小数与倍数",
+      "remedial": "规则讲解：倍数表达 times + 名词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "时间与日期表达",
+      "remedial": "规则讲解：日期与时刻的读写",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "数量与主谓一致",
+      "remedial": "规则讲解：数量短语作主语的主谓一致",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "pronoun": [
+    {
+      "section": "一.1",
+      "title": "人称代词主格与宾格",
+      "remedial": "规则讲解：主格作主语、宾格作宾语/介词后",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "宾格与介词宾语",
+      "remedial": "规则讲解：介词后代词用宾格",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "形容词性与名词性物主代词",
+      "remedial": "规则讲解：my/mine 类物主代词区分",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "物主代词与句尾指代",
+      "remedial": "规则讲解：句尾指代用名词性物主代词",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "反身代词",
+      "remedial": "规则讲解：主语与宾语同指时用反身代词",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "He taught himself to play the guitar. 他自学弹吉他。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "反身代词作同位语",
+      "remedial": "规则讲解：同位语强调用反身代词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "指示代词 this/that",
+      "remedial": "规则讲解：近远指与上下文回指",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "指示代词与主谓一致",
+      "remedial": "规则讲解：this/these 与动词数的搭配",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "关系代词在定语从句中",
+      "remedial": "规则讲解：关系代词引导定语从句（详见从句讲）",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.2",
+      "title": "易混代词小结",
+      "remedial": "规则讲解：it/one/that 与 them/those 辨析",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "preposition": [
+    {
+      "section": "一.1",
+      "title": "时间介词 in/on/at",
+      "remedial": "规则讲解：in（月/年/季节）on（日）at（时刻）",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "方位介词 in/on/at",
+      "remedial": "规则讲解：in（内部）on（表面）at（点）",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "方向介词 to/into",
+      "remedial": "规则讲解：to 表方向、into 表进入",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "位置介词 between/among",
+      "remedial": "规则讲解：两者之间用 between，三者以上 among",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "原因与理由介词 for/of",
+      "remedial": "规则讲解：thank sb for sth；proud of",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "工具与方式介词 with/by",
+      "remedial": "规则讲解：with 工具、by 方式",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "关于介词 about",
+      "remedial": "about 表关于及大致数量",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "上方介词 above/over",
+      "remedial": "above/over 辨析：垂直与一般高于",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.3",
+      "title": "之后介词 after",
+      "remedial": "after 表时间/顺序在后",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.4",
+      "title": "反对介词 against",
+      "remedial": "against 表反对、对抗",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.5",
+      "title": "地点介词 at",
+      "remedial": "at 表小地点与具体位置",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.6",
+      "title": "之前介词 before",
+      "remedial": "before 表时间/顺序在前",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.7",
+      "title": "超出介词 beyond",
+      "remedial": "beyond 表超出范围",
+      "cefr": "B2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.8",
+      "title": "除……外介词 but",
+      "remedial": "but 表除……之外",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.9",
+      "title": "方式介词 by",
+      "remedial": "by 表方式、交通方式与被动施动者",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.10",
+      "title": "目的介词 for",
+      "remedial": "for 表目的、受益对象",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.11",
+      "title": "来源介词 from",
+      "remedial": "from 表来源、起点",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.12",
+      "title": "地点介词 in",
+      "remedial": "in 表在……之内（大地点/时间范围）",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [
+        "He was wounded in the leg. 他腿部受了伤。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "进入介词 into",
+      "remedial": "into 表进入内部的动态",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.2",
+      "title": "所属介词 of",
+      "remedial": "of 表所属、部分与数量",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.3",
+      "title": "地点介词 on",
+      "remedial": "on 表在……表面/特定日",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.4",
+      "title": "外出短语 out of",
+      "remedial": "out of 表从内部向外",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.5",
+      "title": "方向介词 to",
+      "remedial": "to 表方向与间接宾语位置",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.6",
+      "title": "下方介词 under",
+      "remedial": "under 表正下方",
+      "cefr": "A2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.7",
+      "title": "伴随介词 with",
+      "remedial": "with 表工具、伴随、具有",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.8",
+      "title": "介词 + 疑问代词",
+      "remedial": "介词后接 what/whom 的疑问结构",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.9",
+      "title": "介词 + 关系代词",
+      "remedial": "介词后接 whom/which 的定语从句",
+      "cefr": "B2",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.10",
+      "title": "介词 + 动名词",
+      "remedial": "介词后动词一律用 -ing 形",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.11",
+      "title": "易混介词小结",
+      "remedial": "in/on/at、to/for、of/with 等易混介词对比",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "adjective": [
+    {
+      "section": "一.1",
+      "title": "形容词作定语的位置",
+      "remedial": "规则讲解：单个形容词前置、短语/从句后置",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "多个形容词的排列顺序",
+      "remedial": "规则讲解：限定-大小-形状-年龄-颜色-来源-材料",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "作表语的形容词",
+      "remedial": "规则讲解：系动词后接形容词作表语",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "以 -ing/-ed 结尾的形容词",
+      "remedial": "规则讲解：-ing 表性质、-ed 表感受",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "原级比较 as…as",
+      "remedial": "规则讲解：as + 原级 + as 表同级比较",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "比较级的构成",
+      "remedial": "规则讲解：单音节 -er；多音节 more + 原级",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.3",
+      "title": "最高级的构成",
+      "remedial": "规则讲解：单音节 the -est；多音节 the most",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "比较级的修饰语",
+      "remedial": "规则讲解：much/far/a little + 比较级",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "最高级的范围表达",
+      "remedial": "规则讲解：the + 最高级 + in/of 范围",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.3",
+      "title": "双音节形容词的比较级",
+      "remedial": "规则讲解：双音节 -er 与 more 两可的情形",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "This film is more interesting than that one. 这部电影比那部有趣。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "易错形容词小结",
+      "remedial": "规则讲解：比较对象一致、避免双重比较",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.2",
+      "title": "形容词与副词混淆",
+      "remedial": "规则讲解：系动词用形容词、实义动词用副词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.1",
+      "title": "形容词作宾语补足语",
+      "remedial": "规则讲解：make/find + 宾语 + 形容词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.2",
+      "title": "形容词短语作后置定语",
+      "remedial": "规则讲解：interested in 等短语后置",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.3",
+      "title": "the + 形容词表一类人",
+      "remedial": "规则讲解：the rich/the young 谓语用复数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.4",
+      "title": "only/own 等形容词的位置",
+      "remedial": "规则讲解：限定词与形容词的顺序",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.5",
+      "title": "以 a- 开头的形容词",
+      "remedial": "规则讲解：afraid/alone 等只作表语",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.6",
+      "title": "分词形容词",
+      "remedial": "规则讲解：interesting/tired 类分词形容词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.1",
+      "title": "double comparatives",
+      "remedial": "规则讲解：the more…the more 结构",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.2",
+      "title": "比较对象一致性",
+      "remedial": "规则讲解：比较项须同类，避免错配",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.3",
+      "title": "形容词与名词搭配",
+      "remedial": "规则讲解：good/bad at 等形容词介词搭配",
+      "cefr": "B1",
+      "attr": "collocation_weak",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.4",
+      "title": "形容词易错补充",
+      "remedial": "规则讲解：alive/lonely 等位置受限形容词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "adverb": [
+    {
+      "section": "一.1",
+      "title": "方式副词",
+      "remedial": "规则讲解：-ly 方式副词与不规则形式",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "副词修饰动词的位置",
+      "remedial": "规则讲解：方式/地点/时间副词的顺序",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "频度副词与位置",
+      "remedial": "规则讲解：always/often/seldom 在实义动词前 be 后",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "程度副词",
+      "remedial": "规则讲解：very/too/rather 修饰形容词副词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.3",
+      "title": "时间副词与完成时",
+      "remedial": "规则讲解：already/yet/since/for 与完成时搭配",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.4",
+      "title": "副词的比较级与最高级",
+      "remedial": "规则讲解：-ly 副词用 more/most",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.5",
+      "title": "程度副词与形容词搭配",
+      "remedial": "规则讲解：so/such 与 very 的区分",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.6",
+      "title": "地点方向副词",
+      "remedial": "规则讲解：here/there/away 等副词用法",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.7",
+      "title": "连接性副词",
+      "remedial": "规则讲解：however/therefore 的句间连接",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.8",
+      "title": "时间顺序副词",
+      "remedial": "规则讲解：first/then/finally 的篇章作用",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.9",
+      "title": "评注副词",
+      "remedial": "规则讲解：perhaps/luckily 表说话人态度",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.10",
+      "title": "形容词与副词同形",
+      "remedial": "规则讲解：early/late/fast/hard 形副同形",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "He arrived late. 他迟到了。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.11",
+      "title": "易混副词 -ly",
+      "remedial": "规则讲解：hard/hardly、late/lately 辨析",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "易错副词小结",
+      "remedial": "规则讲解：双重比较与位置错位高频错",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "noun": [
+    {
+      "section": "一.1",
+      "title": "规则复数变化",
+      "remedial": "规则讲解：-s/-es/-y→-ies 规则变化",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "不规则复数",
+      "remedial": "规则讲解：man/men、child/children 等不规则",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.3",
+      "title": "单复数同形",
+      "remedial": "规则讲解：sheep/deer/fish 单复数同形",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "不可数名词",
+      "remedial": "规则讲解：不可数名词不加 a、不用复数",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "量词与不可数名词",
+      "remedial": "规则讲解：a piece of 等量词结构",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.3",
+      "title": "主谓一致概说",
+      "remedial": "规则讲解：主语数决定谓语数（详见一致关系讲）",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "-'s 所有格",
+      "remedial": "规则讲解：有名词用 -'s，复数词尾 s 只加撇",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "of 所有格",
+      "remedial": "规则讲解：无名词用 of 结构",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.3",
+      "title": "双重所有格",
+      "remedial": "规则讲解：a friend of mine 双重所有格",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.4",
+      "title": "名词作定语",
+      "remedial": "规则讲解：名词定语通常用单数（例外：sports）",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.5",
+      "title": "集体名词",
+      "remedial": "规则讲解：集体名词整体单数/成员复数两可",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.6",
+      "title": "可数不可数两可的名词",
+      "remedial": "规则讲解：chicken/room 等词义不同数不同",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.7",
+      "title": "抽象名词",
+      "remedial": "规则讲解：抽象名词一般不可数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.8",
+      "title": "易错名词小结",
+      "remedial": "规则讲解：popular mistakes——informations/advices",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "材料名词与物质名词",
+      "remedial": "规则讲解：wood/glass 物质名词不可数",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "复合名词的复数",
+      "remedial": "规则讲解：boyfriends/passers-by 复数变化",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "verb": [
+    {
+      "section": "一.1",
+      "title": "及物与不及物",
+      "remedial": "规则讲解：及物动词直接带宾语、不及物需介词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "易混及物动词",
+      "remedial": "规则讲解：discuss/enter/answer 不打介词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "动词 + to do 句型",
+      "remedial": "规则讲解：want/decide/hope 后接不定式",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "动词 + doing 句型",
+      "remedial": "规则讲解：enjoy/finish/mind 后接动名词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.3",
+      "title": "接两种形式意义不同",
+      "remedial": "规则讲解：remember/stop/try 接 to do 与 doing 之别",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "系动词 + 形容词",
+      "remedial": "规则讲解：look/taste/feel 后接形容词",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "助动词 do/does/did",
+      "remedial": "规则讲解：疑问与否定中的助动词",
+      "cefr": "A2",
+      "attr": "habit_solidified",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.3",
+      "title": "情态动词后接原形",
+      "remedial": "规则讲解：can/must/should 后接动词原形",
+      "cefr": "A2",
+      "attr": "habit_solidified",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "there be 句型",
+      "remedial": "规则讲解：there be 的就近一致",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "易错动词小结",
+      "remedial": "规则讲解：及物性误加介词高频错",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "tense": [
+    {
+      "section": "一.1",
+      "title": "时态系统总览",
+      "remedial": "规则讲解：常见十二时态的时间轴定位",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "一般现在时构成",
+      "remedial": "规则讲解：三单 -s 与动词变化",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.3",
+      "title": "一般现在时用法",
+      "remedial": "规则讲解：习惯、事实与时刻表",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "现在进行时",
+      "remedial": "规则讲解：be + doing 表正在进行",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "一般将来时构成",
+      "remedial": "规则讲解：will / be going to",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "一般将来时用法",
+      "remedial": "规则讲解：意愿、预测与计划的区别",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "一般过去时构成",
+      "remedial": "规则讲解：规则 -ed 与不规则过去式",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "Yesterday I visit my aunt. 昨天我看望了姑姑。（应为 visited）",
+        "He eated the whole cake. 他把整个蛋糕吃了。（应为 ate）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "一般过去时用法",
+      "remedial": "规则讲解：明确过去时间与叙述链",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "过去进行时",
+      "remedial": "规则讲解：was/were + doing 表过去进行",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.1",
+      "title": "现在完成时构成",
+      "remedial": "规则讲解：have/has + 过去分词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.2",
+      "title": "现在完成时用法",
+      "remedial": "规则讲解：经历、结果与持续（since/for）",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "六.3",
+      "title": "完成时与过去时对比",
+      "remedial": "规则讲解：有无明确过去时间的选择",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.1",
+      "title": "过去完成时",
+      "remedial": "规则讲解：had done 表过去的过去",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "七.2",
+      "title": "将来完成与完成进行",
+      "remedial": "规则讲解：will have done 等扩展时态",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "八.1",
+      "title": "时态呼应",
+      "remedial": "规则讲解：主句过去时从句时态后退",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "He said that he will come. 他说过他会来。（主句过去时，从句应后退为 would）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "八.2",
+      "title": "易错时态小结",
+      "remedial": "规则讲解：时间状语与从句中的时态选择",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "passive": [
+    {
+      "section": "一.1",
+      "title": "被动语态的构成",
+      "remedial": "规则讲解：be + 过去分词及时态变化",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "何时使用被动语态",
+      "remedial": "规则讲解：施动者未知/不必指明/受事优先",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "情态动词的被动",
+      "remedial": "规则讲解：情态动词 + be done",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "by 短语与施动者",
+      "remedial": "规则讲解：by 引出施动者及省略原则",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "易错被动小结",
+      "remedial": "规则讲解：及物性误用与 be done 形错位",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "infinitive": [
+    {
+      "section": "一.1",
+      "title": "不定式的形式与否定",
+      "remedial": "规则讲解：(not) to do；完成/进行形式",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "不定式作宾语",
+      "remedial": "规则讲解：want/decide/hope 等后接 to do",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "We look forward to see you. 我们期待见到你。（to 后应接 seeing）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "不定式作目的状语",
+      "remedial": "规则讲解：in order to / so as to",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "不定式作宾语补足语",
+      "remedial": "规则讲解：ask/tell sb (not) to do",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "It is + 形容词 + to do",
+      "remedial": "规则讲解：形式主语 it 结构",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "疑问词 + 不定式",
+      "remedial": "规则讲解：what to do / how to do it",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "使役与感官动词",
+      "remedial": "规则讲解：make/let sb do 省 to",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "不定式作定语与结果",
+      "remedial": "规则讲解：the first to arrive；only to find",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "五.1",
+      "title": "易错不定式小结",
+      "remedial": "规则讲解：to 后接原形与介词 to 的区分",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "gerund": [
+    {
+      "section": "一.1",
+      "title": "动名词的形式与否定",
+      "remedial": "规则讲解：(not) doing；完成式 having done",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "动名词作动词宾语",
+      "remedial": "规则讲解：enjoy/finish/mind 等后接 doing",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "She enjoys to read. 她喜欢读书。（应接 reading）",
+        "Please avoid to make the same mistake. 请避免犯同样的错误。（应接 making）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "动名词作主语",
+      "remedial": "规则讲解：动名词主语谓语用单数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "介词后接动名词",
+      "remedial": "规则讲解：介词后动词一律 -ing",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "固定结构的动名词",
+      "remedial": "规则讲解：be worth doing / can't help doing",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "动名词与不定式对比",
+      "remedial": "规则讲解：stop/remember/try 两侧意义差别",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "易错动名词小结",
+      "remedial": "规则讲解：动名词与现在分词形近辨析",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "participle": [
+    {
+      "section": "一.1",
+      "title": "现在分词",
+      "remedial": "规则讲解：doing 表主动/进行",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "过去分词",
+      "remedial": "规则讲解：done 表被动/完成",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "分词作定语",
+      "remedial": "规则讲解：单个前置、短语后置的位置",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "分词作状语",
+      "remedial": "规则讲解：分词逻辑主语须与主句主语一致",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "分词作宾补",
+      "remedial": "规则讲解：see/hear/find + 宾语 + 分词",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "独立分词结构",
+      "remedial": "规则讲解：时间/条件分词独立结构",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "易错分词小结",
+      "remedial": "规则讲解：垂悬分词高频错",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "subjunctive": [
+    {
+      "section": "一.1",
+      "title": "wish 后的宾语从句",
+      "remedial": "规则讲解：wish + 过去/过去完成/would",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "I wish I can fly. 但愿我会飞。（应为 could）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "非真实条件句",
+      "remedial": "规则讲解：if 从句与主句的时态后退",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "as if / as though",
+      "remedial": "规则讲解：好像虚拟的时态后退",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "would rather 与 it's time",
+      "remedial": "规则讲解：后接过去时表虚拟",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "建议要求类从句",
+      "remedial": "规则讲解：suggest/insist 后 (should) do",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "易错虚拟小结",
+      "remedial": "规则讲解：真实与虚拟条件的混用",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "含蓄条件与介词短语",
+      "remedial": "规则讲解：without/but for 含蓄虚拟",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "虚拟语气时态混用",
+      "remedial": "规则讲解：混合条件句的时间对应",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "sentence_structure": [
+    {
+      "section": "一.1",
+      "title": "五种基本句型",
+      "remedial": "规则讲解：SV/SVO/SVC/SVOO/SVOC",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "简单句",
+      "remedial": "规则讲解：一个主谓结构的边界",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "并列句与并列连词",
+      "remedial": "规则讲解：and/but/or/so 的连接",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "连写句与残缺句",
+      "remedial": "规则讲解：逗号粘连与缺主语高频错",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "存在句与引导句",
+      "remedial": "规则讲解：there be 与 it 引导",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "平衡结构",
+      "remedial": "规则讲解：并列成分形式对称",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "易错结构小结",
+      "remedial": "规则讲解：句子成分残缺与多余",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "noun_clause": [
+    {
+      "section": "一.1",
+      "title": "主语从句",
+      "remedial": "规则讲解：what/that 引导的主语从句",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "宾语从句与 that 省略",
+      "remedial": "规则讲解：that 可省、语序用陈述序",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "宾语从句的时态呼应",
+      "remedial": "规则讲解：主句过去时从句后退",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "疑问词引导的宾语从句",
+      "remedial": "规则讲解：从句用陈述语序",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "表语从句",
+      "remedial": "规则讲解：be 后 that/what 从句",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "同位语从句",
+      "remedial": "规则讲解：fact/idea 后 that 从句",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "易错名词性从句小结",
+      "remedial": "规则讲解：语序错位与连接词缺失",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "attributive_clause": [
+    {
+      "section": "一.1",
+      "title": "限制性定语从句与关系词",
+      "remedial": "规则讲解：who/which/that 的选择",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "that 与 which 的选择",
+      "remedial": "规则讲解：只能用 that 的情形",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "关系词的省略",
+      "remedial": "规则讲解：作宾语的关系词可省",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "介词 + 关系代词",
+      "remedial": "规则讲解：preposition + whom/which",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "非限制性定语从句",
+      "remedial": "规则讲解：逗号后 which/who，不用 that",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "whose 与 where/when",
+      "remedial": "规则讲解：所有格与关系副词",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "易错定语从句小结",
+      "remedial": "规则讲解：关系词与介词多余/缺失",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "adverbial_clause": [
+    {
+      "section": "一.1",
+      "title": "时间状语从句",
+      "remedial": "规则讲解：when/while/before/after/until",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "时间从句的时态",
+      "remedial": "规则讲解：主将从现（when 从句用现在时）",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "条件状语从句",
+      "remedial": "规则讲解：if/unless 与主将从现",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "让步状语从句",
+      "remedial": "规则讲解：although/though，不与 but 连用",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "原因状语从句",
+      "remedial": "规则讲解：because/since/as 的语用差别",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "结果与目的状语从句",
+      "remedial": "规则讲解：so…that / so that",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "比较状语从句",
+      "remedial": "规则讲解：than/as…as 从句",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "易错状语从句小结",
+      "remedial": "规则讲解：连词双用与逗号规则",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "agreement": [
+    {
+      "section": "一.1",
+      "title": "集体名词作主语",
+      "remedial": "规则讲解：集体名词指整体用单数、指成员用复数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "The team is in good shape. 队伍状态良好。",
+        "The team are arguing about their plans. 队员们正在争论他们的方案。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "主谓一致：就近原则",
+      "remedial": "规则讲解：or/neither…nor 就近取数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "不定代词作主语",
+      "remedial": "规则讲解：each/everybody 用单数谓语",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "数量短语作主语",
+      "remedial": "规则讲解：时间/金钱/距离整体用单数",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "A with B 就远原则",
+      "remedial": "规则讲解：with/as well as 不影响主语数",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "the + 形容词作主语",
+      "remedial": "规则讲解：the young 等复数含义",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.1",
+      "title": "从句与一致",
+      "remedial": "规则讲解：从句主语的数决定从句谓语",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "四.2",
+      "title": "易错一致小结",
+      "remedial": "规则讲解：邻近干扰导致的一致性高频错",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "inversion": [
+    {
+      "section": "一.1",
+      "title": "否定副词置句首的部分倒装",
+      "remedial": "规则讲解：never/hardly/seldom + 助动词提前",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "only + 状语置句首",
+      "remedial": "规则讲解：only 短语前置引发部分倒装",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "there be 结构",
+      "remedial": "规则讲解：存在句的真正主语在 be 后",
+      "cefr": "A2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "so/neither 简答倒装",
+      "remedial": "规则讲解：So do I / Neither do you",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "易错倒装小结",
+      "remedial": "规则讲解：倒装后动词形错位",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "tag_question": [
+    {
+      "section": "一.1",
+      "title": "反意疑问句基本构成",
+      "remedial": "规则讲解：前肯后否、前否后肯",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "You've finished your homework, haven't you? 你完成作业了，是吗？"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "特殊情形",
+      "remedial": "规则讲解：I am…aren't I / let's…shall we",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "易错反问小结",
+      "remedial": "规则讲解：助动词与时态镜像原则",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "ellipsis": [
+    {
+      "section": "一.1",
+      "title": "对话中的省略",
+      "remedial": "规则讲解：答句省略重复成分",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "Would you like some tea? — Yes, please. 省略重复成分"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "不定式的省略",
+      "remedial": "规则讲解：I'd love to 后省动词原形",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "并列句中的省略",
+      "remedial": "规则讲解：并列分句省相同主语/宾语",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "易错省略小结",
+      "remedial": "规则讲解：省略过度导致句意残缺",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "emphasis": [
+    {
+      "section": "一.1",
+      "title": "强调句型 It is…that/who",
+      "remedial": "规则讲解：被强调成分与 that/who 选择",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [
+        "It was Tom who broke the window. 是汤姆打破了窗户。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "do/does/did 强调谓语",
+      "remedial": "规则讲解：助动词 do 表强调",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "前置与对比强调",
+      "remedial": "规则讲解：话题前置与重音对比",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "易错强调小结",
+      "remedial": "规则讲解：强调句与定语从句的区分",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "negation": [
+    {
+      "section": "一.1",
+      "title": "not 与 no",
+      "remedial": "规则讲解：not 修饰动词/形容词，no 修饰名词",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "部分否定与全部否定",
+      "remedial": "规则讲解：not…both/all 表部分否定",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "I don't know both of them. 我并非两个都认识。（部分否定）"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "双重否定表肯定",
+      "remedial": "规则讲解：don't…nothing 属误用",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "neither/nor 呼应",
+      "remedial": "规则讲解：否定句用 either，neither 自带否定",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.1",
+      "title": "否定转移与简答",
+      "remedial": "规则讲解：think/believe 的否定前移",
+      "cefr": "B2",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "三.2",
+      "title": "易错否定小结",
+      "remedial": "规则讲解：多重否定与反问叠加的语义",
+      "cefr": "B1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ],
+  "rhetoric": [
+    {
+      "section": "一.1",
+      "title": "排比",
+      "remedial": "规则讲解：并列结构形式对称增强气势",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [
+        "She came in, sat down, and opened the book. 她进来、坐下、翻开书。"
+      ],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "一.2",
+      "title": "对比",
+      "remedial": "规则讲解：对照结构突出差异",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.1",
+      "title": "修辞问句",
+      "remedial": "规则讲解：无疑而问加强语气",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    },
+    {
+      "section": "二.2",
+      "title": "易错修辞小结",
+      "remedial": "规则讲解：结构失衡破坏排比",
+      "cefr": "C1",
+      "attr": "knowledge_gap",
+      "examples": [],
+      "source_id": "src-sample-en"
+    }
+  ]
+}

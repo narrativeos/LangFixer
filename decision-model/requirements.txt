@@ -1,0 +1,11 @@
+# LangFixer 决策模型（vegaml）依赖
+#
+# 核心服务（server.py）
+fastapi>=0.110
+uvicorn>=0.29
+#
+# 微调工作流（vega_finetune.py 回退模型；vegaml 本体未发布到 PyPI，
+# 需要时从源码安装后取消注释）
+scikit-learn>=1.4
+joblib>=1.4
+# vegaml>=0.1  # 从 https://github.com/vegamllm/vegaml 源码安装

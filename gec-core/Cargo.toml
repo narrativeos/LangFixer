@@ -1,0 +1,23 @@
+[package]
+name = "gec-core"
+description = "LangFixer 通用语法错误检测接口与语言路由"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shared-model = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+yoagent = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+uuid = { workspace = true }

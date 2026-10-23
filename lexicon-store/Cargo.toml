@@ -1,0 +1,16 @@
+[package]
+name = "lexicon-store"
+description = "LangFixer 规模化词表存储：SQLite（WAL + FTS5）承载规则定义与示例对，JSON 仅作导入/导出交换格式"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+fs2 = "0.4"
+chrono = { workspace = true }
+shared-model = { path = "../shared-model" }

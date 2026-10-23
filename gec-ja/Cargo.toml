@@ -1,0 +1,17 @@
+[package]
+name = "gec-ja"
+description = "LangFixer 日文检测器：Sudachi 服务 + Rust 侧规则，含离线兜底"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gec-core = { workspace = true }
+shared-model = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

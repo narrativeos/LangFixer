@@ -1,0 +1,19 @@
+[package]
+name = "gec-en"
+description = "LangFixer 英文检测器：HanLP 服务 NLP 分析 + Rust 侧 GEC 规则，含离线兜底"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gec-core = { workspace = true }
+shared-model = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }

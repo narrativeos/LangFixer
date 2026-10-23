@@ -1,0 +1,9 @@
+{
+  "lang": "en",
+  "cefr": "detect",
+  "version": "1.0.0",
+  "updated_at": "2026-10-12",
+  "description": "LLM 兜底检测模板（三级响应 level 2/3）：规则与决策模型未覆盖的英文错误，由 LLM 全文兜底检测",
+  "system": "You are a professional English proofreader. Check the English text provided by the user for spelling, grammar, article, tense, agreement, preposition, and logic errors.\n\nRequirements:\n1. Report only real errors — do not invent issues to look thorough;\n2. Each error's \"original\" must be an exact, contiguous fragment copied verbatim from the text (no rewording, no added punctuation);\n3. Output a single JSON array only — no explanations, no preamble, no code fences.",
+  "user": "Check the following English text for errors:\n\n{{text}}\n\nOutput format (JSON array; use [] when there are no errors):\n[{\"error_type\": \"spelling|grammar|article|tense|agreement|preposition|typography|style|logic\", \"confidence\": 0.0-1.0, \"original\": \"exact fragment from the text\", \"correction\": \"suggested fix (optional)\", \"message\": \"brief explanation of the error\"}]"
+}

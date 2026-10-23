@@ -1,0 +1,38 @@
+{
+  "categories": [
+    { "id": "grammar", "name": "语法" },
+    { "id": "style", "name": "语体/风格" }
+  ],
+  "rules": [
+    {
+      "id": "JA_PARTICLE",
+      "category": "grammar",
+      "priority": 10,
+      "enabled": true,
+      "description": "助词缺失（名词直接接动词）",
+      "examples": [
+        { "wrong": "本読む", "right": "本を読む" }
+      ]
+    },
+    {
+      "id": "JA_HONORIFIC",
+      "category": "style",
+      "priority": 8,
+      "enabled": true,
+      "description": "敬语混用（です/ます 与 だ/である）",
+      "examples": [
+        { "wrong": "これは本です。私は学生だ。", "right": "これは本です。私は学生です。" }
+      ]
+    }
+  ],
+  "noun_verb_pairs": [
+    ["本", "読む"],
+    ["水", "飲む"],
+    ["コーヒー", "飲む"],
+    ["音楽", "聞く"],
+    ["手紙", "書く"],
+    ["写真", "撮る"],
+    ["問題", "解く"],
+    ["車", "買う"]
+  ]
+}

@@ -1,0 +1,174 @@
+{
+  "nodes": [
+    {
+      "id": "input",
+      "name": "input",
+      "type": "inputNode"
+    },
+    {
+      "id": "table",
+      "name": "ja_gec_attribution_table",
+      "type": "decisionTableNode",
+      "content": {
+        "inputs": [
+          {
+            "id": "errorType",
+            "name": "errorType",
+            "field": "errorType"
+          },
+          {
+            "id": "confidence",
+            "name": "confidence",
+            "field": "confidence"
+          },
+          {
+            "id": "history",
+            "name": "studentHistoryCount",
+            "field": "studentHistoryCount"
+          },
+          {
+            "id": "isNovice",
+            "name": "isNovice",
+            "field": "isNovice"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "attribution",
+            "name": "attribution",
+            "field": "attribution"
+          },
+          {
+            "id": "weinerLocus",
+            "name": "weinerLocus",
+            "field": "weiner.locus"
+          },
+          {
+            "id": "weinerStability",
+            "name": "weinerStability",
+            "field": "weiner.stability"
+          },
+          {
+            "id": "weinerControllability",
+            "name": "weinerControllability",
+            "field": "weiner.controllability"
+          },
+          {
+            "id": "remedial",
+            "name": "remedial",
+            "field": "remedial[]"
+          },
+          {
+            "id": "matchedRule",
+            "name": "matchedRule",
+            "field": "matchedRule"
+          },
+          {
+            "id": "cefrLevel",
+            "name": "cefrLevel",
+            "field": "cefrLevel"
+          }
+        ],
+        "rules": [
+          {
+            "_id": "particle_novice",
+            "errorType": "== \"particle\"",
+            "isNovice": "== true",
+            "attribution": "\"rule_missing\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：は/を/に/で 助词用法\"",
+            "matchedRule": "\"particle_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "particle_old_hand",
+            "errorType": "== \"particle\"",
+            "isNovice": "== false",
+            "attribution": "\"habit_solidified\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：助词用法回顾\"",
+            "matchedRule": "\"particle_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "conjugation_novice",
+            "errorType": "== \"conjugation\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：动词五段/一段变形\"",
+            "matchedRule": "\"conjugation_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "conjugation_old_hand",
+            "errorType": "== \"conjugation\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：变形规则回顾\"",
+            "matchedRule": "\"conjugation_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "honorific_any",
+            "errorType": "== \"honorific\"",
+            "attribution": "\"collocation_weak\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"搭配专项训练：敬语体系一致性\"",
+            "matchedRule": "\"honorific_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "word_order_any",
+            "errorType": "== \"word_order\"",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：日语 SOV 语序\"",
+            "matchedRule": "\"word_order_any\"",
+            "cefrLevel": "\"B1\""
+          },
+          {
+            "_id": "default_knowledge_gap",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "matchedRule": "\"default_knowledge_gap\"",
+            "cefrLevel": "\"A1\""
+          }
+        ],
+        "hitPolicy": "first"
+      }
+    },
+    {
+      "id": "output",
+      "name": "output",
+      "type": "outputNode"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceId": "input",
+      "targetId": "table"
+    },
+    {
+      "id": "e2",
+      "sourceId": "table",
+      "targetId": "output"
+    }
+  ]
+}

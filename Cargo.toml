@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared-model",
+    "gec-core",
+    "gec-zh",
+    "gec-en",
+    "gec-ja",
+    "attribution-engine",
+    "langfixer-llm",
+    "api-server",
+    "desktop-app",
+    "lexicon-store",
+    "document-parse",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/narrativeos/LangFixer"
+
+[workspace.dependencies]
+# 内部 crate
+shared-model = { path = "shared-model" }
+gec-core = { path = "gec-core" }
+gec-zh = { path = "gec-zh" }
+gec-en = { path = "gec-en" }
+gec-ja = { path = "gec-ja" }
+attribution-engine = { path = "attribution-engine" }
+document-parse = { path = "document-parse" }
+langfixer-llm = { path = "langfixer-llm" }
+lexicon-store = { path = "lexicon-store" }
+
+# 第三方
+serde = { version = "1", features = ["derive"] }
+# preserve_order：JSON 对象保持文件内键序（IndexMap 而非 BTreeMap）——
+# 词表写回（sync_rules_to_file 等）重序列化时不重排顶层键
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+axum = "0.7"
+http = "1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+zen-engine = "2.1.2"
+zip = { version = "8", features = ["deflate-flate2"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+async-trait = "0.1"
+# Agent 循环（自进化执行层）：loop 库，工具过 gate（ToolMiddleware），事件流
+yoagent = "0.25"
+regex = "1"
+once_cell = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }

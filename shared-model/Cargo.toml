@@ -1,0 +1,12 @@
+[package]
+name = "shared-model"
+description = "LangFixer 统一数据模型：错误结构、归因请求/结果、用户画像、决策表元数据"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }

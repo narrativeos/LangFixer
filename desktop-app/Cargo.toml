@@ -1,0 +1,36 @@
+[package]
+name = "desktop-app"
+description = "LangFixer Tauri 桌面端（离线模式：本地检测 + 本地决策表 + 本地用户档案）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+shared-model = { workspace = true }
+gec-core = { workspace = true }
+gec-zh = { workspace = true }
+gec-en = { workspace = true }
+gec-ja = { workspace = true }
+attribution-engine = { workspace = true }
+document-parse = { workspace = true }
+langfixer-llm = { workspace = true }
+lexicon-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+# 仅测试用：knowledge_recall 回归测试的本地 mock 嵌入服务
+axum = { workspace = true }

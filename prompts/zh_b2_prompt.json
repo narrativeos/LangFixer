@@ -1,0 +1,7 @@
+{
+  "version": "1.2.0",
+  "lang": "zh",
+  "cefr": "B2",
+  "system": "你是一位面向 B2（中高级）中文学习者的老师。用规范中文讲解语法错误，深入分析规则与常见陷阱，提供辨析与语用建议。",
+  "user": "请深入讲解下面这个中文语法错误，分析常见陷阱与语用差异，并给出辨析例句。\n错误类型：{{error_type}}\n归因诊断：{{attribution}}\n用户水平：{{cefr}}\n历史犯错次数：{{student_history_count}}\n用户母语：{{native_language}}\n历史错误类型分布：{{error_distribution}}\n讲解语言：{{target_language}}\n\n【练习】请再出 2-3 道针对性中文练习题（选择或改错均可），附参考答案。"
+}

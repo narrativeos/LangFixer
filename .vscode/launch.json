@@ -1,0 +1,55 @@
+{
+  // LangFixer 调试配置
+  // Rust 侧依赖 CodeLLDB 扩展（vadimcn.vscode-codelldb，见 extensions.json）；
+  // web-ui 用 VS Code 内置 node 调试器直接 launch Vite（断点打在 vite 配置 / 中间件）。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "api-server (Rust)",
+      "program": "${workspaceFolder}/target/debug/api-server",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PORT": "4801",
+        "GEC_TABLES_DIR": "decision-tables",
+        "GEC_LEXICONS_DIR": "lexicons",
+        "RUST_LOG": "info"
+      },
+      "preLaunchTask": "cargo: build api-server"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "web-ui (Vite dev server)",
+      "cwd": "${workspaceFolder}/web-ui",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["${workspaceFolder}/web-ui/node_modules/vite/bin/vite.js"],
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "desktop-app (Tauri)",
+      "program": "${workspaceFolder}/target/debug/LangFixer Desktop.app/Contents/MacOS/desktop-app",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GEC_TABLES_DIR": "decision-tables",
+        "GEC_LEXICONS_DIR": "lexicons",
+        "GEC_OFFLINE": "1",
+        "RUST_LOG": "info"
+      },
+      // 窗口加载 devUrl（Vite :4805）；preLaunch 构建 → 组装 .app（Dock 名 LangFixer Desktop + 图标）→ 确保 Vite 在跑
+      "preLaunchTask": "desktop-app: prelaunch (build + app bundle + vite)"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "LangFixer (API + 前端)",
+      "configurations": ["api-server (Rust)", "web-ui (Vite dev server)"]
+    }
+  ]
+}

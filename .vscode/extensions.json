@@ -1,0 +1,5 @@
+{
+  // Rust 调试（launch.json 中 type: lldb）依赖 CodeLLDB 扩展；
+  // web-ui 的 node attach 使用 VS Code 内置 js-debug，无需额外扩展。
+  "recommendations": ["vadimcn.vscode-codelldb"]
+}

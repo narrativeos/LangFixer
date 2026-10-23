@@ -1,0 +1,19 @@
+[package]
+name = "langfixer-llm"
+description = "LangFixer LLM 扩展：OpenAI 兼容客户端（流式 SSE）+ 外置提示词模板 + 个性化讲解生成"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }

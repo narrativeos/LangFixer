@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn>=0.29
+scikit-learn>=1.4
+joblib>=1.4
+# prepare_l3_pool.py（CEC 混合池构建：字级 diff + 繁简判定）
+pypinyin>=0.50
+opencc-python-reimplemented>=0.1.3
