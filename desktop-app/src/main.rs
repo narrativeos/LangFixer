@@ -7,6 +7,7 @@
 mod agent_tools;
 mod commands;
 mod knowledge_recall;
+mod media;
 mod settings;
 mod window_state;
 
@@ -99,7 +100,17 @@ fn main() {
             commands::round_confirm,
             commands::round_reject,
             commands::round_execute,
-            commands::round_report
+            commands::round_report,
+            // 载体（图片 / PDF / Word）审校：链路由 `media-flow` 提供，桌面端注入本地检测级联
+            media::media_probes,
+            media::media_inspect,
+            media::media_create_job,
+            media::media_jobs,
+            media::media_job,
+            media::media_preview,
+            media::media_apply,
+            media::media_report,
+            media::media_report_file
         ])
         .setup(|app| {
             // 窗口显示前恢复上次的窗口状态（位置 / 大小 / 最大化）

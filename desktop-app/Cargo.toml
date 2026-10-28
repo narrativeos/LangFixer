@@ -18,10 +18,13 @@ gec-en = { workspace = true }
 gec-ja = { workspace = true }
 attribution-engine = { workspace = true }
 document-parse = { workspace = true }
+media-core = { workspace = true }
+media-flow = { workspace = true }
 langfixer-llm = { workspace = true }
 lexicon-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }

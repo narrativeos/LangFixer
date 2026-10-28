@@ -509,6 +509,9 @@ pub struct Core {
     pub learned_knowledge: Arc<lexicon_store::KnowledgeStore>,
     /// 嵌入引擎（未配置时为 None；`RwLock`：设置界面变更嵌入配置时热更新）
     pub embedding_engine: RwLock<Option<Arc<gec_core::EmbeddingEngine>>>,
+    /// 载体（图片 / PDF / Word）审校 job 存储（`media-flow`：内存索引 + 磁盘 job 目录，
+    /// 原件副本隔离；与 api-server 同一实现，两端行为不分叉）
+    pub media_jobs: Arc<RwLock<media_flow::MediaJobStore>>,
     /// L3 飞轮数据目录（三期闭环：确认样本 jsonl；`GEC_L3_DATA_DIR` > 默认 `feature-model/l3_data`）
     pub l3_data: PathBuf,
     /// 反馈日志（SQLite：检测结果采纳/放弃留痕 + 规则反馈统计；反思流程数据基础）
@@ -531,6 +534,14 @@ impl Core {
                 .unwrap_or_else(|_| "langfixer-settings.json".to_string()),
         );
         let settings = AppSettings::load(&settings_path);
+
+        // 载体（图片 / PDF / Word）job 根目录：设置 media.workdir > 相对当前目录的 media-jobs/
+        // （与 api-server 同口径；job 目录内是原件副本，**永不回写原件**）
+        let media_root = if settings.media.workdir.is_empty() {
+            PathBuf::from("media-jobs")
+        } else {
+            PathBuf::from(&settings.media.workdir)
+        };
 
         // 检测器：按 `GEC_ENGINE_{LANG}` 环境变量组合引擎
         // （rule 默认 / decision 决策模型层 / statistical / llm 预留）
@@ -798,6 +809,7 @@ impl Core {
             lexicon_hash: RwLock::new(lexicon_hash),
             learned_knowledge,
             embedding_engine: RwLock::new(embedding_engine),
+            media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             l3_data: std::env::var("GEC_L3_DATA_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| gec_core::default_l3_data_dir()),
@@ -3463,6 +3475,8 @@ pub struct SettingsResponse {
     pub llm_model_id: String,
     /// 知识层总开关（知识向量召回 + 知识库富化 + 数据驱动归点；默认开）
     pub knowledge_enabled: bool,
+    /// 载体（图片 / PDF / Word）审校设置（与 api-server 同一份定义：`media_flow::settings`）
+    pub media: media_flow::settings::MediaSettings,
     /// 可用纠错模型预设列表（「纠错模型」选择器；仅含 enabled 条目）
     pub models: Vec<ModelView>,
 }
@@ -3504,6 +3518,7 @@ fn to_settings_response(s: &AppSettings, registry: &ModelRegistry) -> SettingsRe
         },
         llm_model_id: s.llm_model_id.clone(),
         knowledge_enabled: s.knowledge_enabled,
+        media: s.media.clone(),
         models: registry
             .enabled()
             .iter()
@@ -3540,6 +3555,26 @@ pub struct UpdateSettingsRequest {
     pub embedding: Option<UpdateEmbeddingRequest>,
     /// 知识层总开关（测评消融臂 `knowledge: false` 用；默认开）
     pub knowledge_enabled: Option<bool>,
+    /// 载体（图片 / PDF / Word）审校设置（部分更新；与 api-server 同构）
+    pub media: Option<UpdateMediaRequest>,
+}
+
+/// 载体审校设置更新（字段均可缺省 = 保持不变）
+///
+/// 与 api-server 的 `UpdateMediaRequest` 同构：设置面板只暴露这几项，
+/// CLI 路径 / 超时 / 压缩参数留在设置文件与环境变量里
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UpdateMediaRequest {
+    pub enabled: Option<bool>,
+    pub apply_mode: Option<String>,
+    pub workdir: Option<String>,
+    pub use_structure_layer: Option<bool>,
+    pub use_vision: Option<bool>,
+    pub use_ocr: Option<bool>,
+    pub vision_model: Option<String>,
+    pub level: Option<u8>,
+    pub force_llm: Option<bool>,
+    pub min_confidence: Option<f64>,
 }
 
 /// LLM 参数更新（字段均可缺省 = 保持不变）
@@ -3663,6 +3698,49 @@ pub fn update_settings(
     }
     if let Some(v) = body.knowledge_enabled {
         next.knowledge_enabled = v;
+    }
+    if let Some(media) = &body.media {
+        // 载体设置即时生效（job 每次读当前设置）；但 `workdir` 只影响**新** job 根目录之外
+        // 的目录解析——job 存储是在启动时按 `media.workdir` 建的，改目录要重启才换地方
+        if let Some(v) = media.enabled {
+            next.media.enabled = v;
+        }
+        if let Some(v) = &media.apply_mode {
+            let v = v.trim().to_string();
+            if !matches!(v.as_str(), "overlay" | "comment" | "in_place" | "list_only") {
+                return Err(format!(
+                    "media.apply_mode 无效: {v}（应为 overlay / comment / in_place / list_only）"
+                ));
+            }
+            next.media.apply_mode = v;
+        }
+        if let Some(v) = &media.workdir {
+            next.media.workdir = v.trim().to_string();
+        }
+        if let Some(v) = media.use_structure_layer {
+            next.media.use_structure_layer = v;
+        }
+        if let Some(v) = media.use_vision {
+            next.media.use_vision = v;
+        }
+        if let Some(v) = media.use_ocr {
+            next.media.use_ocr = v;
+        }
+        if let Some(v) = &media.vision_model {
+            next.media.vision_model = v.trim().to_string();
+        }
+        if let Some(v) = media.level {
+            if !(1..=3).contains(&v) {
+                return Err("media.level 应为 1-3".to_string());
+            }
+            next.media.level = v;
+        }
+        if let Some(v) = media.force_llm {
+            next.media.force_llm = v;
+        }
+        if let Some(v) = media.min_confidence {
+            next.media.min_confidence = v.clamp(0.0, 1.0);
+        }
     }
     core.apply_settings(next.clone());
     let registry = core.model_registry.read().unwrap();

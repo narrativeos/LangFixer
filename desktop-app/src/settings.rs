@@ -11,7 +11,10 @@ use std::path::Path;
 
 use gec_core::DecisionConfig;
 use gec_zh::DetectorConfig as ZhConfig;
+// 载体（图片 / PDF / Word）设置与 api-server 同一份定义（`media-flow`），
+// 否则两端会漂出不同的默认值与开关名
 use langfixer_llm::LlmConfig;
+pub use media_flow::settings::MediaSettings;
 use serde::{Deserialize, Serialize};
 
 /// 决策表目录默认值（与 `GEC_TABLES_DIR` 缺省一致）
@@ -69,6 +72,10 @@ pub struct AppSettings {
     /// 数据驱动归点全部旁路——测评消融臂 `knowledge: false` 即切此开关。
     #[serde(default = "default_true")]
     pub knowledge_enabled: bool,
+    /// 多模态审校（载体）设置。**默认关闭**：未显式开启时不影响既有文本主链路，
+    /// 且 `probes` 会明确告诉 UI「为什么不能开工」
+    #[serde(default)]
+    pub media: MediaSettings,
 }
 
 fn default_true() -> bool {
@@ -117,6 +124,7 @@ impl AppSettings {
             knowledge_enabled: std::env::var("GEC_KNOWLEDGE_ENABLED")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
+            media: MediaSettings::from_env(),
         }
     }
 
@@ -197,6 +205,7 @@ mod tests {
             embedding: gec_core::EmbeddingConfig::default(),
             llm_model_id: "generic".into(),
             knowledge_enabled: true,
+            media: MediaSettings::default(),
         };
         s.save_to(&path).unwrap();
         let loaded = AppSettings::load(&path);
@@ -244,6 +253,40 @@ mod tests {
         assert_eq!(s.lexicons_dir, DEFAULT_LEXICONS_DIR);
         // 知识层开关为后加字段，旧文件缺省时取默认（开）
         assert!(s.knowledge_enabled);
+        // 载体设置同样是后加字段：旧文件缺省必须是「关」，不得悄悄开启子进程与视觉档
+        assert!(!s.media.enabled);
+        assert_eq!(s.media.apply_mode, "overlay");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn media_defaults_are_off_and_overlay() {
+        // 与 api-server 的 `media_defaults_are_off_and_overlay` 同一口径：
+        // 两端共用 `media_flow::settings`，默认值必须一致
+        let m = MediaSettings::from_env();
+        assert!(
+            !m.enabled,
+            "载体审校默认关闭：未显式开启不得改变既有文本主链路行为"
+        );
+        assert_eq!(
+            m.apply_mode, "overlay",
+            "默认回写模式必须是 Overlay（决策 ①）"
+        );
+        assert!(m.use_structure_layer, "A 档（结构层）默认开——它是真值来源");
+        assert!(!m.use_vision && !m.use_ocr, "B/C 档默认关");
+        assert_eq!(m.level, 3, "检测级别默认 3：默认火力全开");
+        assert!(m.force_llm);
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("GEC_MEDIA_ENABLED", "1") };
+        unsafe { std::env::set_var("GEC_MEDIA_VISION", "1") };
+        let on = MediaSettings::from_env();
+        unsafe {
+            std::env::remove_var("GEC_MEDIA_ENABLED");
+            std::env::remove_var("GEC_MEDIA_VISION");
+        }
+        assert!(
+            on.enabled && on.use_vision,
+            "环境变量要能开启（桌面端无设置界面时的入口）"
+        );
     }
 }
