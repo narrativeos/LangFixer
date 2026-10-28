@@ -64,6 +64,16 @@ const l3Enabled = ref(true)
 const embeddingEndpoint = ref('')
 const embeddingModel = ref('')
 const embeddingApiKey = ref('')
+/** 载体（图片 / PDF / Word）审校设置（两端同一份定义：`media-flow`） */
+const mediaEnabled = ref(false)
+const mediaUseStructure = ref(true)
+const mediaUseVision = ref(false)
+const mediaUseOcr = ref(false)
+const mediaLevel = ref(3)
+const mediaForceLlm = ref(true)
+const mediaApplyMode = ref('overlay')
+const mediaVisionModel = ref('')
+const mediaWorkdir = ref('')
 /** LLM 请求模式（固定默认，只读展示） */
 const llmModes = ref<AppSettings['llm_modes'] | null>(null)
 /** 当前 LLM 是否已配置（api_key 非空） */
@@ -110,6 +120,17 @@ async function load() {
       embeddingModel.value = s.embedding.model
       embeddingApiKey.value = s.embedding.api_key
     }
+    if (s.media) {
+      mediaEnabled.value = s.media.enabled
+      mediaUseStructure.value = s.media.use_structure_layer
+      mediaUseVision.value = s.media.use_vision
+      mediaUseOcr.value = s.media.use_ocr
+      mediaLevel.value = s.media.level
+      mediaForceLlm.value = s.media.force_llm
+      mediaApplyMode.value = s.media.apply_mode
+      mediaVisionModel.value = s.media.vision_model
+      mediaWorkdir.value = s.media.workdir
+    }
     // 以服务端真实状态为准：同步全局 store（检测页 L2 状态）
     store.decisionEnabled = !!s.decision?.enabled
     await nextTick()
@@ -153,7 +174,17 @@ function formIsDirty(): boolean {
         l3Enabled.value !== s.l3.enabled)) ||
     embeddingEndpoint.value.trim() !== (s.embedding?.endpoint ?? '') ||
     embeddingApiKey.value !== (s.embedding?.api_key ?? '') ||
-    embeddingModel.value.trim() !== (s.embedding?.model ?? '')
+    embeddingModel.value.trim() !== (s.embedding?.model ?? '') ||
+    (s.media !== undefined &&
+      (mediaEnabled.value !== s.media.enabled ||
+        mediaUseStructure.value !== s.media.use_structure_layer ||
+        mediaUseVision.value !== s.media.use_vision ||
+        mediaUseOcr.value !== s.media.use_ocr ||
+        mediaLevel.value !== s.media.level ||
+        mediaForceLlm.value !== s.media.force_llm ||
+        mediaApplyMode.value !== s.media.apply_mode ||
+        mediaVisionModel.value.trim() !== s.media.vision_model ||
+        mediaWorkdir.value.trim() !== s.media.workdir))
   )
 }
 
@@ -194,6 +225,17 @@ async function save(): Promise<boolean> {
         endpoint: embeddingEndpoint.value.trim(),
         api_key: embeddingApiKey.value,
         model: embeddingModel.value.trim(),
+      },
+      media: {
+        enabled: mediaEnabled.value,
+        apply_mode: mediaApplyMode.value,
+        workdir: mediaWorkdir.value.trim(),
+        use_structure_layer: mediaUseStructure.value,
+        use_vision: mediaUseVision.value,
+        use_ocr: mediaUseOcr.value,
+        vision_model: mediaVisionModel.value.trim(),
+        level: mediaLevel.value,
+        force_llm: mediaForceLlm.value,
       },
     })
     savedSnapshot.value = s
@@ -670,6 +712,67 @@ async function runTest(target: SettingsTestTarget) {
       <div class="hint">
         配置后，检测流水线 ②.5 层将使用嵌入向量从学习知识库中召回相似错误模式（top-3，余弦相似度 ≥ 0.7）。
         服务不可用时向量召回静默跳过，不影响其他检测层。
+      </div>
+    </el-card>
+
+    <el-card shadow="never" id="set-media" class="settings-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">载体审校（图片 / PDF / Word）</span>
+          <el-tag :type="mediaEnabled ? 'success' : 'info'" size="small">
+            {{ mediaEnabled ? '已开启' : '未开启' }}
+          </el-tag>
+          <span class="sub">副本隔离：只改副本，**永不回写原件**（Web / 桌面同一份设置）</span>
+        </div>
+      </template>
+      <el-form label-width="110px">
+        <el-form-item label="总开关">
+          <el-switch v-model="mediaEnabled" active-text="开启载体审校" />
+        </el-form-item>
+        <el-form-item label="抽取档位">
+          <el-checkbox v-model="mediaUseStructure">A 档 · 结构层（文字层 / docx run，真值）</el-checkbox>
+          <el-checkbox v-model="mediaUseVision">B 档 · 多模态视觉</el-checkbox>
+          <el-checkbox v-model="mediaUseOcr">C 档 · 本地 OCR</el-checkbox>
+        </el-form-item>
+        <el-form-item label="视觉模型">
+          <el-input
+            v-model="mediaVisionModel"
+            placeholder="留空 = 复用 LLM 参数里的模型"
+            style="width: 420px"
+          />
+        </el-form-item>
+        <el-form-item label="响应级别">
+          <el-select v-model="mediaLevel" style="width: 200px">
+            <el-option :value="1" label="1 规则" />
+            <el-option :value="2" label="2 + 决策模型" />
+            <el-option :value="3" label="3 + LLM 兜底" />
+          </el-select>
+          <el-switch
+            v-model="mediaForceLlm"
+            active-text="强制 LLM 兜底"
+            style="margin-left: 16px"
+          />
+        </el-form-item>
+        <el-form-item label="默认回写">
+          <el-select v-model="mediaApplyMode" style="width: 240px">
+            <el-option value="overlay" label="Overlay 叠加标注（默认）" />
+            <el-option value="comment" label="批注" />
+            <el-option value="in_place" label="改原文（仅带文字层的载体）" />
+            <el-option value="list_only" label="只出清单" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="job 目录">
+          <el-input
+            v-model="mediaWorkdir"
+            placeholder="留空 = 当前目录下 media-jobs/（改目录需重启）"
+            style="width: 420px"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="hint">
+        未开启时载体面板不会静默开工：探测卡片会列出缺什么（协作工具 CLI / 视觉档凭据）。
+        三家 CLI 路径、视觉上传压缩与超时参数留在设置文件与环境变量里
+        （<code>PHOTOCRAFT_CLI</code> / <code>GEC_MEDIA_VISION_MAX_EDGE</code> …）。
       </div>
     </el-card>
 

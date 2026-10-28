@@ -749,6 +749,32 @@ export interface AppSettings {
   l3?: L3Settings
   /** 嵌入引擎配置（向量召回用；未配置时召回静默禁用） */
   embedding: EmbeddingConfig
+  /** 载体（图片 / PDF / Word）审校设置（两端同一份定义：`media-flow`） */
+  media?: MediaSettingsView
+}
+
+/** 载体审校设置（`media_flow::settings::MediaSettings` 的设置面子集） */
+export interface MediaSettingsView {
+  /** 总开关（默认关闭：未开启时载体面板给出「为什么不能开工」） */
+  enabled: boolean
+  /** 默认回写模式：overlay（决策 ①）/ comment / in_place / list_only */
+  apply_mode: string
+  /** job 工作目录根（空 = 相对当前目录的 media-jobs/；改目录需重启） */
+  workdir: string
+  /** A 档：读结构层（文字层 / 文本层 / docx run）——真值，默认开 */
+  use_structure_layer: boolean
+  /** B 档：多模态 LLM 视觉抽取（默认关） */
+  use_vision: boolean
+  /** C 档：本地 OCR（默认关；PdfCraft 内置 OCR 仅英文） */
+  use_ocr: boolean
+  /** 视觉档模型（空 = 复用 `llm.model`） */
+  vision_model: string
+  /** 检测响应级别（语义同 `/gec/detect` 的 level；默认 3 = 火力全开） */
+  level: number
+  /** 强制走 LLM 层（默认 true，与 level 3 同调） */
+  force_llm: boolean
+  /** 视觉 / OCR 抽取的最低置信度（低于此值只进列表不画框） */
+  min_confidence: number
 }
 
 /** PUT /gec/settings 请求体（部分更新：仅提供要修改的字段） */
@@ -785,6 +811,19 @@ export interface UpdateSettingsBody {
     api_key?: string
     model?: string
     timeout_secs?: number
+  }
+  /** 载体（图片 / PDF / Word）审校设置（部分更新；两端同构） */
+  media?: {
+    enabled?: boolean
+    apply_mode?: string
+    workdir?: string
+    use_structure_layer?: boolean
+    use_vision?: boolean
+    use_ocr?: boolean
+    vision_model?: string
+    level?: number
+    force_llm?: boolean
+    min_confidence?: number
   }
 }
 
@@ -1403,5 +1442,202 @@ export interface RoundReport {
     llm_reach?: number | null
     layers?: unknown[]
   } | null
+}
+
+// ── 载体（图片）审校：MULTIMODAL.md §7 面板 / §8 设置 ──────────────────────
+// 字段名与后端 serde 逐字对齐（`api-server/src/media_jobs.rs` + `media-core/src/model.rs`），
+// 改一边必须改另一边——`lib/media.test.ts` 用真实 annotations.json 的形状做断言。
+
+/** job 阶段（`MediaStage`，snake_case） */
+export type MediaStage =
+  | 'queued'
+  | 'copying'
+  | 'inspecting'
+  | 'extracting'
+  | 'detecting'
+  | 'remapping'
+  | 'ready'
+  | 'applying'
+  | 'applied'
+  | 'failed'
+
+/** 载体大类（`CarrierKind`） */
+export type MediaCarrierKind = 'image' | 'pdf' | 'docx' | 'other'
+
+/** 回写模式（`ApplyMode`；默认 overlay = 不改原文） */
+export type MediaApplyMode = 'overlay' | 'comment' | 'in_place' | 'list_only'
+
+/** 文本来源档（`ExtractSource`） */
+export type MediaExtractSource = 'structure' | 'vision' | 'ocr'
+
+/**
+ * 落点（`media_core::Region`）：**内部标签** `region`，snake_case。
+ * `unlocated` 绝不能画框（§7 交互约束），只进「未能定位」列表。
+ */
+export type MediaRegion =
+  | { region: 'image_box'; x: number; y: number; w: number; h: number }
+  | {
+      region: 'layer_ref'
+      layer_id: number
+      kind: string
+      bounds?: [number, number, number, number]
+    }
+  | { region: 'page_box'; page: number; x: number; y: number; w: number; h: number }
+  | { region: 'run_ref'; part: string; run_range: [number, number] }
+  | { region: 'unlocated' }
+
+/** 标注样式（`MarkStyle`） */
+export interface MediaMarkStyle {
+  kind: string
+  color: string
+}
+
+/** 一条回映射后的标注（`Annotation`）：`error` 与文本检测同构 → 归因 / 讲解 / 反馈全接得上 */
+export interface MediaAnnotation {
+  id: number
+  error: ErrorItem
+  unit_id: number
+  /** 标注在所属单元内的字节区间 */
+  local_span: [number, number]
+  region: MediaRegion
+  apply: MediaApplyMode
+  style: MediaMarkStyle
+  /** 定位告警：UI 必须显示，不允许把定位失败伪装成定位成功 */
+  locate_warning?: string
+}
+
+/** 抽取到的文本单元（`TextUnit`） */
+export interface MediaTextUnit {
+  id: number
+  text: string
+  source: MediaExtractSource
+  region: MediaRegion
+  /** 抽取置信度（structure 恒 1.0；vision 由模型给出） */
+  confidence: number
+  /** 能否无损回写（扁平位图 = false → UI 不该出现「改原文」） */
+  editable: boolean
+  page: number | null
+}
+
+/** 拼接产物（`Stitched`）：检测输入 + offset 反查表 */
+export interface MediaStitched {
+  text: string
+  unit_ranges: [number, [number, number]][]
+  separator: string
+}
+
+/** 载体探测结果（`CarrierInfo`） */
+export interface MediaCarrierInfo {
+  kind: MediaCarrierKind
+  width: number | null
+  height: number | null
+  pages: number | null
+  /** 探测到的文本单元数（0 = 无文字层 → 只能走视觉档） */
+  text_units: number
+  editable: boolean
+  warnings: string[]
+}
+
+/** 产物路径（`Artifacts`） */
+export interface MediaArtifacts {
+  source: string
+  editable: string | null
+  preview: string | null
+  annotations_json: string
+}
+
+/** 一个载体审校 job（`MediaJob`） */
+export interface MediaJob {
+  id: string
+  filename: string
+  kind: MediaCarrierKind
+  stage: MediaStage
+  error?: string
+  carrier?: MediaCarrierInfo
+  units: MediaTextUnit[]
+  extraction: string
+  extraction_model?: string
+  stitched?: MediaStitched
+  annotations: MediaAnnotation[]
+  layers: LayerReport[]
+  apply_mode: MediaApplyMode
+  artifacts: MediaArtifacts
+  warnings: string[]
+  created_at: string
+  updated_at: string
+}
+
+/** POST /gec/media/probes 响应（各家工具 + 视觉档就绪情况） */
+export interface MediaProbes {
+  /** 多模态总开关（`media.enabled`）：false = 探测可用但建 job 会 503 */
+  enabled?: boolean
+  photocraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
+  pdfcraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
+  wordcraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
+  vision?: {
+    app: string
+    enabled: boolean
+    ready: boolean
+    model?: string
+    template?: string
+    min_confidence?: number
+    /** 上传前压缩口径（`GEC_MEDIA_VISION_MAX_EDGE` / `_MAX_BYTES` / `_JPEG_QUALITY`） */
+    max_edge?: number
+    max_bytes?: number
+    jpeg_quality?: number
+    degraded_reason?: string
+  }
+  ocr?: { app: string; enabled: boolean; ready: boolean; degraded_reason?: string }
+}
+
+/** POST /gec/media/inspect 响应 */
+export interface MediaInspectResult {
+  kind: MediaCarrierKind
+  carrier: MediaCarrierInfo
+  probe?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
+}
+
+/** 导出正误表的人工改写（`RowOverride`） */
+export interface MediaRowOverride {
+  annotation_id: number
+  job_id?: string
+  original?: string
+  suggestion?: string
+  category?: string
+  /** `"计"` / `"计1"` / `"不计"`（宽松解析） */
+  counted?: string
+  note?: string
+  checked?: boolean
+}
+
+/** POST /gec/media/report 请求体 */
+export interface MediaReportBody {
+  job_ids?: string[]
+  accepted_ids?: number[]
+  rejected_ids?: number[]
+  overrides?: MediaRowOverride[]
+  docx?: boolean
+  title?: string
+}
+
+/** POST /gec/media/report 响应 */
+export interface MediaReportResult {
+  report_id: string
+  dir: string
+  candidates: number
+  exported: number
+  dropped_ids: number[]
+  meta: {
+    title: string
+    lang: string
+    generated_at: string
+    carriers: string[]
+    extractions: string[]
+    models: string[]
+    note: string
+  }
+  rows: Record<string, unknown>[]
+  paths: { json: string; markdown: string; html: string; docx?: string | null }
+  warnings: string[]
 }
 

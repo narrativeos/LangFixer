@@ -72,6 +72,12 @@ import type {
   OptimizationRound,
   RoundEvaluateResponse,
   RoundReport,
+  MediaApplyMode,
+  MediaInspectResult,
+  MediaJob,
+  MediaProbes,
+  MediaReportBody,
+  MediaReportResult,
 } from '../types'
 
 const http = axios.create({ baseURL: '/', timeout: 60000 })
@@ -113,6 +119,33 @@ async function exportZipDownload(sourceId: string): Promise<PackExportResult> {
   } catch (e) {
     throw await normalizeBlobError(e)
   }
+}
+
+/** 载体（图片 / PDF / Word）审校两端都可用：链路在 `media-flow` crate 里只有一份——
+ *  Web 端打 api-server 的 HTTP，桌面端 invoke `desktop-app/src/media.rs` 的同一套编排
+ *  （注入的是本地检测级联）。字节传输差异由下面两个 helper 抹平：`invoke` 只能走 JSON */
+interface BinaryPayload {
+  content_type: string
+  data_b64: string
+  size_bytes?: number
+}
+
+/** Uint8Array → base64（分块：整图几 MB，直接 spread 会爆调用栈） */
+function bytesToB64(data: Uint8Array): string {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < data.length; i += chunk) {
+    bin += String.fromCharCode(...data.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+/** `{ content_type, data_b64 }` → Blob（预览图 / 导出产物） */
+function b64ToBlob(p: BinaryPayload): Blob {
+  const bin = atob(p.data_b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new Blob([bytes], { type: p.content_type || 'application/octet-stream' })
 }
 
 /** Tauri 桌面端内部 invoke（window.__TAURI_INTERNALS__，无需 @tauri-apps/api 依赖）
@@ -1241,8 +1274,170 @@ export const api = {
   roundReport(id: number): Promise<RoundReport> {
     if (inTauri) return tauri!.invoke('round_report', { id }).then((r) => r as RoundReport)
     return http.get<RoundReport>(`/gec/round/${id}/report`).then((r) => r.data)
-  }
+  },
 
+  // ── 载体（图片）审校：MULTIMODAL.md §7 面板 / §8 设置 ──────────────────────
+  // 链路只有一份（`media-flow` crate）：Web 端打 api-server 的 HTTP，桌面端 invoke
+  // 同一套编排 + 本地检测级联。字节流差异：HTTP 走 octet-stream，invoke 只能传
+  // JSON → 上传用 base64，预览 / 导出产物回传 `{ content_type, data_b64 }`。
 
+  /** POST /gec/media/probes — 各家工具 + 视觉档就绪探测（只读，不写文件） */
+  mediaProbes(): Promise<MediaProbes> {
+    if (inTauri) return tauri!.invoke('media_probes').then((r) => r as MediaProbes)
+    return http.post<MediaProbes>('/gec/media/probes').then((r) => r.data)
+  },
+
+  /** POST /gec/media/inspect?filename= — 上传前能力探测（尺寸 / 文字层 / 可编辑性） */
+  mediaInspect(filename: string, data: Uint8Array): Promise<MediaInspectResult> {
+    if (inTauri)
+      return tauri!
+        .invoke('media_inspect', { filename, dataB64: bytesToB64(data) })
+        .then((r) => r as MediaInspectResult)
+    return http
+      .post<MediaInspectResult>('/gec/media/inspect', data, {
+        params: { filename },
+        headers: { 'Content-Type': 'application/octet-stream' },
+      })
+      .then((r) => r.data)
+  },
+
+  /** POST /gec/media/jobs?filename= — 建 job 并后台跑全链路（副本隔离，**永不改原件**）；
+   *  返回 job 供轮询。视觉档上传前压缩（`vision_max_edge` / `vision_max_bytes`），
+   *  但整页转写仍受网关排队影响 → 上传本身给 3 分钟 */
+  mediaCreateJob(body: {
+    filename: string
+    data: Uint8Array
+    apply_mode?: MediaApplyMode
+    lang?: string
+    level?: number
+    force_llm?: boolean
+  }): Promise<MediaJob> {
+    if (inTauri)
+      return tauri!
+        .invoke('media_create_job', {
+          filename: body.filename,
+          dataB64: bytesToB64(body.data),
+          applyMode: body.apply_mode ?? null,
+          lang: body.lang ?? null,
+          level: body.level ?? null,
+          forceLlm: body.force_llm ?? null,
+        })
+        .then((r) => r as MediaJob)
+    return http
+      .post<MediaJob>('/gec/media/jobs', body.data, {
+        params: {
+          filename: body.filename,
+          ...(body.apply_mode ? { apply_mode: body.apply_mode } : {}),
+          ...(body.lang ? { lang: body.lang } : {}),
+          ...(body.level !== undefined ? { level: body.level } : {}),
+          ...(body.force_llm !== undefined ? { force_llm: body.force_llm } : {}),
+        },
+        headers: { 'Content-Type': 'application/octet-stream' },
+        timeout: 180000,
+      })
+      .then((r) => r.data)
+  },
+
+  /** GET /gec/media/jobs — job 列表（创建时间倒序） */
+  mediaJobs(): Promise<MediaJob[]> {
+    if (inTauri) return tauri!.invoke('media_jobs').then((r) => r as MediaJob[])
+    return http.get<MediaJob[]>('/gec/media/jobs').then((r) => r.data)
+  },
+
+  /** GET /gec/media/jobs/:id — 状态轮询（stage 到终态即停） */
+  mediaJob(id: string): Promise<MediaJob> {
+    if (inTauri) return tauri!.invoke('media_job', { id }).then((r) => r as MediaJob)
+    return http.get<MediaJob>(`/gec/media/jobs/${encodeURIComponent(id)}`).then((r) => r.data)
+  },
+
+  /** POST /gec/media/jobs/:id/apply — 回写（默认 Overlay，幂等：重跑先清历史 mark-* 层） */
+  mediaApply(id: string, applyMode?: MediaApplyMode): Promise<MediaJob> {
+    if (inTauri)
+      return tauri!
+        .invoke('media_apply', { id, applyMode: applyMode ?? null })
+        .then((r) => r as MediaJob)
+    return http
+      .post<MediaJob>(`/gec/media/jobs/${encodeURIComponent(id)}/apply`, applyMode ? { apply_mode: applyMode } : {}, {
+        timeout: 180000,
+      })
+      .then((r) => r.data)
+  },
+
+  /** 预览图地址（`result.png`，无则回退副本原件）——给 `<img>` 直接用 */
+  mediaPreviewUrl(id: string): string {
+    return `/gec/media/jobs/${encodeURIComponent(id)}/preview`
+  },
+
+  /** 预览字节（blob）：回退原件时后端给的是 `application/octet-stream`，
+   *  直接塞 `<img>` 会被浏览器按类型拒掉 → 取字节自建 objectURL，顺便可下载。
+   *  桌面端：invoke media_preview 回传 `{ content_type, data_b64 }` → 还原成 Blob */
+  async mediaPreviewBlob(id: string): Promise<Blob> {
+    if (inTauri) {
+      const p = (await tauri!.invoke('media_preview', { id })) as BinaryPayload
+      return b64ToBlob(p)
+    }
+    try {
+      const resp = await http.get<Blob>(`/gec/media/jobs/${encodeURIComponent(id)}/preview`, {
+        responseType: 'blob',
+        timeout: 120000,
+      })
+      return resp.data as Blob
+    } catch (e) {
+      throw await normalizeBlobError(e)
+    }
+  },
+
+  /** POST /gec/media/report — 勾选后的结果汇成正误表（JSON / Markdown / HTML / docx） */
+  mediaReport(body: MediaReportBody): Promise<MediaReportResult> {
+    if (inTauri)
+      return tauri!.invoke('media_report', { body }).then((r) => r as MediaReportResult)
+    return http
+      .post<MediaReportResult>('/gec/media/report', body, { timeout: 180000 })
+      .then((r) => r.data)
+  },
+
+  /** 导出产物下载地址（format = json | md | html | docx）——仅 Web 端可用 */
+  mediaReportUrl(id: string, format: 'json' | 'md' | 'html' | 'docx'): string {
+    return `/gec/media/reports/${encodeURIComponent(id)}?format=${format}`
+  },
+
+  /** 导出产物落盘：Web 端 fetch + 浏览器下载；桌面端弹原生「另存为」后写文件
+   *  （与资源包导出同一口径）。取消返回 null */
+  async downloadMediaReport(
+    reportId: string,
+    format: 'json' | 'md' | 'html' | 'docx',
+    filename: string,
+  ): Promise<PackExportResult | null> {
+    if (inTauri) {
+      const ext = format === 'md' ? 'md' : format
+      const target = (await tauri!
+        .invoke('plugin:dialog|save', {
+          options: {
+            title: `导出正误表（${format}）`,
+            defaultPath: filename,
+            filters: [{ name: `正误表 ${format}`, extensions: [ext] }],
+          },
+        })
+        .catch(() => null)) as string | null
+      if (!target) return null
+      const r = (await tauri!.invoke('media_report_file', {
+        reportId,
+        format,
+        path: target,
+      })) as BinaryPayload
+      return { filename: target, size_bytes: Number(r.size_bytes ?? 0) }
+    }
+    const resp = await http.get<Blob>(this.mediaReportUrl(reportId, format), {
+      responseType: 'blob',
+      timeout: 180000,
+    })
+    const url = URL.createObjectURL(resp.data as Blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+    return { filename, size_bytes: (resp.data as Blob).size }
+  },
 }
 

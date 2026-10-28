@@ -13,11 +13,25 @@ import HistoryPanel from './components/HistoryPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
+import MediaWorkspace from './components/MediaWorkspace.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 
 const store = useGecStore()
-/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 规则管理 / 知识维护 / 进化中心 / 设置（右上角切换） */
-const activeView = ref<'workspace' | 'rules' | 'knowledge' | 'evolution' | 'settings'>('workspace')
+/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置（右上角切换） */
+type AppView = 'workspace' | 'media' | 'rules' | 'knowledge' | 'evolution' | 'settings'
+const APP_VIEWS: AppView[] = ['workspace', 'media', 'rules', 'knowledge', 'evolution', 'settings']
+
+/** `?view=media` 深链：刷新 / 分享链接都停在同一视图（也便于无头浏览器冒烟测试） */
+function viewFromUrl(): AppView | null {
+  try {
+    const v = new URLSearchParams(window.location.search).get('view')
+    return APP_VIEWS.includes(v as AppView) ? (v as AppView) : null
+  } catch {
+    return null
+  }
+}
+
+const activeView = ref<AppView>(viewFromUrl() ?? 'workspace')
 const rulesSub = ref('tables')
 const knowledgeSub = ref('attribution')
 
@@ -49,6 +63,14 @@ function finishOnboarding() {
 // 设置页保存（或他处变更）后，L2 的状态标签 / 管线提示自动与服务端对齐
 watch(activeView, (v) => {
   if (v === 'workspace') void store.refreshEngineStatus()
+  // 视图同步进地址栏（replaceState：不产生历史堆栈，刷新仍在当前视图）
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', v)
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    /* 非标准地址（如 Tauri 自定义协议）：忽略 */
+  }
 })
 
 // 反思流程导航：「到规则面板查看 / 积累后重训练」建议 → 切换顶层视图
@@ -127,6 +149,13 @@ function toggleTheme() {
         检测
       </el-button>
       <el-button
+        :class="{ 'nav-active': activeView === 'media' }"
+        :aria-current="activeView === 'media' ? 'page' : undefined"
+        @click="activeView = 'media'"
+      >
+        载体审校
+      </el-button>
+      <el-button
         :class="{ 'nav-active': activeView === 'rules' }"
         :aria-current="activeView === 'rules' ? 'page' : undefined"
         @click="activeView = 'rules'"
@@ -189,6 +218,11 @@ function toggleTheme() {
         <HistoryPanel :lang="store.lang" />
       </section>
     </template>
+
+    <!-- 载体审校：图片（P0）——探测 → 抽取 → 检测 → 落点画框 → 勾选 → 回写 / 正误表 -->
+    <section v-else-if="activeView === 'media'" class="manage-pane">
+      <MediaWorkspace />
+    </section>
 
     <!-- 规则管理（右上角入口） -->
     <section v-else-if="activeView === 'rules'" class="manage-pane">
