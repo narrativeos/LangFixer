@@ -57,6 +57,28 @@ pub struct LlmDetectConfig {
     /// 生成 max_tokens（0 = 服务端默认；CEC4 需 ≥ 1024 容纳 think 块）
     #[serde(default)]
     pub max_tokens: u32,
+    /// 瞬时故障（网关排队 / 过载 / 传输层超时）的退避表（秒）：**长度即重试次数**
+    ///
+    /// 缺省 `[5, 20]`：真实网关是共享 / 单槽的，503 常常只是「没排到」，一次就降级
+    /// 成规则层等于把可用结果丢掉；但前端 level ≥ 2 的请求超时是 180s
+    /// （`web-ui/src/api/client.ts`），默认必须落在它之内。
+    /// 环境变量 `LLM_RETRY_BACKOFF_SECS`（逗号分隔）可覆盖；空表 = 不重试。
+    #[serde(default = "default_llm_retry_backoff")]
+    pub retry_backoff_secs: Vec<u64>,
+    /// 重试的总等待预算（秒）：排队可能比退避表长得多，预算封顶才不会把请求挂死
+    #[serde(default = "default_llm_retry_budget")]
+    pub retry_budget_secs: u64,
+}
+
+fn default_llm_retry_backoff() -> Vec<u64> {
+    parse_backoff(std::env::var("LLM_RETRY_BACKOFF_SECS").ok().as_deref())
+}
+
+fn default_llm_retry_budget() -> u64 {
+    std::env::var("LLM_RETRY_BUDGET_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(120)
 }
 
 fn default_output_format() -> String {
@@ -83,6 +105,8 @@ impl LlmDetectConfig {
             user_template: user_template.into(),
             output_format: default_output_format(),
             max_tokens: 0,
+            retry_backoff_secs: default_llm_retry_backoff(),
+            retry_budget_secs: default_llm_retry_budget(),
         }
     }
 
@@ -96,6 +120,66 @@ impl LlmDetectConfig {
     pub fn with_max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;
         self
+    }
+
+    /// 覆盖瞬时故障重试策略（退避表 + 总预算）：后台链路（媒体 job）可比在线检测更激进
+    pub fn with_retry(mut self, backoff_secs: Vec<u64>, budget_secs: u64) -> Self {
+        self.retry_backoff_secs = backoff_secs;
+        self.retry_budget_secs = budget_secs;
+        self
+    }
+}
+
+/// 纯解析（不碰环境变量，免得并行测试互相踩）
+fn parse_backoff(raw: Option<&str>) -> Vec<u64> {
+    const DEFAULT: [u64; 2] = [5, 20];
+    match raw {
+        Some(v) => {
+            let parsed: Vec<u64> = v
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .collect();
+            if parsed.is_empty() {
+                DEFAULT.to_vec()
+            } else {
+                parsed
+            }
+        }
+        None => DEFAULT.to_vec(),
+    }
+}
+
+/// 排队 / 过载状态码：429（限流）与全部 5xx（网关过载给 502/503/504）
+fn is_queue_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// `Retry-After` 的 delta-seconds 形式；HTTP-date 不猜（两端时钟未必对齐）
+fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|s| s.min(3600))
+}
+
+/// 重试决策（纯函数，便于测）：`Some(等待秒数)` 继续重试，`None` 就此收手
+///
+/// 网关给了 `retry_after` 就按它等（它知道自己排到哪，猜的退避只会短），
+/// 但总等待不能越过预算——越过就是「一直等下去」，用户只会看到卡死。
+fn next_wait(
+    backoff: &[u64],
+    attempt: usize,
+    retry_after: Option<u64>,
+    waited: u64,
+    budget: u64,
+) -> Option<u64> {
+    let step = *backoff.get(attempt)?;
+    let wait = retry_after.unwrap_or(0).max(step);
+    if waited + wait > budget {
+        None
+    } else {
+        Some(wait)
     }
 }
 
@@ -120,6 +204,23 @@ impl LlmGecEngine {
             config,
         }
     }
+}
+
+/// reqwest 传输层错误的完整原因链：`Display` 只到「error sending request for url (…)」，
+/// 超时 / 连接重置藏在 `source` 链里——不带出来就只能靠猜（实测：真实载体 LLM 层
+/// 反复失败，日志看不出是超时还是网络问题）
+fn transport_chain(e: &reqwest::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        msg.push('：');
+        msg.push_str(&s.to_string());
+        src = s.source();
+    }
+    if e.is_timeout() {
+        msg.push_str("（请求超时）");
+    }
+    msg
 }
 
 /// LLM 响应中的单个错误项
@@ -155,7 +256,8 @@ struct Choice {
 struct Message {
     content: Option<String>,
     /// thinking 模式服务端（llama.cpp Qwen3 / vllm 等）会把 think 块拆到该字段
-    /// （`content` 只留最终答案）；存在时拼在 content 前还原完整输出
+    /// （`content` 只留最终答案）；`chat_completion()` 把它拼在答案前还原完整输出，
+    /// JSON 契约走 `chat_completion_answer()`（不拼，见其文档）
     #[serde(default)]
     reasoning_content: Option<String>,
 }
@@ -169,9 +271,53 @@ fn extract_json_array(content: &str) -> Option<String> {
         .unwrap_or(t)
         .trim();
     let t = t.strip_suffix("```").map(str::trim).unwrap_or(t);
-    let start = t.find('[')?;
-    let end = t.rfind(']')?;
-    (end > start).then(|| t[start..=end].to_string())
+    // 扫描所有**配平**的 `[...]`（字符串内的括号与转义不计入深度），取第一个非空数组；
+    // 全是空数组时才返回空数组（`[]` 是「无错误」的合法答案）。
+    // 不能取「首个 `[` 到末个 `]`」：思考模型会把指令原样回显（指令里就含 `[]`），
+    // 那样会把说明文字吞进 JSON 导致解析失败 → 该层静默产出 0 条（实测 qwen 思考模型）。
+    let mut depth: usize = 0;
+    let mut start = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut first_empty: Option<String> = None;
+    for (i, ch) in t.char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_str = true,
+            '[' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let slice = &t[start..=i];
+                    if slice
+                        .chars()
+                        .any(|c| !c.is_whitespace() && c != '[' && c != ']')
+                    {
+                        return Some(slice.to_string());
+                    }
+                    if first_empty.is_none() {
+                        first_empty = Some(slice.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    first_empty
 }
 
 /// 将 LLM 返回的 `original` 片段解析为原文字节偏移；定位失败时 `[0, 0]`。
@@ -469,7 +615,11 @@ impl GecEngine for LlmGecEngine {
             return self.detect_plain(text).await;
         }
         let user = self.config.user_template.replace("{{text}}", text);
-        let content = self.chat_completion(&self.config.system, &user).await?;
+        // JSON 契约只取最终答案：思考模型（qwen 思考档等）把思考块放在
+        // `reasoning_content`，拼在前面会把指令回显里的 `[]` 吞进数组 → 解析失败 → 本层静默 0 条
+        let content = self
+            .chat_completion_answer(&self.config.system, &user)
+            .await?;
 
         // 容错解析 JSON 数组；解析失败时告警并返回空（请求已成功，不算服务故障）
         let raw = match extract_json_array(&content) {
@@ -573,11 +723,17 @@ impl LlmGecEngine {
         Ok(errors)
     }
 
-    /// 通用 chat completion：给定 system / user 提示词，返回响应 content 文本。
+    /// 通用 chat completion：给定 system / user 提示词，返回（最终答案 `content`，
+    /// 思考块 `reasoning_content`）。
     ///
-    /// `detect` 的底层实现；也供上层（如 anomaly 模式蒸馏器）以任意提示词
-    /// 复用同一 OpenAI 兼容客户端（temperature 0，非流式）。
-    pub async fn chat_completion(&self, system: &str, user: &str) -> Result<String, DetectorError> {
+    /// thinking 模式服务端（llama.cpp Qwen3 / vllm 等）把 think 块拆进
+    /// `reasoning_content`、`content` 只留最终答案，这里原样分开返回，
+    /// 由调用方决定要不要把思考块拼进来。
+    pub async fn chat_completion_parts(
+        &self,
+        system: &str,
+        user: &str,
+    ) -> Result<(String, String), DetectorError> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -595,42 +751,128 @@ impl LlmGecEngine {
         if self.config.max_tokens > 0 {
             body["max_tokens"] = serde_json::json!(self.config.max_tokens);
         }
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| DetectorError::ServiceUnavailable(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(DetectorError::ServiceUnavailable(format!(
-                "LLM 服务返回 HTTP {}",
-                resp.status()
-            )));
-        }
+        // 排队感知：网关过载 / 限流（429、5xx）与传输层超时都按「没排到」处理——
+        // 按退避表与网关给的 `Retry-After` 重试。4xx（鉴权、路径、参数）不重试：
+        // 那是要人修配置，重试只会把一次明确的失败拖成几分钟的卡死。
+        let backoff = &self.config.retry_backoff_secs;
+        let budget = self.config.retry_budget_secs;
+        let mut attempt = 0usize;
+        let mut waited = 0u64;
+        let timeout_hint = format!(
+            "（超时上限 {}s：调设置 `llm.timeout_secs` 或环境变量 `LLM_TIMEOUT_SECS`；\
+             思考模型整载体检测实测要 60s 以上，默认 30s 必然失败）",
+            self.config.timeout_secs.max(1)
+        );
+        let resp = loop {
+            match self
+                .client
+                .post(&url)
+                .bearer_auth(&self.config.api_key)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => break r,
+                Ok(r) => {
+                    let status = r.status();
+                    if !is_queue_status(status) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "LLM 服务返回 HTTP {status}"
+                        )));
+                    }
+                    let ra = retry_after_secs(&r);
+                    match next_wait(backoff, attempt, ra, waited, budget) {
+                        Some(wait) => {
+                            tracing::warn!(
+                                status = status.as_u16(),
+                                wait_secs = wait,
+                                attempt = attempt + 1,
+                                "LLM 服务排队：退避后重试"
+                            );
+                            tokio::time::sleep(Duration::from_secs(wait)).await;
+                            waited += wait;
+                            attempt += 1;
+                        }
+                        None => {
+                            return Err(DetectorError::ServiceUnavailable(format!(
+                                "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、共等待 {waited}s \
+                                 仍未放行（退避表 {backoff:?}、预算 {budget}s：\
+                                 LLM_RETRY_BACKOFF_SECS / LLM_RETRY_BUDGET_SECS 可调）"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    // 传输层：超时 / 连不上算瞬时（排队时网关也会直接掐连接）；
+                    // 其余（DNS、非法 URL…）不重试。
+                    let chain = transport_chain(&e);
+                    if !(e.is_timeout() || e.is_connect()) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "{chain}{timeout_hint}"
+                        )));
+                    }
+                    match next_wait(backoff, attempt, None, waited, budget) {
+                        Some(wait) => {
+                            tracing::warn!(
+                                wait_secs = wait,
+                                attempt = attempt + 1,
+                                error = %chain,
+                                "LLM 传输层瞬时故障：退避后重试"
+                            );
+                            tokio::time::sleep(Duration::from_secs(wait)).await;
+                            waited += wait;
+                            attempt += 1;
+                        }
+                        None => {
+                            return Err(DetectorError::ServiceUnavailable(format!(
+                                "{chain}{timeout_hint}（已重试 {attempt} 次、共等待 {waited}s）"
+                            )));
+                        }
+                    }
+                }
+            }
+        };
         let cr: CompletionResponse = resp
             .json()
             .await
             .map_err(|e| DetectorError::ServiceUnavailable(e.to_string()))?;
-        // thinking 模式服务端（llama.cpp Qwen3 / vllm 等）把 think 块拆进
-        // `reasoning_content`、`content` 只留最终答案：拼回完整输出
-        // （plain 分支的 think/答案分离依赖全文；JSON 分支的数组提取不受影响）
         let msg = match cr.choices.first() {
             Some(c) => &c.message,
-            None => return Ok(String::new()),
+            None => return Ok((String::new(), String::new())),
         };
-        let mut content = msg
+        let answer = msg
             .content
             .clone()
             .filter(|c| !c.is_empty())
             .unwrap_or_default();
-        if let Some(r) = &msg.reasoning_content {
-            if !r.trim().is_empty() {
-                content = format!("{}\n{}", r.trim_end(), content);
-            }
+        let reasoning = msg.reasoning_content.clone().unwrap_or_default();
+        Ok((answer, reasoning))
+    }
+
+    /// 通用 chat completion：把思考块拼在答案前，还原 COT 模型的完整输出
+    /// （`plain` 分支的 think/答案分离依赖全文）。
+    ///
+    /// **要 JSON 契约的调用方请用 [`Self::chat_completion_answer`]**：思考块里
+    /// 常回显指令原文（含 `[]`），拼在前面会让数组提取取错片段。
+    pub async fn chat_completion(&self, system: &str, user: &str) -> Result<String, DetectorError> {
+        let (answer, reasoning) = self.chat_completion_parts(system, user).await?;
+        if reasoning.trim().is_empty() {
+            return Ok(answer);
         }
-        Ok(content)
+        Ok(format!("{}\n{}", reasoning.trim_end(), answer))
+    }
+
+    /// 只取最终答案（思考块为空时回退思考块）：JSON 契约专用入口。
+    pub async fn chat_completion_answer(
+        &self,
+        system: &str,
+        user: &str,
+    ) -> Result<String, DetectorError> {
+        let (answer, reasoning) = self.chat_completion_parts(system, user).await?;
+        if answer.trim().is_empty() {
+            return Ok(reasoning);
+        }
+        Ok(answer)
     }
 }
 
@@ -648,6 +890,9 @@ mod tests {
             "你是校对专家",
             "找出以下文本中的错误：{{text}}",
         )
+        // 测试不真等退避（默认 [5,20] 会把失败类测试拖成 25s）；
+        // 重试行为由 `with_retry(vec![0, 0], …)` 的专项测试覆盖
+        .with_retry(Vec::new(), 0)
     }
 
     /// 本地 mock OpenAI 兼容服务（非流式）
@@ -708,6 +953,140 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].error_type, "grammar");
         assert_eq!(errors[0].span, [3, 9]);
+    }
+
+    /// 思考模型回归：最终答案在 `content`、思考块在 `reasoning_content`，而思考块里
+    /// 会回显指令原文（含 `[]`）。把思考块拼在前面取数组会取到空数组或把说明吞进
+    /// JSON → 解析失败 → 本层曾静默产出 0 条（实测 qwen 思考档 + zh_detect v1.2）。
+    #[tokio::test]
+    async fn detect_uses_answer_not_reasoning_for_thinking_models() {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": {
+                        "content": "[{\"error_type\":\"错别字\",\"confidence\":0.98,\"original\":\"报复\",\"correction\":\"抱负\",\"message\":\"原『报复』应为『抱负』\"}]",
+                        "reasoning_content": "要求：整段无误时直接输出 []。文本：找出以下文本中的错误：他昨天报复很大。\n需要判断错误类型……"
+                    }}]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = LlmGecEngine::new("zh", config(&format!("http://{addr}/v1")));
+        let errors = engine.detect("他昨天报复很大。").await.unwrap();
+        assert_eq!(errors.len(), 1, "思考块不得污染 JSON 解析");
+        assert_eq!(errors[0].correction.as_deref(), Some("抱负"));
+        assert_eq!(errors[0].span, [9, 15]);
+        assert_eq!(errors[0].error_type, "spelling", "教学分类应在解析边界映射");
+    }
+
+    /// 服务端只填 `reasoning_content`（无 `content`）时仍要能出结果
+    #[tokio::test]
+    async fn detect_falls_back_to_reasoning_when_answer_empty() {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": {
+                        "content": null,
+                        "reasoning_content": "[{\"error_type\":\"spelling\",\"confidence\":0.9,\"original\":\"报复\",\"correction\":\"抱负\",\"message\":\"同音错别字\"}]"
+                    }}]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = LlmGecEngine::new("zh", config(&format!("http://{addr}/v1")));
+        let errors = engine.detect("他昨天报复很大。").await.unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].original, "报复");
+    }
+
+    /// `chat_completion` 仍把思考块拼在答案前（`plain` 分支的 think/答案分离依赖完整输出）
+    #[tokio::test]
+    async fn chat_completion_still_prefixes_reasoning() {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": {
+                        "content": "他抱负很大。",
+                        "reasoning_content": "错误类型：错别字"
+                    }}]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = LlmGecEngine::new("zh", config(&format!("http://{addr}/v1")));
+        assert_eq!(
+            engine.chat_completion("s", "u").await.unwrap(),
+            "错误类型：错别字\n他抱负很大。"
+        );
+    }
+
+    /// JSON 契约入口只取最终答案（思考块不得进 JSON）
+    #[tokio::test]
+    async fn chat_completion_answer_returns_answer_only() {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": {
+                        "content": "他抱负很大。",
+                        "reasoning_content": "错误类型：错别字"
+                    }}]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = LlmGecEngine::new("zh", config(&format!("http://{addr}/v1")));
+        assert_eq!(
+            engine.chat_completion_answer("s", "u").await.unwrap(),
+            "他抱负很大。"
+        );
+    }
+
+    #[test]
+    fn extract_json_array_prefers_balanced_non_empty_array() {
+        // 思考文本回显指令里的 [] 不得顶掉真正的数组
+        assert_eq!(
+            extract_json_array(
+                "整段无误时输出 []。文本：他昨天报复很大。\n[{\"original\":\"报复\"}]\n以上"
+            )
+            .as_deref(),
+            Some("[{\"original\":\"报复\"}]")
+        );
+        // 字符串内的方括号不计入深度
+        assert_eq!(
+            extract_json_array("[{\"message\":\"见 [原文] 标注\"}] 收尾").as_deref(),
+            Some("[{\"message\":\"见 [原文] 标注\"}]")
+        );
+        // 合法空数组仍是空数组（「无错误」的答案）
+        assert_eq!(extract_json_array("结论：[]").as_deref(), Some("[]"));
+        // 截断的数组不猜
+        assert_eq!(
+            extract_json_array("[{\"original\":\"报复\"").as_deref(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -831,6 +1210,42 @@ mod tests {
         let engine = LlmGecEngine::new("zh", config("http://127.0.0.1:1"));
         let err = engine.detect("x").await.unwrap_err();
         assert!(matches!(err, DetectorError::ServiceUnavailable(_)));
+    }
+
+    /// 超时必须把上限写进失败原因：否则「LLM 层失败」日志看不出该调哪个旋钮
+    /// （真实载体整载体检测实测 60s+，默认 30s 必然超时）
+    #[tokio::test]
+    async fn detect_timeout_names_the_ceiling() {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let resp = serde_json::json!({"choices": [{"message": {"content": "[]"}}]});
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = LlmGecEngine::new(
+            "zh",
+            LlmDetectConfig::from_parts(
+                format!("http://{addr}/v1"),
+                "sk-test",
+                "mock-model",
+                1,
+                "你是校对专家",
+                "找出以下文本中的错误：{{text}}",
+            ),
+        );
+        let err = engine.detect("他昨天报复很大。").await.unwrap_err();
+        let msg = match err {
+            DetectorError::ServiceUnavailable(m) => m,
+            other => panic!("应为服务不可用：{other:?}"),
+        };
+        assert!(msg.contains("超时上限 1s"), "{msg}");
     }
 
     /// 通用 chat completion：任意 system / user 提示词，返回 content 原文
@@ -1064,5 +1479,148 @@ mod tests {
         );
         let errors = engine.detect("他报复很大。").await.unwrap();
         assert_eq!(errors.len(), 1);
+    }
+
+    // ---- 排队感知（LLM 服务基本稳定，只是可能排队）----
+
+    /// mock 网关：前 `fails` 次回 `status`（带 `Retry-After: 0`），之后正常回话。
+    /// 返回 `(base_url, 请求次数)`——次数是关键断言：重试必须真的发生 / 真的没发生
+    async fn flaky_llm_server(
+        status: u16,
+        fails: usize,
+        content: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| {
+                let counter = counter.clone();
+                async move {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    if n < fails {
+                        let mut headers = axum::http::HeaderMap::new();
+                        // 0：测试不真等（真实网关给的是几十秒到两分钟的排队窗口）
+                        headers.insert(
+                            axum::http::header::RETRY_AFTER,
+                            axum::http::HeaderValue::from_static("0"),
+                        );
+                        return (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            headers,
+                            "",
+                        )
+                            .into_response();
+                    }
+                    let resp = serde_json::json!({
+                        "choices": [{ "message": { "content": content } }]
+                    });
+                    (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://{addr}/v1"), hits)
+    }
+
+    #[tokio::test]
+    async fn gateway_queueing_retries_instead_of_degrading() {
+        // 关键立场：排队不是坏了。整轮降级成规则层 = 把可用结果丢掉
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, 2, "[]").await;
+        let engine = LlmGecEngine::new("zh", config(&base).with_retry(vec![0, 0], 60));
+        let errors = engine.detect("测试文本").await.unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            3,
+            "排队两次后必须重试到放行（首次 + 2 次重试）"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_exhaustion_reports_attempts_and_wait() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, usize::MAX, "[]").await;
+        let engine = LlmGecEngine::new("zh", config(&base).with_retry(vec![0, 1], 60));
+        let err = engine.detect("测试文本").await.unwrap_err().to_string();
+        assert!(err.contains("HTTP 503"), "要说清是网关繁忙：{err}");
+        assert!(err.contains("已重试 2 次"), "要给出重试了几次：{err}");
+        assert!(err.contains("共等待 1s"), "要给出等了多久：{err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "退避表用完就收手");
+    }
+
+    #[tokio::test]
+    async fn non_queue_status_does_not_retry() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(401, usize::MAX, "[]").await;
+        let engine = LlmGecEngine::new("zh", config(&base).with_retry(vec![0, 0], 60));
+        let err = engine.detect("测试文本").await.unwrap_err().to_string();
+        assert!(err.contains("HTTP 401"), "{err}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "鉴权失败是要人修配置，重试只会把明确失败拖成卡死"
+        );
+    }
+
+    #[test]
+    fn next_wait_follows_gateway_hint_within_budget() {
+        assert_eq!(next_wait(&[5, 20], 0, None, 0, 120), Some(5));
+        assert_eq!(
+            next_wait(&[5, 20], 0, Some(90), 0, 120),
+            Some(90),
+            "网关说等多久就等多久（猜的退避只会短）"
+        );
+        assert_eq!(next_wait(&[5, 20], 1, None, 90, 120), Some(20));
+        assert_eq!(
+            next_wait(&[5, 20], 1, None, 110, 120),
+            None,
+            "越过预算就收手"
+        );
+        assert_eq!(
+            next_wait(&[5, 20], 2, None, 0, 120),
+            None,
+            "退避表用完 = 次数用完"
+        );
+        assert_eq!(next_wait(&[], 0, None, 0, 120), None, "空表 = 不重试");
+    }
+
+    #[test]
+    fn backoff_table_parses_conservatively() {
+        assert_eq!(
+            parse_backoff(None),
+            vec![5, 20],
+            "默认必须落在前端 level ≥ 2 的 180s 超时之内"
+        );
+        assert_eq!(parse_backoff(Some("0,0")), vec![0, 0], "测试要免等待");
+        assert_eq!(parse_backoff(Some(" 30 , 90 ")), vec![30, 90], "空白要容忍");
+        assert_eq!(
+            parse_backoff(Some("abc,x")).len(),
+            2,
+            "全是垃圾值必须回默认，不能退化成不重试"
+        );
+    }
+
+    #[test]
+    fn queue_status_covers_overload_and_rate_limit() {
+        for s in [429u16, 500, 502, 503, 504] {
+            assert!(
+                is_queue_status(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} 应视为排队 / 过载"
+            );
+        }
+        for s in [400u16, 401, 404, 422] {
+            assert!(
+                !is_queue_status(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} 是要人修配置，不是排队"
+            );
+        }
     }
 }

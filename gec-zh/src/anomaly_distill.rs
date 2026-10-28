@@ -206,8 +206,9 @@ pub async fn distill_pattern(
     gold: &GoldSet,
 ) -> Result<AnomalyPattern, String> {
     let user = build_distill_user_prompt(user_template, instance, existing, gold);
+    // 只取最终答案：蒸馏响应是 JSON 对象，思考块拼在前面会污染解析
     let content = llm
-        .chat_completion(system, &user)
+        .chat_completion_answer(system, &user)
         .await
         .map_err(|e| format!("蒸馏 LLM 调用失败：{e}"))?;
     parse_distill_response(&content)

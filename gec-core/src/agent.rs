@@ -711,6 +711,8 @@ mod tests {
             user_template: String::new(),
             output_format: "json".into(),
             max_tokens: 0,
+            retry_backoff_secs: Vec::new(),
+            retry_budget_secs: 0,
         };
 
         let result = run_agent(&config, "你是测试 agent", "用户拒绝了一条错误", tools)

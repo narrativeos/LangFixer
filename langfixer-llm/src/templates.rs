@@ -137,6 +137,23 @@ mod tests {
     }
 
     #[test]
+    fn repo_prompts_have_media_vision_template() {
+        // 视觉转录模板是 B 档的契约面：删掉/改坏它会让内置默认悄悄接管，
+        // 而内置默认与文件必须同源，否则线上行为与仓库里的提示词不一致
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../prompts");
+        let store = TemplateStore::load(&dir);
+        let t = store
+            .for_lang_cefr("media", "vision")
+            .expect("缺 prompts/media_vision_prompt.json（B 档视觉转录模板）");
+        assert!(
+            t.system.contains("逐字原样"),
+            "视觉模板必须明确要求逐字转录——让模型顺手改错就等于毁掉校对目标"
+        );
+        assert!(t.user.contains("{{lang}}"), "缺 {{{{lang}}}} 占位符");
+        assert!(t.user.contains("bbox"), "必须约定 bbox 口径（归一化 0..1）");
+    }
+
+    #[test]
     fn load_and_lookup() {
         let dir = std::env::temp_dir().join("langfixer_llm_templates_test");
         std::fs::create_dir_all(&dir).unwrap();
