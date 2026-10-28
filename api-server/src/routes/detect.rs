@@ -148,7 +148,7 @@ pub(crate) async fn try_reuse_history(
 /// （调用方据此跳过历史写入，并向前端返回 `from_history` 标记）。
 /// 后处理（anomaly 自动采纳 / L3 飞轮）全部在**后台任务**执行，
 /// 不阻塞检测响应（见各步骤注释）。
-async fn run_detection(
+pub(crate) async fn run_detection(
     state: Arc<AppState>,
     lang: &str,
     text: &str,

@@ -153,6 +153,8 @@ pub struct SettingsResponse {
     pub llm_model_id: String,
     /// 知识层总开关（知识向量召回 + 知识库富化 + 数据驱动归点；默认开）
     pub knowledge_enabled: bool,
+    /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
+    pub media: media_flow::settings::MediaSettings,
     /// 可用纠错模型预设列表（选择器；仅含 enabled 条目）
     pub models: Vec<ModelView>,
 }
@@ -180,6 +182,25 @@ pub struct UpdateSettingsRequest {
     pub llm_model_id: Option<String>,
     /// 知识层总开关（测评消融臂 `knowledge: false` 用；默认开）
     pub knowledge_enabled: Option<bool>,
+    /// 载体（图片 / PDF / Word）审校设置（部分更新；两端同构）
+    pub media: Option<UpdateMediaRequest>,
+}
+
+/// 载体审校设置更新（字段均可缺省 = 保持不变）
+///
+/// 只列设置面板要改的项：CLI 路径 / 超时 / 压缩参数留在设置文件与环境变量里
+#[derive(Deserialize)]
+pub struct UpdateMediaRequest {
+    pub enabled: Option<bool>,
+    pub apply_mode: Option<String>,
+    pub workdir: Option<String>,
+    pub use_structure_layer: Option<bool>,
+    pub use_vision: Option<bool>,
+    pub use_ocr: Option<bool>,
+    pub vision_model: Option<String>,
+    pub level: Option<u8>,
+    pub force_llm: Option<bool>,
+    pub min_confidence: Option<f64>,
 }
 
 /// 设置测试请求：`target` = `hanlp` / `llm` / `decision` / `l3` / `embedding` /
@@ -258,6 +279,7 @@ fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsR
         },
         llm_model_id: s.llm_model_id.clone(),
         knowledge_enabled: s.knowledge_enabled,
+        media: s.media.clone(),
         models: registry
             .enabled()
             .iter()
@@ -388,6 +410,48 @@ pub async fn put(
     }
     if let Some(v) = req.knowledge_enabled {
         next.knowledge_enabled = v;
+    }
+    if let Some(media) = &req.media {
+        // 载体设置：与 api-server / 桌面端同一份 `MediaSettings`（`media-flow`）
+        if let Some(v) = media.enabled {
+            next.media.enabled = v;
+        }
+        if let Some(v) = &media.apply_mode {
+            let v = v.trim().to_string();
+            if !matches!(v.as_str(), "overlay" | "comment" | "in_place" | "list_only") {
+                return Err(ApiError::BadRequest(format!(
+                    "media.apply_mode 无效: {v}（应为 overlay / comment / in_place / list_only）"
+                )));
+            }
+            next.media.apply_mode = v;
+        }
+        if let Some(v) = &media.workdir {
+            next.media.workdir = v.trim().to_string();
+        }
+        if let Some(v) = media.use_structure_layer {
+            next.media.use_structure_layer = v;
+        }
+        if let Some(v) = media.use_vision {
+            next.media.use_vision = v;
+        }
+        if let Some(v) = media.use_ocr {
+            next.media.use_ocr = v;
+        }
+        if let Some(v) = &media.vision_model {
+            next.media.vision_model = v.trim().to_string();
+        }
+        if let Some(v) = media.level {
+            if !(1..=3).contains(&v) {
+                return Err(ApiError::BadRequest("media.level 应为 1-3".into()));
+            }
+            next.media.level = v;
+        }
+        if let Some(v) = media.force_llm {
+            next.media.force_llm = v;
+        }
+        if let Some(v) = media.min_confidence {
+            next.media.min_confidence = v.clamp(0.0, 1.0);
+        }
     }
     state.apply_settings(next.clone());
     let registry = state.model_registry.read().unwrap();

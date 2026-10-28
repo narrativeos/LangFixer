@@ -27,8 +27,28 @@ fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// 词表目录绝对路径（测试 CWD 是 api-server/，相对路径 lexicons/ 不存在）
+/// 词表目录：**出厂词表的一份临时副本**（每次调用一份，互不干扰）
+///
+/// 为什么不能直接指向仓库 `lexicons/`：规则开关路由会把状态**回写词表文件**
+/// （`sync_rule_toggles` → `LexiconStore::sync_rules_to_file`，防「空库重新播种把已停用规则
+/// 静默重新启用」的防漂移设计）。测试直接拿出厂目录当工作目录，就会把出厂默认改掉——
+/// 实测：`put_rule_toggles_persists_and_reloads` 把 `ZH_CONFUSABLE.enabled` 写回 `false`，
+/// 于是后续的金集重演召回随「测试跑没跑过」漂移（同一份代码两次跑出 6 检出 / 5 检出）。
+/// 副本内容与仓库一致，因此对断言无影响，写只落在临时目录。
 fn lexicons_abs() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons")
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons");
+    let dst = std::env::temp_dir().join(format!(
+        "langfixer_test_lexicons_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dst).unwrap();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), dst.join(entry.path().file_name().unwrap())).unwrap();
+        }
+    }
+    dst
 }
 
 /// 按当前进程环境构建 API server（**调用方须已持 env 锁**；
@@ -1527,6 +1547,78 @@ async fn get_settings_returns_current_config() {
     // LLM 请求模式：前端默认流式，外部 API 默认非流式
     assert_eq!(res["llm_modes"]["frontend"], "stream");
     assert_eq!(res["llm_modes"]["external_api"], "non_stream");
+    // 载体设置两端同一份定义（`media-flow`）：默认关闭 + Overlay 回写 + 火力全开
+    assert_eq!(res["media"]["enabled"], false, "载体审校默认关闭");
+    assert_eq!(
+        res["media"]["apply_mode"], "overlay",
+        "默认回写模式必须是 Overlay"
+    );
+    assert_eq!(res["media"]["level"], 3, "载体检测级别默认 3");
+    assert_eq!(
+        res["media"]["use_structure_layer"], true,
+        "A 档（结构层）默认开"
+    );
+    assert_eq!(res["media"]["use_vision"], false, "B 档默认关");
+}
+
+/// 载体设置 PUT 往返 + 入参校验（两端同构：桌面端 `update_settings` 走同一组字段）
+#[tokio::test]
+async fn put_settings_media_round_trip_and_validation() {
+    let base = start_server_default_dirs().await;
+    let c = client();
+
+    // 开启：只提交要改的字段，其余保持不变（部分更新契约）
+    let text = send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({
+            "media": { "enabled": true, "use_vision": true, "apply_mode": "in_place", "level": 2 }
+        })),
+    )
+    .await;
+    let res: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(res["media"]["enabled"], true);
+    assert_eq!(res["media"]["use_vision"], true);
+    assert_eq!(res["media"]["apply_mode"], "in_place");
+    assert_eq!(res["media"]["level"], 2);
+    assert_eq!(
+        res["media"]["use_structure_layer"], true,
+        "未提交的字段必须保持不变"
+    );
+
+    // 非法回写模式 / 越界级别 → 400（不能静默接受，否则 job 会按无效模式回写）
+    for body in [
+        serde_json::json!({ "media": { "apply_mode": "overwrite_original" } }),
+        serde_json::json!({ "media": { "level": 9 } }),
+    ] {
+        let status = reqwest::Client::new()
+            .put(format!("{base}/gec/settings"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "非法载体设置应 400：{body}"
+        );
+    }
+
+    // 复原默认：设置文件在并行测试间共享，别让载体开关泄漏给别的用例
+    let text = send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({
+            "media": { "enabled": false, "use_vision": false, "apply_mode": "overlay", "level": 3 }
+        })),
+    )
+    .await;
+    let res: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(res["media"]["enabled"], false);
+    assert_eq!(res["media"]["apply_mode"], "overlay");
 }
 
 #[tokio::test]

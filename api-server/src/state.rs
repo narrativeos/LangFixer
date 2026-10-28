@@ -61,6 +61,10 @@ pub struct AppState {
     pub custom_words: CustomWordStore,
     /// 检测历史（SQLite 持久化，全部留存）
     pub detect_history: DetectHistoryStore,
+    /// 多模态审校 job 存储（内存表 + `{workdir}/{job_id}/` 目录；
+    /// 原件只读副本隔离，见 `media_flow::jobs` 与 `MULTIMODAL.md` §9）
+    /// `Arc` 是为了把同一份 store 交给 `media_flow::FlowCtx`（编排层与路由共享状态）
+    pub media_jobs: Arc<RwLock<media_flow::MediaJobStore>>,
     /// 生效词表文件哈希（启动 + 检测器热重建时重算；规则侧版本指纹输入——
     /// 检测器只在构造时读词表文件，故「生效词表」由最近一次构建决定，不每次读盘）
     pub lexicon_hash: RwLock<String>,
@@ -100,6 +104,13 @@ impl AppState {
                 .unwrap_or_else(|_| "langfixer-settings.json".to_string()),
         );
         let settings = AppSettings::load(&settings_path);
+
+        // 多模态 job 根目录：设置 media.workdir > 相对当前目录的 media-jobs/
+        let media_root = if settings.media.workdir.is_empty() {
+            std::path::PathBuf::from("media-jobs")
+        } else {
+            std::path::PathBuf::from(&settings.media.workdir)
+        };
 
         // 决策表目录：显式指定（测试用）> 运行时设置（设置界面可改，持久化）
         let tables_dir = tables_dir
@@ -366,6 +377,7 @@ impl AppState {
             tables_dir: RwLock::new(tables_dir.clone()),
             sessions: SessionStore::new(),
             settings: RwLock::new(settings),
+            media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             settings_path,
             llm_templates,
             model_registry,

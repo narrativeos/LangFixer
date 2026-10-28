@@ -13,6 +13,9 @@ use gec_zh::DetectorConfig as ZhConfig;
 use langfixer_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 
+// 多模态设置住在 `media-flow`：api-server 与 desktop-app 共用同一份设置面
+pub use media_flow::settings::MediaSettings;
+
 /// 决策表目录默认值（与 `GEC_TABLES_DIR` 缺省一致）
 pub const DEFAULT_TABLES_DIR: &str = "decision-tables";
 /// 规则词表目录默认值（与 `GEC_LEXICONS_DIR` 缺省一致）
@@ -63,6 +66,10 @@ pub struct AppSettings {
     /// 等价环境变量 `GEC_KNOWLEDGE_ENABLED=0` 关闭。
     #[serde(default = "default_true")]
     pub knowledge_enabled: bool,
+    /// 多模态审校（图片 / PDF / Word）设置（`MULTIMODAL.md` §13）。
+    /// **默认关闭**：P0 只上后端，未显式开启时不影响既有文本主链路。
+    #[serde(default)]
+    pub media: MediaSettings,
 }
 
 fn default_true() -> bool {
@@ -119,6 +126,7 @@ impl AppSettings {
             knowledge_enabled: std::env::var("GEC_KNOWLEDGE_ENABLED")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
+            media: MediaSettings::from_env(),
         }
     }
 
@@ -200,6 +208,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             llm_model_id: "generic".into(),
             knowledge_enabled: false,
+            media: MediaSettings::default(),
         };
         s.save_to(&path).unwrap();
         let loaded = AppSettings::load(&path);
@@ -225,5 +234,64 @@ mod tests {
         let with_off = legacy[..legacy.len() - 1].to_string() + r#","knowledge_enabled":false}"#;
         let s2: AppSettings = serde_json::from_str(&with_off).unwrap();
         assert!(!s2.knowledge_enabled);
+    }
+
+    #[test]
+    fn media_defaults_are_off_and_overlay() {
+        unsafe {
+            for k in [
+                "GEC_MEDIA_ENABLED",
+                "GEC_MEDIA_APPLY_MODE",
+                "GEC_MEDIA_WORKDIR",
+                "GEC_MEDIA_VISION",
+                "GEC_MEDIA_OCR",
+                "PHOTOCRAFT_CLI",
+            ] {
+                std::env::remove_var(k);
+            }
+        }
+        let m = MediaSettings::from_env();
+        assert!(
+            !m.enabled,
+            "多模态默认关闭：未显式开启不得改变既有文本主链路行为"
+        );
+        assert_eq!(
+            m.apply_mode, "overlay",
+            "默认回写模式必须是 Overlay（决策 ①）"
+        );
+        assert!(m.use_structure_layer, "A 档（结构层）默认开——它是真值来源");
+        assert_eq!(
+            (m.timeout_secs, m.vision_timeout_secs),
+            (120, 300),
+            "视觉档超时必须比协作工具宽：整页转录不是 CLI 调用那种量级"
+        );
+        assert!(!m.use_vision && !m.use_ocr, "B/C 档默认关（P1/P2 再开）");
+        assert_eq!(
+            m.level, 3,
+            "检测级别默认 3：多模态默认火力全开（识别能力优先，性能后置）"
+        );
+        assert!(
+            m.force_llm,
+            "默认强制 LLM 层；无凭据时由引擎降级并在 layers 标注"
+        );
+        assert_eq!(m.cjk_font, "Heiti SC");
+        // 旧设置文件无 media 字段 → 取默认（向后兼容）
+        let legacy = r#"{"hanlp_endpoint":"http://x","llm":{"base_url":"","api_key":"","model":"","timeout_secs":30,"prompts_dir":"prompts"}}"#;
+        let s: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(!s.media.enabled);
+        assert_eq!(s.media.apply_mode, "overlay");
+        // 模式字符串宽松解析（UI / env / 请求三处输入共用）
+        assert_eq!(
+            media_core::ApplyMode::parse("IN-PLACE"),
+            media_core::ApplyMode::InPlace
+        );
+        assert_eq!(
+            media_core::ApplyMode::parse("list_only"),
+            media_core::ApplyMode::ListOnly
+        );
+        assert_eq!(
+            media_core::ApplyMode::parse("whatever"),
+            media_core::ApplyMode::Overlay
+        );
     }
 }

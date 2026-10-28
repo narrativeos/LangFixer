@@ -14,6 +14,7 @@ pub mod l3;
 pub mod languages;
 pub mod learned_knowledge;
 pub mod llm_feedback;
+pub mod media;
 pub mod optimization;
 pub mod reflection_center;
 pub mod rules;
@@ -93,6 +94,23 @@ impl From<attribution_engine::AttributionError> for ApiError {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/gec/detect", axum::routing::post(detect::detect))
+        // ── 多模态审校（MULTIMODAL.md §8）：上传载体可达数十 MB，单独放宽 body limit ──
+        .nest(
+            "/gec/media",
+            Router::new()
+                .route("/probes", axum::routing::post(media::probes))
+                .route("/inspect", axum::routing::post(media::inspect))
+                .route(
+                    "/jobs",
+                    axum::routing::post(media::create_job).get(media::jobs),
+                )
+                .route("/jobs/:id", axum::routing::get(media::job))
+                .route("/jobs/:id/preview", axum::routing::get(media::preview))
+                .route("/jobs/:id/apply", axum::routing::post(media::apply))
+                .route("/report", axum::routing::post(media::report))
+                .route("/reports/:id", axum::routing::get(media::report_file))
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/gec/eval/run", axum::routing::post(eval::run))
         .route("/gec/eval/job/:id", axum::routing::get(eval::job))
         .route("/gec/eval/reports", axum::routing::get(eval::reports))

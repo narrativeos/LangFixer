@@ -5,6 +5,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "api-server"
+path = "src/main.rs"
+
+# 重演 → 勾选 → 输出正误表（MULTIMODAL.md §18）的离线导出工具
+[[bin]]
+name = "media-report"
+path = "src/bin/media_report.rs"
+
 [dependencies]
 shared-model = { workspace = true }
 gec-core = { workspace = true }
@@ -12,6 +21,8 @@ gec-zh = { workspace = true }
 gec-en = { workspace = true }
 gec-ja = { workspace = true }
 attribution-engine = { workspace = true }
+media-core = { workspace = true }
+media-flow = { workspace = true }
 document-parse = { workspace = true }
 langfixer-llm = { workspace = true }
 async-trait = { workspace = true }
@@ -31,5 +42,6 @@ chrono = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
