@@ -16,8 +16,24 @@ fn env_guard() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 词表目录：**出厂词表的临时副本**（每次调用一份）
+///
+/// 采纳 / 反馈类路由会把规则开关回写词表文件（`sync_rules_to_file`），
+/// 直接指向仓库 `lexicons/` 会让测试改到出厂默认（实测见 `api.rs` 同名函数注释）。
 fn lexicons_abs() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons")
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons");
+    let tmp = std::env::temp_dir().join(format!(
+        "langfixer_fb_lex_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), tmp.join(entry.path().file_name().unwrap())).unwrap();
+        }
+    }
+    tmp
 }
 
 /// 构建 server（调用方须持 env 锁）；`db_file` 显式指定 SQLite 文件

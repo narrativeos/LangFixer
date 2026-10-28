@@ -14,6 +14,10 @@
 //! 建议类型（`gec_core::reflection_center::suggestion_kinds`）：
 //! `lexicon_condition`（词表条件化）/ `rule_tune`（规则调参）/
 //! `l3_sample`（L3 样本 / 重训练）/ `llm_arm`（LLM 换臂 / 训练数据）。
+//! 请求可带 `gold`（金集闭卷证据，评测 harness 产出）：金集里**具体哪几条没抓到**
+//! 会按靶子分类落成建议（规则触发了没 credited → `rule_tune`；局部可形式化 →
+//! `lexicon_condition`；结构性差错 → `l3_sample`；编辑判断 → `llm_arm`），
+//! 每条都带 `gold_nos` 能回到专家表条目。只补充，不改反馈侧判定。
 //! 闭环定位见 `EVOLUTION.md`：测评发现弱层 → 反思聚成建议 → 训练消费 →
 //! 测评 A/B 验证。
 
@@ -44,6 +48,13 @@ pub struct ReflectRunRequest {
     /// 显式指定测评报告 id（缺省 = 该语言最近一份匹配基准的报告）
     #[serde(default)]
     pub eval_report_id: Option<String>,
+    /// 金集闭卷证据（可选；由评测 harness 产出，如 `media_gold@…`）
+    ///
+    /// 与测评服务的「整体 Fβ」互补：金集给的是**具体哪几条没抓到**，
+    /// 只有具体条目才能变成可执行靶子（补条件 / 喂样本 / 开 LLM）。
+    /// 只补充建议，不改反馈侧判定（见 `gec_core::build_report_with_gold`）。
+    #[serde(default)]
+    pub gold: Option<gec_core::GoldEvidenceIn>,
 }
 
 fn default_true() -> bool {
@@ -136,8 +147,15 @@ pub async fn run(
         });
         st
     };
-    let mut report =
-        gec_core::build_report(&req.lang, &created_at, &stats, &recent, eval, &l3_retrain);
+    let mut report = gec_core::build_report_with_gold(
+        &req.lang,
+        &created_at,
+        &stats,
+        &recent,
+        eval,
+        &l3_retrain,
+        req.gold.as_ref(),
+    );
     if req.include_eval
         && report
             .eval_evidence

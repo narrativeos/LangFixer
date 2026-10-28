@@ -313,6 +313,289 @@ pub async fn fetch_eval_evidence(
     parse_eval_report(&report)
 }
 
+/// 专家正误表（金集）里**闭卷未命中**的条目（外部测评证据，离线可算）
+///
+/// 与 `EvalEvidence`（测评服务的 Fβ / 分层数字）互补：那边说「整体弱」，
+/// 这里说**具体哪几条没抓到**——只有具体条目才能变成可执行的靶子（补条件 / 喂样本 / 开 LLM）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoldMissIn {
+    /// 专家条目号（正误表「序号」，用于人工回查）
+    pub no: u32,
+    /// 「错误或待核原文」
+    #[serde(default)]
+    pub original: String,
+    /// 「正确或处理建议」（专家写法）
+    #[serde(default)]
+    pub suggestion: String,
+    /// 「页码及位置」
+    #[serde(default)]
+    pub location: String,
+    /// 判定标签（`差错` / `表达优化` / `表述不清楚` / `未定` …）
+    #[serde(default)]
+    pub verdict: String,
+    /// 「备注及判定依据」原文（含 `【差错】` 等前缀）
+    #[serde(default)]
+    pub note: String,
+    /// 是否计差错（与金集 `counted` 一致）
+    #[serde(default)]
+    pub counted: bool,
+    /// 已有规则触发但未 credited 时的规则 id（有值 → 靶子是 `rule_tune`，不是新词表条件）
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    /// 规则归因的来源：`positional` = 同载体坐标重合（强）；`text` = 原文子串重叠（弱，
+    /// gold 原文在载体文本里定位不到时的兜底）。强弱必须留痕——弱归因要先人工核对
+    /// 「是不是同一条差错」，不能与强归因一样直接当「规则不对」处理
+    #[serde(default)]
+    pub rule_via: Option<String>,
+}
+
+/// 金集测评证据（闭卷口径）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoldEvidenceIn {
+    /// 证据来源标识（如 `media_gold@2026-10-26 · 上限评测 · 离线 level 1`）
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub gold_total: usize,
+    /// 计差错条目数
+    #[serde(default)]
+    pub counted_total: usize,
+    /// 文本口径命中数
+    #[serde(default)]
+    pub text_hits: usize,
+    /// 位置口径命中数
+    #[serde(default)]
+    pub positional_hits: usize,
+    /// 闭卷未命中条目
+    #[serde(default)]
+    pub misses: Vec<GoldMissIn>,
+}
+
+/// 未命中条目的靶子类型（[`classify_miss`] 的分类结果）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissAction {
+    /// 已有规则触发但没 credited → 调规则
+    RuleTune,
+    /// 局部可形式化（错别字 / 标点 / 时间数字 / 分隔）→ 词表条件或规则模式
+    LexiconCondition,
+    /// 结构性差错（搭配 / 层次 / 主语）→ 喂 L3 样本（决策模型学不出来就是学不出来）
+    L3Sample,
+    /// 编辑判断（表达优化 / 表述不清 / 未定）→ LLM 层
+    LlmArm,
+}
+
+/// 可形式化的关键词（命中 → [`MissAction::LexiconCondition`]）
+const MISS_LEXICON_KEYWORDS: [&str; 9] = [
+    "错别字",
+    "拼写",
+    "标点",
+    "冒号",
+    "分隔",
+    "小时制",
+    "时间",
+    "数字",
+    "大小写",
+];
+
+/// 只取判定依据的**第一句**：专家常在后面补「具体内容由院方确认」这类无关话，
+/// 里面的「时间」等词会把结构性差错误分进词表靶子（实测金集 #8 就是这样）
+fn first_clause(s: &str) -> &str {
+    match s.find(['。', '；', ';']) {
+        Some(i) => &s[..i],
+        None => s,
+    }
+}
+
+/// 把未命中条目分到最合适的靶子（**确定性**映射）
+///
+/// 立场：分类错了不要紧——建议进队列是 `pending`，由人工 / P2 判定（`dismissed` 也是合法结局）；
+/// 但**不能不提**：闭卷漏掉的计差错条目必须至少产出一条建议，否则反思中心就是装饰。
+pub fn classify_miss(m: &GoldMissIn) -> MissAction {
+    if m.rule_id.is_some() {
+        return MissAction::RuleTune;
+    }
+    // 不计差错 = 专家自己都没定性为差错（表达优化 / 表述不清 / 未定）——
+    // 那是编辑判断，词典与决策模型都不该硬来，靶子在 LLM 层
+    if !m.counted {
+        return MissAction::LlmArm;
+    }
+    let hay = format!("{} {}", first_clause(&m.verdict), first_clause(&m.note));
+    if MISS_LEXICON_KEYWORDS.iter().any(|k| hay.contains(k)) {
+        MissAction::LexiconCondition
+    } else {
+        MissAction::L3Sample
+    }
+}
+
+/// 金集证据 → findings（写进报告的「发现」，数字必须与评测同一把尺子）
+pub fn gold_findings(gold: &GoldEvidenceIn) -> Vec<String> {
+    let mut out = Vec::new();
+    let counted_miss = gold.misses.iter().filter(|m| m.counted).count();
+    out.push(format!(
+        "金集闭卷复现（{}）：{} 条 gold 中文本口径命中 {}、位置口径命中 {}；\
+         未命中 {} 条（其中计差错 {counted_miss} 条）",
+        gold.source,
+        gold.gold_total,
+        gold.text_hits,
+        gold.positional_hits,
+        gold.misses.len(),
+    ));
+    if !gold.misses.is_empty() && counted_miss == 0 {
+        out.push("未命中的都不是计差错条目 → 硬差错已全覆盖，剩余是编辑判断".to_string());
+    }
+    if counted_miss > 0 {
+        let nos: Vec<String> = gold
+            .misses
+            .iter()
+            .filter(|m| m.counted)
+            .map(|m| format!("#{}", m.no))
+            .collect();
+        out.push(format!(
+            "未命中的计差错条目：{}（必须逐条给靶子）",
+            nos.join(" ")
+        ));
+    }
+    out
+}
+
+/// 合并同靶子建议：证据合并，payload 里的 `gold_nos` / `originals` 求并集
+///
+/// 不能直接用 [`push_suggestion`]：它只合并证据，payload 会被首条占住，
+/// 后来条目的**专家条目号与原文都丢了**——「这条建议对应专家表哪几条」必须可追溯。
+fn push_gold_suggestion(
+    out: &mut Vec<ReflectionSuggestion>,
+    kind: &str,
+    target: String,
+    summary: String,
+    evidence: Vec<String>,
+    payload: serde_json::Value,
+    priority: u8,
+) {
+    // 可追溯字段：新建议 payload 里的这些数组必须并入已有同靶子建议
+    const MERGE_KEYS: [&str; 2] = ["gold_nos", "originals"];
+    fn union(payload: &mut serde_json::Value, key: &str, values: Vec<serde_json::Value>) {
+        let Some(obj) = payload.as_object_mut() else {
+            return;
+        };
+        let arr = obj
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        let Some(list) = arr.as_array_mut() else {
+            return;
+        };
+        for v in values {
+            if !list.contains(&v) {
+                list.push(v);
+            }
+        }
+    }
+    if let Some(existing) = out
+        .iter_mut()
+        .find(|s| s.kind == kind && s.target == target)
+    {
+        for e in evidence {
+            if !existing.evidence.contains(&e) {
+                existing.evidence.push(e);
+            }
+        }
+        for key in MERGE_KEYS {
+            let values = payload
+                .get(key)
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            union(&mut existing.payload, key, values);
+        }
+        if priority < existing.priority {
+            existing.priority = priority;
+            existing.summary = summary;
+        }
+    } else {
+        out.push(ReflectionSuggestion {
+            kind: kind.to_string(),
+            target,
+            summary,
+            evidence,
+            payload,
+            priority,
+        });
+    }
+}
+
+/// 金集证据 → 建议队列（同一 (kind, target) 合并证据；payload 沿用 [`suggestion_kinds`] 约定，
+/// 额外带 `gold_nos` 让 P2 / 人工能回到专家表具体条目）
+pub fn gold_suggestions(gold: &GoldEvidenceIn) -> Vec<ReflectionSuggestion> {
+    let mut out: Vec<ReflectionSuggestion> = Vec::new();
+    for m in &gold.misses {
+        let evidence = vec![format!(
+            "金集 #{}（{}）原文「{}」专家建议「{}」",
+            m.no,
+            if m.counted { "计差错" } else { "不计" },
+            m.original,
+            m.suggestion
+        )];
+        let priority = if m.counted { 0 } else { 2 };
+        match classify_miss(m) {
+            MissAction::RuleTune => {
+                let rid = m.rule_id.clone().unwrap_or_default();
+                let via = match m.rule_via.as_deref() {
+                    Some("text") => "归因＝原文重叠（弱：gold 原文在载体上定位不到，先核对是不是同一条差错）",
+                    Some(_) => "归因＝坐标重合（强：同一处判定）",
+                    None => "归因未留痕",
+                };
+                push_gold_suggestion(
+                    &mut out,
+                    suggestion_kinds::RULE_TUNE,
+                    rid.clone(),
+                    format!(
+                        "规则 {rid} 触发了但金集 #{} 未被 credited → 核对触发条件与建议文本（是规则不对，不是缺规则）· {via}",
+                        m.no
+                    ),
+                    evidence,
+                    serde_json::json!({
+                        "rule_id": rid,
+                        "rule_via": m.rule_via,
+                        "gold_nos": [m.no]
+                    }),
+                    priority,
+                );
+            }
+            MissAction::LexiconCondition => push_gold_suggestion(
+                &mut out,
+                suggestion_kinds::LEXICON_CONDITION,
+                "（缺条件）".into(),
+                format!(
+                    "金集 #{} 是局部可形式化差错但没抓到 → 补词表条件 / 规则模式（入库前先过消融）",
+                    m.no
+                ),
+                evidence,
+                serde_json::json!({ "originals": [m.original], "gold_nos": [m.no] }),
+                priority,
+            ),
+            MissAction::L3Sample => push_gold_suggestion(
+                &mut out,
+                suggestion_kinds::L3_SAMPLE,
+                "decision".into(),
+                "结构性差错（搭配 / 层次 / 主语）规则写不动 → 把专家改法作为正样本汇入 L3 飞轮".into(),
+                evidence,
+                serde_json::json!({ "source": "decision", "originals": [m.original], "gold_nos": [m.no] }),
+                priority,
+            ),
+            MissAction::LlmArm => push_gold_suggestion(
+                &mut out,
+                suggestion_kinds::LLM_ARM,
+                "llm".into(),
+                "编辑判断类条目（表达优化 / 表述不清 / 未定）不该由词典硬判 → 启用 LLM 层并用留出集验证".into(),
+                evidence,
+                serde_json::json!({ "current_arm": null, "originals": [m.original], "gold_nos": [m.no] }),
+                priority,
+            ),
+        }
+    }
+    out.sort_by_key(|s| s.priority);
+    out
+}
+
 /// 生成反思报告（确定性核心：反馈聚合 + 测评证据 → findings + 建议队列）
 ///
 /// 建议去重：同一 (kind, target) 只保留一条（priority 取高者，证据合并）。
@@ -608,6 +891,37 @@ pub fn build_report(
         eval_evidence: eval,
         suggestions,
     }
+}
+
+/// [`build_report`] + 金集闭卷证据（外部测评证据的一种，离线可算）
+///
+/// 金集 findings 追加在反馈 findings 之后；建议按 (kind, target) 与反馈侧建议合并去重，
+/// 最后按 priority 升序重排。**不改反馈侧任何判定**——金集证据只补充，不覆盖。
+pub fn build_report_with_gold(
+    lang: &str,
+    created_at: &str,
+    stats: &[FeedbackStatIn],
+    recent: &[FeedbackEntryIn],
+    eval: Option<EvalEvidence>,
+    l3_retrain: &L3RetrainStateIn,
+    gold: Option<&GoldEvidenceIn>,
+) -> ReflectionCenterReport {
+    let mut report = build_report(lang, created_at, stats, recent, eval, l3_retrain);
+    let Some(gold) = gold else { return report };
+    report.findings.extend(gold_findings(gold));
+    for s in gold_suggestions(gold) {
+        push_suggestion(
+            &mut report.suggestions,
+            &s.kind,
+            s.target,
+            s.summary,
+            s.evidence,
+            s.payload,
+            s.priority,
+        );
+    }
+    report.suggestions.sort_by_key(|s| s.priority);
+    report
 }
 
 fn value_or_null(s: &str) -> serde_json::Value {
@@ -1100,5 +1414,249 @@ mod tests {
     fn parse_eval_report_rejects_malformed() {
         assert!(parse_eval_report(&serde_json::json!({ "foo": 1 })).is_none());
         assert!(parse_eval_report(&serde_json::Value::Null).is_none());
+    }
+
+    fn miss(no: u32, counted: bool, verdict: &str, note: &str, original: &str) -> GoldMissIn {
+        GoldMissIn {
+            no,
+            original: original.into(),
+            suggestion: "专家改法".into(),
+            location: "图片1 中部".into(),
+            verdict: verdict.into(),
+            note: note.into(),
+            counted,
+            rule_id: None,
+            rule_via: None,
+        }
+    }
+
+    #[test]
+    fn gold_miss_classification_is_deterministic() {
+        // 规则触发了却没 credited → 靶子是规则本身，不是「再补一条词典」
+        let mut fired = miss(13, true, "差错", "【差错】错别字：报道/报到", "报道");
+        fired.rule_id = Some("ZH_CONFUSABLE".into());
+        assert_eq!(classify_miss(&fired), MissAction::RuleTune);
+        // 局部可形式化（并列未分隔）→ 词表条件
+        assert_eq!(
+            classify_miss(&miss(
+                3,
+                true,
+                "差错",
+                "【差错】并列指标未作分隔",
+                "血压心率"
+            )),
+            MissAction::LexiconCondition
+        );
+        // 结构性差错 → L3 样本
+        assert_eq!(
+            classify_miss(&miss(
+                11,
+                true,
+                "差错",
+                "【差错】主谓搭配不当",
+                "病房工作电话不咨询病情"
+            )),
+            MissAction::L3Sample
+        );
+        // 不计差错 = 编辑判断 → LLM 层（词典硬判就是误报源头）
+        assert_eq!(
+            classify_miss(&miss(
+                1,
+                false,
+                "表达优化",
+                "【表达优化】关系不明",
+                "住院手续身份核查"
+            )),
+            MissAction::LlmArm
+        );
+    }
+
+    #[test]
+    fn gold_suggestions_keep_every_gold_no_when_merged() {
+        // 同靶子合并时不能把后来条目的专家条目号丢掉（payload 被首条占住是实测踩过的坑）；
+        // 且 #8 那种「补充说明里带『具体时间』」的结构性差错不能被误分进词表靶子
+        let gold = GoldEvidenceIn {
+            misses: vec![
+                miss(
+                    8,
+                    true,
+                    "差错",
+                    "【差错】并列条件中混入“需等”这一等待动作，句子层次不清。改文仅理顺条件与先后关系；具体时间由院方确认",
+                    "且次日上午10点左右需等",
+                ),
+                miss(
+                    11,
+                    true,
+                    "差错",
+                    "【差错】“电话”不能实施“咨询”动作，原句主谓搭配不当。改文保留原限制性意思",
+                    "病房工作电话不咨询病情",
+                ),
+            ],
+            ..Default::default()
+        };
+        let s = gold_suggestions(&gold);
+        assert_eq!(s.len(), 1, "同靶子必须合并");
+        assert_eq!(s[0].kind, suggestion_kinds::L3_SAMPLE, "{:?}", s[0]);
+        let nos: Vec<u64> = s[0].payload["gold_nos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(nos, vec![8, 11], "合并后必须能回到每一条专家条目");
+        assert_eq!(s[0].payload["originals"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rule_tune_suggestion_keeps_attribution_strength() {
+        // 规则归因的强弱必须跟着建议走：坐标重合是同一处判定，原文重叠只是兜底猜测，
+        // 两者混在一起就会把「先核对是不是同一条差错」的活当成「规则不对」直接改规则
+        let weak = {
+            let mut m = miss(
+                13,
+                true,
+                "差错",
+                "【差错】错别字：报道/报到",
+                "分时段进入病区报道。",
+            );
+            m.rule_id = Some("ZH_CONFUSABLE".into());
+            m.rule_via = Some("text".into());
+            m
+        };
+        let s = gold_suggestions(&GoldEvidenceIn {
+            misses: vec![weak],
+            ..Default::default()
+        });
+        let s = s
+            .iter()
+            .find(|s| s.kind == suggestion_kinds::RULE_TUNE)
+            .expect("rule_tune 建议");
+        assert!(
+            s.summary.contains("原文重叠"),
+            "弱归因必须写进摘要: {}",
+            s.summary
+        );
+        assert_eq!(s.payload["rule_via"], "text");
+
+        let strong = {
+            let mut m = miss(
+                13,
+                true,
+                "差错",
+                "【差错】错别字：报道/报到",
+                "分时段进入病区报道。",
+            );
+            m.rule_id = Some("ZH_CONFUSABLE".into());
+            m.rule_via = Some("positional".into());
+            m
+        };
+        let s = gold_suggestions(&GoldEvidenceIn {
+            misses: vec![strong],
+            ..Default::default()
+        });
+        let s = s
+            .iter()
+            .find(|s| s.kind == suggestion_kinds::RULE_TUNE)
+            .expect("rule_tune 建议");
+        assert!(
+            s.summary.contains("坐标重合"),
+            "强归因要标明: {}",
+            s.summary
+        );
+        assert_eq!(s.payload["rule_via"], "positional");
+    }
+
+    #[test]
+    fn gold_misses_become_queued_suggestions_with_traceability() {
+        let gold = GoldEvidenceIn {
+            source: "test".into(),
+            gold_total: 6,
+            counted_total: 4,
+            text_hits: 1,
+            positional_hits: 2,
+            misses: vec![
+                miss(3, true, "差错", "【差错】并列指标未作分隔", "血压心率"),
+                miss(
+                    8,
+                    true,
+                    "差错",
+                    "【差错】并列条件混入等待动作",
+                    "且次日上午10点左右需等",
+                ),
+                miss(
+                    11,
+                    true,
+                    "差错",
+                    "【差错】主谓搭配不当",
+                    "病房工作电话不咨询病情",
+                ),
+                miss(
+                    15,
+                    false,
+                    "表达不清楚",
+                    "【表达不清楚】不能认定矛盾",
+                    "每天15:00—16:00",
+                ),
+            ],
+        };
+        let s = gold_suggestions(&gold);
+        // 同类同靶子必须合并：#8 + #11 都是结构性 → 1 条 l3_sample（证据 2 条，不刷屏）
+        let l3: Vec<&ReflectionSuggestion> = s
+            .iter()
+            .filter(|x| x.kind == suggestion_kinds::L3_SAMPLE)
+            .collect();
+        assert_eq!(l3.len(), 1, "同一靶子必须合并");
+        assert_eq!(l3[0].evidence.len(), 2);
+        assert_eq!(l3[0].priority, 0, "计差错漏报最高优先级");
+        let lex: Vec<&ReflectionSuggestion> = s
+            .iter()
+            .filter(|x| x.kind == suggestion_kinds::LEXICON_CONDITION)
+            .collect();
+        assert_eq!(lex.len(), 1, "#3（并列未分隔）应给词表条件靶子");
+        assert_eq!(lex[0].evidence.len(), 1);
+        let llm = s
+            .iter()
+            .find(|x| x.kind == suggestion_kinds::LLM_ARM)
+            .expect("编辑判断类漏报应给 llm_arm");
+        assert_eq!(llm.priority, 2, "编辑判断不得抢计差错漏报的优先级");
+        // 每条建议都能回到专家表条目
+        assert!(s.iter().all(|x| {
+            x.payload
+                .get("gold_nos")
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false)
+        }));
+        // 报告合并：findings 追加、建议合并去重
+        let r = build_report_with_gold(
+            "zh",
+            "t",
+            &[],
+            &[],
+            None,
+            &L3RetrainStateIn::default(),
+            Some(&gold),
+        );
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.contains("未命中的计差错条目：#3 #8 #11")),
+            "findings：{:?}",
+            r.findings
+        );
+        assert!(r.suggestions.len() >= s.len());
+        // 不传金集证据 → 与 build_report 完全一致（金集证据只补充，不覆盖）
+        let plain = build_report("zh", "t", &[], &[], None, &L3RetrainStateIn::default());
+        let none = build_report_with_gold(
+            "zh",
+            "t",
+            &[],
+            &[],
+            None,
+            &L3RetrainStateIn::default(),
+            None,
+        );
+        assert_eq!(plain.suggestions.len(), none.suggestions.len());
+        assert_eq!(plain.findings, none.findings);
     }
 }

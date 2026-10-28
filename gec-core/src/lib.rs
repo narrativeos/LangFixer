@@ -61,8 +61,9 @@ pub use reflection::{
     RuleDefInfo, normalize_source, reflect_rejection, suggestion_kinds,
 };
 pub use reflection_center::{
-    EvalEvidence, EvalLayerEvidence, FeedbackEntryIn, FeedbackStatIn, L3RetrainStateIn,
-    ReflectionCenterReport, build_report, fetch_eval_evidence, parse_eval_report,
+    EvalEvidence, EvalLayerEvidence, FeedbackEntryIn, FeedbackStatIn, GoldEvidenceIn, GoldMissIn,
+    L3RetrainStateIn, MissAction, ReflectionCenterReport, build_report, build_report_with_gold,
+    classify_miss, fetch_eval_evidence, gold_findings, gold_suggestions, parse_eval_report,
     select_evidence_report_id,
 };
 pub use settings_test::TestResult;

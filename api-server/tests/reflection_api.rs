@@ -14,8 +14,24 @@ fn env_guard() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 词表目录：**出厂词表的临时副本**（每次调用一份）
+///
+/// 反思中心的采纳动作会走规则开关回写（`sync_rules_to_file`），
+/// 直接指向仓库 `lexicons/` 会让测试改到出厂默认（实测见 `api.rs` 同名函数注释）。
 fn lexicons_abs() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons")
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons");
+    let tmp = std::env::temp_dir().join(format!(
+        "langfixer_rf_lex_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), tmp.join(entry.path().file_name().unwrap())).unwrap();
+        }
+    }
+    tmp
 }
 
 /// 构建 server（调用方须持 env 锁）；测评服务指向不可达地址（hermetic）
@@ -281,6 +297,112 @@ async fn reflect_run_aggregates_feedback_and_serves_queue() {
     )
     .await;
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+}
+
+/// 金集闭卷证据 → **具体漏报条目**变成可执行靶子，并能从建议队列读回（带 `gold_nos`）
+#[tokio::test]
+async fn reflect_run_with_gold_evidence_queues_targeted_suggestions() {
+    let _g = env_guard();
+    let base = build_server(None).await;
+    let c = client();
+    let gold = serde_json::json!({
+        "source": "media_gold@test · 上限评测",
+        "gold_total": 3,
+        "counted_total": 2,
+        "text_hits": 0,
+        "positional_hits": 0,
+        "misses": [
+            {
+                "no": 3,
+                "original": "血压心率",
+                "suggestion": "改为「血压、心率」",
+                "location": "图片1 未定位",
+                "verdict": "差错",
+                "note": "【差错】并列指标未作分隔",
+                "counted": true
+            },
+            {
+                "no": 11,
+                "original": "病房工作电话不咨询病情",
+                "suggestion": "改为「…不可用于咨询病情」",
+                "location": "图片2 未定位",
+                "verdict": "差错",
+                "note": "【差错】主谓搭配不当",
+                "counted": true
+            },
+            {
+                "no": 1,
+                "original": "住院手续身份核查",
+                "suggestion": "按栏目实际内容选定标题",
+                "location": "图片1 未定位",
+                "verdict": "表达优化",
+                "note": "【表达优化】关系不明",
+                "counted": false
+            }
+        ]
+    });
+    let (status, res) = post_json(
+        &c,
+        &format!("{base}/gec/reflect/run"),
+        &serde_json::json!({ "lang": "zh", "include_eval": false, "gold": gold }),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::OK, "{res}");
+    let report = &res["report"];
+    let kinds: Vec<&str> = report["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.contains(&"lexicon_condition")
+            && kinds.contains(&"l3_sample")
+            && kinds.contains(&"llm_arm"),
+        "三类靶子都应出现（局部可形式化 / 结构性 / 编辑判断）：{kinds:?}"
+    );
+    // findings 必须点出未命中的计差错条目号（与评测同一把尺子，不是含糊的「召回偏低」）
+    assert!(
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f.as_str().unwrap_or_default().contains("#3 #11")),
+        "{:?}",
+        report["findings"]
+    );
+    // 队列落库可读回，payload 带 gold_nos（能回到专家表具体条目）
+    let n_sug = res["suggestion_ids"].as_array().unwrap().len();
+    let (status, queue) = get_json(
+        &c,
+        &format!("{base}/gec/reflect/suggestions?status=pending&lang=zh"),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let rows = queue["suggestions"].as_array().unwrap();
+    assert_eq!(rows.len(), n_sug);
+    let gold_rows: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|s| {
+            s["payload"]["gold_nos"]
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        gold_rows.len() >= 3,
+        "金集来源的建议必须带 gold_nos：{}",
+        serde_json::to_string(&rows).unwrap()
+    );
+    // 计差错漏报优先级最高（编辑判断不得抢位）
+    let min_priority = rows
+        .iter()
+        .filter(|s| s["payload"]["gold_nos"].is_array())
+        .map(|s| s["priority"].as_i64().unwrap())
+        .min()
+        .unwrap();
+    assert_eq!(min_priority, 0, "{:?}", rows);
 }
 
 #[tokio::test]
