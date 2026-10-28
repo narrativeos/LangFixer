@@ -22,8 +22,8 @@
       "id": "ZH_CONFUSABLE",
       "category": "spelling",
       "priority": 10,
-      "enabled": false,
-      "description": "同音/形近错别字与繁简混用；条目可附 condition（邻接 POS/文本白名单、周边窗口正则），条件满足才触发",
+      "enabled": true,
+      "description": "同音/形近错别字与繁简混用；条目可附 condition（邻接 POS/文本白名单、周边窗口正则），条件满足才触发（出厂启用：误报由 condition / 排除词 / 人工勾选收敛）",
       "examples": [
         {
           "wrong": "他時常迟到",
@@ -43,8 +43,8 @@
       "id": "ZH_DE_DA_DE",
       "category": "grammar",
       "priority": 10,
-      "enabled": false,
-      "description": "「的/地/得」误用",
+      "enabled": true,
+      "description": "「的/地/得」误用（需 POS；无 NLP 服务时该规则不产出）",
       "examples": [
         {
           "wrong": "他的高兴笑",
@@ -73,8 +73,8 @@
       "id": "ZH_MISSING_SUBJECT",
       "category": "grammar",
       "priority": 8,
-      "enabled": false,
-      "description": "句子成分残缺（缺主语）",
+      "enabled": true,
+      "description": "句子成分残缺（缺主语；需 POS，句首动词触发；误报进 excludes 名单）",
       "examples": [
         {
           "wrong": "学习。",
@@ -147,9 +147,99 @@
           "right": "抱负"
         }
       ]
+    },
+    {
+      "id": "ZH_TIME_MIX",
+      "category": "grammar",
+      "priority": 7,
+      "enabled": true,
+      "description": "12/24 小时制混用：时段词（上午/下午/中午/晚上/凌晨）与 13-23 点并存，时间表达重复；不改变原时间，两种写法择一",
+      "examples": [
+        {
+          "wrong": "请买下午15点以后的车票。",
+          "right": "请买15点以后的车票。"
+        },
+        {
+          "wrong": "上午20点集合。",
+          "right": "20点集合。"
+        }
+      ]
+    },
+    {
+      "id": "ZH_COLON_AFTER_NAME",
+      "category": "typography",
+      "priority": 6,
+      "enabled": true,
+      "description": "名称（小程序/公众号/网址/二维码等）后误用冒号作提示性停顿；参照 GB/T 15834—2011 附录 A.6.3，宜删冒号并用引号标明名称",
+      "examples": [
+        {
+          "wrong": "微信小程序：掌上阜外医院",
+          "right": "微信小程序“掌上阜外医院”"
+        }
+      ]
     }
   ],
   "confusables": [
+    [
+      "必竟",
+      "毕竟",
+      "「毕竟」的误写"
+    ],
+    [
+      "部份",
+      "部分",
+      "「部分」的误写"
+    ],
+    [
+      "布署",
+      "部署",
+      "「部署」的误写"
+    ],
+    [
+      "按装",
+      "安装",
+      "「安装」的误写"
+    ],
+    [
+      "再接再励",
+      "再接再厉",
+      "「再接再厉」的误写"
+    ],
+    [
+      "换然一新",
+      "焕然一新",
+      "「焕然一新」的误写"
+    ],
+    [
+      "走头无路",
+      "走投无路",
+      "「走投无路」的误写"
+    ],
+    [
+      "迫不急待",
+      "迫不及待",
+      "「迫不及待」的误写"
+    ],
+    [
+      "一如继往",
+      "一如既往",
+      "「一如既往」的误写"
+    ],
+    [
+      "帐号",
+      "账号",
+      "账户义应写作「账号」"
+    ],
+    [
+      "报导",
+      "报道",
+      "新闻报道写作「报道」；「报导」为异形误写"
+    ],
+    [
+      "报道",
+      "报到",
+      "到某地办理到达登记应用「报到」（如「病区报道」）；新闻传播义用「报道」，该语境请人工否决本条"
+    ],
     [
       "時",
       "时",

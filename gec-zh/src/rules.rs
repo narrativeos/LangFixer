@@ -191,6 +191,8 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_de_da_de(text, tokens));
     out.extend(detect_punctuation(text, tokens, lexicon));
     out.extend(detect_missing_subject(text, tokens, lexicon));
+    out.extend(detect_time_mixed(text));
+    out.extend(detect_colon_after_name(text));
     out.extend(detect_anomalies(text, lexicon));
     out
 }
@@ -214,6 +216,8 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     let mut out = Vec::new();
     out.extend(detect_homophones_by_scan(text, lexicon));
     out.extend(detect_punctuation_by_scan(text, lexicon));
+    out.extend(detect_time_mixed(text));
+    out.extend(detect_colon_after_name(text));
     out.extend(detect_anomalies(text, lexicon));
     out
 }
@@ -442,6 +446,83 @@ fn is_cjk(c: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&c)
 }
 
+/// 12/24 小时制混用（不依赖 POS，token / 离线双路径共用）
+///
+/// 「下午15点」把 12 小时制时段词与 24 小时制钟点叠加，时间信息重复。
+/// 本规则**只指出矛盾并给出「删时段词」这一种择一写法**，不改钟点本身——
+/// 钟点是否为原文笔误属内容决策，交人工判定（与 `media-core` 报告里
+/// 「不编造位置 / 不静默改内容」同一立场）。
+fn detect_time_mixed(text: &str) -> Vec<Error> {
+    let re = match regex::Regex::new(r"(上午|下午|中午|晚上|凌晨)(1[3-9]|2[0-3])(点|时)")
+    {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_TIME_MIX 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for caps in re.captures_iter(text) {
+        let whole = caps.get(0).expect("group 0 必然存在");
+        let (period, hour, unit) = (
+            caps.get(1).map(|m| m.as_str()).unwrap_or(""),
+            caps.get(2).map(|m| m.as_str()).unwrap_or(""),
+            caps.get(3).map(|m| m.as_str()).unwrap_or(""),
+        );
+        let correction = format!("{hour}{unit}");
+        out.push(Error::new_with_meta(
+            "zh",
+            error_types::GRAMMAR,
+            0.75,
+            [whole.start(), whole.end()],
+            whole.as_str(),
+            Some(correction.clone()),
+            format!(
+                "12/24 小时制混用：「{period}」与「{hour}{unit}」并存，时间表达重复；删时段词或改 12 小时制（不改变原时间）"
+            ),
+            Some("grammar"),
+            Some("ZH_TIME_MIX"),
+            vec![Suggestion::new(correction, 0.75)],
+        ));
+    }
+    out
+}
+
+/// 名称后误用冒号（不依赖 POS，token / 离线双路径共用）
+///
+/// 「微信小程序：掌上阜外医院」这类写法在名称之间加了提示性停顿；
+/// 参照 GB/T 15834—2011 附录 A.6.3，此处不应使用冒号，宜删冒号并用引号标明名称。
+/// 置信 0.6：是否属于「列表引导语」（如「注意事项：」）需人工判定，故不自动改写。
+fn detect_colon_after_name(text: &str) -> Vec<Error> {
+    let re = match regex::Regex::new(
+        r"(小程序|公众号|公众号平台|客户端|二维码|网址|网站|平台|APP|App|app)：",
+    ) {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_COLON_AFTER_NAME 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for m in re.find_iter(text) {
+        let matched = m.as_str();
+        let name = matched.trim_end_matches('：');
+        out.push(Error::new_with_meta(
+            "zh",
+            error_types::PUNCTUATION,
+            0.6,
+            [m.start(), m.end()],
+            matched,
+            Some(name.to_string()),
+            "名称后误用冒号作提示性停顿（参照 GB/T 15834—2011 附录 A.6.3）：宜删冒号，名称用引号标明",
+            Some("typography"),
+            Some("ZH_COLON_AFTER_NAME"),
+            vec![Suggestion::new(name, 0.6)],
+        ));
+    }
+    out
+}
+
 /// 基础句法：句子以动词开头 → 疑似成分残缺（缺主语）
 fn detect_missing_subject(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Vec<Error> {
     let _ = text;
@@ -465,6 +546,13 @@ fn detect_missing_subject(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
         }
     }
     for start in sentence_starts {
+        // 礼貌祈使式（「请家属配合」「请勿倚靠」）：汉语祈使句省略主语是规范用法，不是成分残缺。
+        // 真实载体实测（住院须知）里它就是 ZH_MISSING_SUBJECT 的头号误报来源，
+        // 而这条规则在 CSCD / NaCGEC 里一次都没触发（离线无 POS 路径）——
+        // 所以这里只拦**语言层面确定成立**的祈使式，不拿样本调规则。
+        if tokens[start].text.starts_with('请') {
+            continue;
+        }
         if tokens[start].pos == "VV" && !excludes.iter().any(|w| w == &tokens[start].text) {
             out.push(Error::new_with_meta(
                 "zh",
@@ -647,6 +735,50 @@ mod tests {
         assert!(errors.iter().any(|e| e.correction.as_deref() == Some("时")));
     }
 
+    /// 新增的两条不依赖 POS 的规则（与专家正误表同型：时间表达混用、名称后误用冒号）
+    #[test]
+    fn time_mix_and_colon_after_name_fire_offline() {
+        let errors = detect_local("请买下午15点以后的车票。", &Lexicon::default());
+        let hit = errors
+            .iter()
+            .find(|e| e.rule_id.as_deref() == Some("ZH_TIME_MIX"))
+            .expect("「下午15点」应触发 ZH_TIME_MIX");
+        assert_eq!(hit.original, "下午15点");
+        assert_eq!(
+            hit.correction.as_deref(),
+            Some("15点"),
+            "只删时段词，不擅自改钟点"
+        );
+
+        // 正常 12 小时制表达不得触发
+        let ok = detect_local("次日上午10点左右需空腹。", &Lexicon::default());
+        assert!(
+            !ok.iter()
+                .any(|e| e.rule_id.as_deref() == Some("ZH_TIME_MIX")),
+            "「上午10点」不是 24 小时制混用: {ok:?}"
+        );
+
+        // 名称后误用冒号（GB/T 15834—2011 附录 A.6.3）
+        let e2 = detect_local("通过微信小程序：掌上阜外医院办理。", &Lexicon::default());
+        assert!(
+            e2.iter()
+                .any(|e| e.rule_id.as_deref() == Some("ZH_COLON_AFTER_NAME")),
+            "「小程序：」应触发 ZH_COLON_AFTER_NAME: {e2:?}"
+        );
+    }
+
+    /// 词表扩充：到病区办理到达登记应用「报到」
+    #[test]
+    fn confusable_scan_covers_baodao_to_baodao() {
+        let errors = detect_local("分时段进入病区报道。", &Lexicon::default());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.original == "报道" && e.correction.as_deref() == Some("报到")),
+            "「病区报道」应给出「报到」建议: {errors:?}"
+        );
+    }
+
     #[test]
     fn de_da_de_detection() {
         let tokens = vec![
@@ -682,6 +814,39 @@ mod tests {
         let tokens = vec![token("学习", "VV", [0, 2]), token("。", "PU", [2, 3])];
         let errors = detect_with_tokens("学习。", &tokens, &Lexicon::default());
         assert!(errors.iter().any(|e| e.error_type == error_types::GRAMMAR));
+    }
+
+    #[test]
+    fn missing_subject_skips_polite_imperative() {
+        // 「请…」是祈使式：主语省略规范，不是成分残缺
+        let tokens = vec![
+            token("请", "VV", [0, 3]),
+            token("家属", "NN", [3, 9]),
+            token("配合", "VV", [9, 15]),
+            token("。", "PU", [15, 18]),
+        ];
+        let errors = detect_with_tokens("请家属配合。", &tokens, &Lexicon::default());
+        assert!(
+            errors
+                .iter()
+                .all(|e| e.rule_id.as_deref() != Some("ZH_MISSING_SUBJECT")),
+            "祈使式不得报缺主语: {errors:?}"
+        );
+        // 「请勿倚靠」同理（同一句内后续动词不受影响）
+        let tokens2 = vec![
+            token("请勿", "VV", [0, 6]),
+            token("倚靠", "VV", [6, 12]),
+            token("。", "PU", [12, 15]),
+            token("学习", "VV", [15, 21]),
+            token("。", "PU", [21, 24]),
+        ];
+        let errors2 = detect_with_tokens("请勿倚靠。学习。", &tokens2, &Lexicon::default());
+        let grammar: Vec<&Error> = errors2
+            .iter()
+            .filter(|e| e.rule_id.as_deref() == Some("ZH_MISSING_SUBJECT"))
+            .collect();
+        assert_eq!(grammar.len(), 1, "只应剩「学习。」一条: {errors2:?}");
+        assert_eq!(grammar[0].original, "学习");
     }
 
     #[test]
