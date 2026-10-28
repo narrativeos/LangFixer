@@ -11,6 +11,7 @@
 > | `nacgec/`、`nacgec_gold.json` | [twnlp/cgc_data](https://huggingface.co/datasets/twnlp/cgc_data)（NaCGEC） | 研究用途 |
 > | `*_gold.json`（cscdns / nlpcc23 / cctc / sig13 / sig14 / midu / ctc21） | [CTCDataset](https://github.com/kedarting/CTCDataset) 合集转换 | 各子集许可不一，研究用途 |
 > | `cec_dat_data/` | [ChineseErrorCorrector](https://github.com/TW-NLP/ChineseErrorCorrector) | MIT |
+> | `media_gold.json` | **自产**：多模态审校验收金集（专家正误表抽取，非第三方语料） | Apache-2.0（随本仓库）；**原图不入库** |
 >
 > 仅用于本地评测与词表治理，**产品发行物（Docker 镜像 / 桌面安装包）不包含本目录**。
 > 商用部署前请逐集核对上游许可。本目录脚本（`*.py`）本身按 Apache-2.0 授权。
@@ -296,3 +297,67 @@ curation 前为 115（`做→作` 95 条为主）。
     （`expand_lexicon.py` 是幂等的，但会累加条目）
   - `cp lexicons/zh_gec_lexicon.json /tmp/zh_lexicon_backup.json`
     （`curate_lexicon_zh.py` 幂等；重跑前确认 REMOVE 集合与当前 JSON 一致）
+
+## media_gold.json — 多模态审校验收金集
+
+自产数据（非第三方语料）：两张住院告知实拍图 + 专家给出的**正误表**（docx 6 列表格）
+抽取而来的判定集。15 项，其中「计差错」7 项、「不计」8 项（表达优化 / 表述不清——
+真实缺陷但不计硬差错，打分权重 0.5）。
+
+| 字段 | 含义 |
+|---|---|
+| `no` / `location` | 序号 / 「页码及位置」列（原样保留，便于人工核对） |
+| `original` | 「错误或待核原文」——匹配主键 |
+| `suggestion` | 「正确或处理建议」 |
+| `counted` | `计错数` 列 ≠「不计」 |
+| `verdict` | 备注列的 `【…】` 判定标签；正误表未标注的按「不计」推定为 `未定` |
+| `carriers[]` | 载体规格（文件名 / 尺寸 / 有无文字层 / 归属条目）。**原图为 3072×4096 扁平照片，无文字层** |
+
+重新抽取：
+
+```bash
+./scripts/media_gold_extract.sh "<正误表.docx>" datasets/media_gold.json
+```
+
+打分管道在 Rust 侧：`media_core::gold::{parse_gold_rows, score}`
+（归一化 + 包含判定 + 字符 bigram 重叠，贪心一对一匹配；
+包含判定要求**较短一方 ≥ 3 字符**，否则单字符标点错误会把整句 gold 白送）。
+
+评测 harness：`api-server/tests/media_gold_eval.rs`
+
+```bash
+# ① 上限评测（离线、零凭据、零外部工具）：把 gold 原文当「完美抽取」喂进检测级联
+#    → 衡量的是「检测 + 回映射」这一半，与视觉/OCR 质量无关
+cargo test -p api-server --test media_gold_eval -- --nocapture
+# ② 真实端到端评测：原图 → B 档视觉抽取 → 检测（level 3）→ remap → 打分
+#    前置：原图目录 + 真实视觉模型凭据（LLM_API_KEY / GEC_MEDIA_VISION_MODEL）+ photocraft-cli
+LANGFIXER_MEDIA_DIR=<原图目录> cargo test -p api-server --test media_gold_eval -- --ignored --nocapture
+```
+
+**①的实测结论**：本地规则层对这份金集**召回 0%**，而同批文本里的正对照
+（半角逗号）稳定检出——管线没问题，是中文规则覆盖不足：
+出厂词表里 `ZH_CONFUSABLE` / `ZH_MISSING_SUBJECT` 的 `enabled = false`
+（抑制层会丢掉它们检出的错误），且 `confusables` 里也没有「报到/报道」这类条目。
+即：**多模态载体的召回瓶颈在检测层覆盖，不在抽取**。
+
+**③ 重演 → 勾选 → 输出正误表**（两个 harness 现在都会写 `candidates.json` + `report.*` 到
+`target/media-replay/`，可用 `LANGFIXER_REPLAY_DIR` 改目录）：
+
+```bash
+./scripts/media_expert_replay.sh replay     # 推演：candidates.json（每行带溯源 + 命中的专家条目号 gold_no）
+$EDITOR target/media-replay/candidates.json # 勾选："checked": false 剔除；各列内容可直接改
+./scripts/media_expert_replay.sh export     # 导出：report.docx / .md / .json / .html + 逐条重演对照
+```
+
+导出表的 6 列与本金集的抽取源（专家 docx 表格）**完全同构**，
+`media_core::report::to_columns()` 的产物必须能被 `gold::parse_gold_rows()` 原样读回
+（`media-core/src/report.rs` 有回归测试锁死）——「重演出的表」与「召回打分」用的是同一把尺子。
+Word 由 `wordcraft-cli convert report.html report.docx` 生成（实测表格结构与中文完好）。
+
+回归：`media-core/tests/gold_dataset.rs`（打分口径）·
+`api-server/tests/media_vision_api.rs`（B 档端到端，mock 视觉端点）·
+`api-server/tests/media_report_api.rs`（正误表导出：勾选 / 6 列互逆 / docx 读回）。
+**当前只有 B/C 档能端到端验收这份金集**——原图无文字层，A 档取不到文本；
+A 档回归用造的含文字层 PSD（`api-server/tests/media_api.rs`）。
+原图含机构信息，**不入库**，验收时由 `LANGFIXER_MEDIA_DIR` 指向本地目录。
+

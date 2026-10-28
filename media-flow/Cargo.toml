@@ -1,0 +1,23 @@
+[package]
+name = "media-flow"
+description = "LangFixer 载体（图片 / PDF / Word）审校编排：job 状态机 + 抽取 / 拼接 / 回映射 + 回写 + 正误表导出（api-server 与桌面端共用同一条链路）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+media-core = { workspace = true }
+shared-model = { workspace = true }
+langfixer-llm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+image = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }

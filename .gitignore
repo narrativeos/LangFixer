@@ -56,3 +56,6 @@ feature-model/l3_pool_raw/
 
 # 微调语料派生文件（从 datasets/ 可再生）
 decision-model/gate_ft/*.jsonl
+
+# 多模态 job 工作目录（每个 job 一个子目录：原件副本 / result.* / annotations.json）
+media-jobs/

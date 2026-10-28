@@ -12,6 +12,8 @@ members = [
     "desktop-app",
     "lexicon-store",
     "document-parse",
+    "media-core",
+    "media-flow",
 ]
 
 [workspace.package]
@@ -29,11 +31,16 @@ gec-en = { path = "gec-en" }
 gec-ja = { path = "gec-ja" }
 attribution-engine = { path = "attribution-engine" }
 document-parse = { path = "document-parse" }
+media-core = { path = "media-core" }
+media-flow = { path = "media-flow" }
 langfixer-llm = { path = "langfixer-llm" }
 lexicon-store = { path = "lexicon-store" }
 
 # 第三方
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+# 视觉档上传前压缩（MULTIMODAL.md §9 体积/时长、§14）：只开需要的解码器，不带默认 feature
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # preserve_order：JSON 对象保持文件内键序（IndexMap 而非 BTreeMap）——
 # 词表写回（sync_rules_to_file 等）重序列化时不重排顶层键
 serde_json = { version = "1", features = ["preserve_order"] }
