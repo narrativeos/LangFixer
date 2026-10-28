@@ -245,8 +245,8 @@ POST /gec/knowledge/dataset/:id/clean    删除资源包（?keep_orphan_points=1
 | `GEC_L3_ADOPT_COLLECT` | `1`（默认开启） | **采纳/放弃数据资产沉淀**开关：采纳 → `l3_data/<lang>/adopted.jsonl`（用户确认的句级 `src→dst` 平行语料）；放弃 → `rejected.jsonl`（片段级负偏好）。默认开（自用产品定位）；**多租户 / 隐私敏感部署显式 `0` 或 `false` 关闭**（检测历史 `corrected_text` 列不受此开关影响，属产品功能） |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | LLM 服务（任意 OpenAI 兼容端点） |
 | `LLM_API_KEY` | — | 缺省 = LLM 讲解未启用（`/gec/explain*` 返回 503，前端回退静态建议）且三级响应 level 2/3 的 LLM 兜底不可用（触发时返回 503） |
-| `LLM_MODEL` | `gpt-4o-mini` | 模型名 |
-| `LLM_TIMEOUT_SECS` | `30` | LLM 请求超时 |
+| `LLM_MODEL` | `gpt-4o-mini` | 模型名——必须是该端点 `/v1/models` 里存在的名字（名字错 = 每次调用 HTTP 400，LLM 层整层白跑） |
+| `LLM_TIMEOUT_SECS` | `30` | LLM 请求超时（思考模型 / 整载体长文要放宽：实测整载体检测 60s+，30s 必然超时失败并降级 level 1） |
 | `LLM_PROMPTS_DIR` | `prompts` | 提示词模板目录（`{lang}_{cefr}_prompt.json`，改文件即热更新；含 `{lang}_detect` 兜底检测模板） |
 | `GEC_TABLES_UPDATE_TOKEN` | — | 决策表热更新鉴权 token；设置后 `PUT /gec/tables/:lang` / `POST /gec/tables/:lang/rollback` 需携带匹配的 `X-Tables-Update-Token` 头（未设置时不鉴权） |
 | `GEC_RULE_STATE_FILE` | `langfixer-rule-state.json` | 规则运行时开关持久化文件（`{rule_id: bool}`；启动时加载，`PUT /gec/rules/:lang/toggles` 后写回） |
@@ -371,6 +371,69 @@ cd web-ui && npm run typecheck && npm run build
 6. **ChineseErrorCorrector 吸收**（规划中）：CEC（ACL 2026）六项设计的落地方案
    （prompt 教学分类 / 混淆字集 / 评测基准矩阵 / L3 大规模重训练 / 专用模型 / 数据增强），
    见 [CEC_ADOPTION.md](CEC_ADOPTION.md)；数据清单见 [datasets/cec_datasets.md](datasets/cec_datasets.md)。
+7. **多模态审校**（P0 图片·结构层档 + P1 图片·视觉档已落地）：输入面从纯文本扩展到图片 / PDF / Word——
+   外部协作工具（PhotoCraft / PdfCraft / WordCraft CLI）承担「打开载体 + 回写标注」两端，
+   检测内核（`GECDetector::detect(&str)`，`Error.span` 仍是字节偏移）保持不变，
+   外面加「文本单元投影 + 偏移回映射」层（新 crate [`media-core/`](media-core)：
+   `TextUnit` / `Region` / `Stitched` / `Annotation` + `stitch`/`remap` 纯函数 + 载体适配器；
+   编排层 [`media-flow/`](media-flow)：job 状态机 + 抽取档位 + 回写 + 正误表，
+   api-server 与桌面端都只是宿主，各自注入自己的检测级联）。
+   默认回写模式 = 叠加标注（不改原文）；每个 job 独立目录，**永不改原件**。
+   后端端点：`POST /gec/media/probes` · `POST /gec/media/inspect` ·
+   `POST|GET /gec/media/jobs` · `GET /gec/media/jobs/:id` · `GET /gec/media/jobs/:id/preview` ·
+   `POST /gec/media/jobs/:id/apply` · `POST /gec/media/report` ·
+   `GET /gec/media/reports/:id?format=json|md|html|docx`（开关 `GEC_MEDIA_ENABLED=1`，默认关闭）。
+   **A 档（结构层）取不到文本时自动降级 B 档**：多模态 LLM 逐字转录（`GEC_MEDIA_VISION=1` +
+   `GEC_MEDIA_VISION_MODEL`，提示词 `prompts/media_vision_prompt.json`），
+   bbox 尺度自动判定，低置信度 / 无定位一律 `unlocated`（只进列表不画框）。
+   **送端点前先压缩**：默认降到长边 2000px / 1.5MB / JPEG q80（`GEC_MEDIA_VISION_MAX_EDGE` /
+   `GEC_MEDIA_VISION_MAX_BYTES` / `GEC_MEDIA_VISION_JPEG_QUALITY`），实测 4.9MB 实拍图短请求
+   108s→2.6s、整载体转录由「必 503」变首轮即成功；bbox 是归一化坐标，压缩不影响回写定位，
+   压了多少会写进 job 告警。
+   验收金集：`datasets/media_gold.json`（专家正误表 15 项，`scripts/media_gold_extract.sh` 抽取），
+   打分管道 `media_core::gold::score`，评测 harness `api-server/tests/media_gold_eval.rs`：
+
+   ```bash
+   # 上限评测（离线零凭据）：gold 原文当「完美抽取」喂进检测级联
+   cargo test -p api-server --test media_gold_eval -- --nocapture
+   # 真实端到端评测：原图 → 视觉抽取 → 检测 → 打分
+   LANGFIXER_MEDIA_DIR=<原图目录> cargo test -p api-server --test media_gold_eval -- --ignored --nocapture
+   ```
+
+   实测：本地规则层对这份金集**召回 0%**（正对照稳定检出 → 管线没问题）——
+   瓶颈在中文检测覆盖（`ZH_CONFUSABLE` 出厂关闭 + 词典缺条目），不在抽取。
+
+   **重演 → 勾选 → 输出正误表**（把软件推到「能产出与专家同构的验收物」这一步）：
+
+   ```bash
+   ./scripts/media_expert_replay.sh replay    # ① 推演：载体 → candidates.json（含溯源与命中的专家条目号）
+   $EDITOR target/media-replay/candidates.json # ② 勾选：checked=false 剔除，各列内容可改
+   ./scripts/media_expert_replay.sh export    # ③ 导出：report.docx / .md / .json / .html
+   ```
+
+   导出表的 6 列与专家正误表一致（`序号 | 页码及位置 | 错误或待核原文 | 正确或处理建议 |
+   计错数 | 备注及判定依据`），且能被 `gold::parse_gold_rows` 原样读回——
+   「重演出的表」与「评测召回」是同一把尺子；Word 由 `wordcraft-cli convert` 生成，
+   缺该 CLI 时降级为告警而不是谎报。设计与实测见 MULTIMODAL.md §18。
+
+   **界面（web-ui 顶层导航「载体审校」，深链 `?view=media`）**：探测卡片（PhotoCraft 版本 /
+   视觉模型 / 压缩口径 `≤2000px ≤1.5MB JPEG q80` / 未启用原因与补法）→ 选图（**串行**：视觉档
+   共用一个网关，并发只会互相排队并 503）→ 阶段进度 + 全部告警（压缩、重试、跨单元丢弃、
+   LLM 降级、抽取为空）→ 预览画布按 `annotations.json` 落点画框（点框 ↔ 点行联动；
+   `unlocated` 只进列表，**不画假框**）→ 勾选 / 计错数 / 改写建议 → 回写（默认叠加标注，
+   扁平位图上「改原文」不可用）→ 导出正误表（docx / html / md / json 下载）。
+   开启方式：设置页「载体审校（图片 / PDF / Word）」卡片打开总开关与抽取档位，或在设置文件里加
+   `"media": { "enabled": true, "use_vision": true }` 后重启服务
+   ——设置文件存在时 `GEC_MEDIA_*` 环境变量会整体失效（见 MULTIMODAL.md §8）。
+   **桌面端同一条链路**：`media-flow` 的编排 + 桌面端本地检测级联，命令面 `media_probes` /
+   `media_inspect` / `media_create_job` / `media_jobs` / `media_job` / `media_preview` /
+   `media_apply` / `media_report` / `media_report_file`（字节走 base64 JSON，导出走原生「另存为」）。
+
+   设计与已实测的命令契约见 [MULTIMODAL.md](MULTIMODAL.md)（§15 金集 / §16 P0 / §17 P1 / §18 重演导出），
+   可执行契约基线：`./scripts/media_smoke.sh`（图片）· `./scripts/media_smoke_p2.sh`（PDF + Word）；
+   回归测试：`media-core/tests/gold_dataset.rs` · `media-flow/tests/lifecycle.rs`（两端共用的全链路冒烟：
+   mock 检测级联 + mock 视觉网关）· `api-server/tests/media_api.rs` ·
+   `api-server/tests/media_vision_api.rs` · `api-server/tests/media_report_api.rs`。
 
 ## 许可
 
