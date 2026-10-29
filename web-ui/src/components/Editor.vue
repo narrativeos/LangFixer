@@ -26,7 +26,8 @@ const activeLang = computed(
 )
 
 /** 检测管线四层（① 本地 ZEN 规则 → ② 决策模型 → ②.5 知识召回 → ③ LLM 兜底）：
- *  ①②②.5 状态来自服务端设置；③ 按「响应级别」动态显示（逻辑见 lib/pipeline.ts，有单测） */
+ *  ①②②.5 状态来自服务端设置；③ 按「检查模式」（store.level，内部 level 1/2/3）动态显示
+ *  （逻辑见 lib/pipeline.ts，有单测） */
 const pipelineLayers = computed(() =>
   computePipelineLayers({
     level: store.level,
@@ -37,24 +38,33 @@ const pipelineLayers = computed(() =>
   }),
 )
 
-// L2 门控语义（P0.5 重绑）：L3 特征模型启用时门控是特征模型（弃权 → LLM 兜底）；
-// L3 未启用才回退旧语义（决策模型弃权 → LLM 兜底）。标签与警告随之动态化，
-// 避免「L2 = 决策模型弃权」的旧文案误导（T2-4 术语修正）。
-const l2Label = computed(() =>
-  store.l3Enabled
-    ? 'L2：+ 特征模型弃权时 LLM 兜底'
-    : 'L2：+ 决策模型弃权时 LLM 兜底（L3 未启用）',
+// 检查模式用户语言命名（Phase 0 术语翻译）：内部级联细节（规则 / 决策模型 /
+// L3 特征模型 / LLM）只出现在「检测管线」状态条、选项右侧状态标签与设置页，
+// 选项文案本身不再暴露 L1/L2/L3 内部编号。
+const modeLabels: Record<number, string> = {
+  1: '快速检查（即时，本地规则）',
+  2: '标准检查（推荐）',
+  3: '深度扫描（较慢，召回更高）',
+}
+const modeHint = computed(() =>
+  store.level === 1
+    ? '只跑本地规则引擎，即时完成，离线完全可用。'
+    : store.level === 2
+      ? '本地模型先把高置信结果定案，仅不确定的句子交给 AI 复查服务（LLM）复核；需已配置 LLM。'
+      : '对全文跑一遍 AI 复查（LLM），漏报召回最高，但较慢；本地模型可先把高置信结果定案以节省时间。',
 )
+// 标准检查门控语义（P0.5 重绑）：L3 特征模型启用时门控是特征模型（弃权 → LLM 复查）；
+// L3 未启用才回退旧语义（决策模型弃权 → LLM 复查）。警告文案随之动态化。
 const l2Warn = computed(() => {
   if (store.level !== 2) return ''
   if (store.l3Enabled) {
     return store.llmEnabled
       ? ''
-      : 'LLM 未配置：L2 的「特征模型弃权 → LLM 兜底」不可用（特征模型仍会高置信定案）。可在「设置 → LLM 参数」配置。'
+      : 'AI 复查服务（LLM）未配置：灰区句子无法复核，本次等效快速检查。可在「设置 → LLM 参数」配置。'
   }
   return store.decisionEnabled
     ? ''
-    : '特征模型与决策模型均未启用：L2 的「弃权 → LLM 兜底」不生效，本次等效 L1。可在「设置 → L3 特征模型」或「设置 → 决策模型」开启后即时生效。'
+    : '快速定案的本地模型均未启用：AI 复查兜底不会触发，本次等效快速检查。可在「设置 → L3 特征模型」或「设置 → 决策模型」开启后即时生效。'
 })
 </script>
 
@@ -105,7 +115,7 @@ const l2Warn = computed(() => {
         仅检测
       </el-button>
       <el-tooltip
-        content="强制 LLM 兜底检测：规则与决策模型完成后，无条件对全文跑一次 LLM 兜底检查，合并检出规则漏报的错误（force_llm；需已配置 LLM）"
+        content="深度重查：检测完成后，再对全文跑一遍 AI 复查（LLM），找回规则漏掉的错误（较慢；需已配置 LLM）"
         placement="top"
       >
         <el-button
@@ -115,7 +125,7 @@ const l2Warn = computed(() => {
           :disabled="!store.text.trim() || (store.loading && !store.isDetectingLlm)"
           @click="store.detectLlm()"
         >
-          漏报检测
+          深度重查
         </el-button>
       </el-tooltip>
       <el-tooltip
@@ -137,47 +147,40 @@ const l2Warn = computed(() => {
         </el-form-item>
       </div>
       <div class="options-col">
-        <el-form-item label="响应级别">
+        <el-form-item label="检查模式">
           <el-select v-model="store.level" style="width: 100%">
-            <el-option :value="1" label="L1：规则 + 决策模型">
-              <span class="level-opt">L1：规则 + 决策模型</span>
+            <el-option :value="1" :label="modeLabels[1]">
+              <span class="level-opt">{{ modeLabels[1] }}</span>
               <el-tag
-                :type="store.decisionEnabled ? 'success' : 'warning'"
+                :type="store.decisionEnabled ? 'success' : 'info'"
                 size="small"
                 class="level-tag"
               >
-                {{ store.decisionEnabled ? '决策模型已启用' : '决策模型未启用' }}
+                {{ store.decisionEnabled ? '含决策模型' : '纯本地规则' }}
               </el-tag>
             </el-option>
-            <el-option :value="2" :label="l2Label">
-              <span class="level-opt">{{ l2Label }}</span>
+            <el-option :value="2" :label="modeLabels[2]">
+              <span class="level-opt">{{ modeLabels[2] }}</span>
               <el-tag
-                :type="store.l3Enabled ? (store.llmEnabled ? 'success' : 'warning') : store.decisionEnabled ? 'success' : 'warning'"
+                :type="store.llmEnabled ? 'success' : 'warning'"
                 size="small"
                 class="level-tag"
               >
-                {{
-                  store.l3Enabled
-                    ? store.llmEnabled
-                      ? '特征模型门控 · LLM 已配置'
-                      : '特征模型门控 · LLM 未配置'
-                    : store.decisionEnabled
-                      ? '决策模型已启用'
-                      : '决策模型未启用'
-                }}
+                {{ store.llmEnabled ? 'AI 复查已配置' : 'AI 复查未配置' }}
               </el-tag>
             </el-option>
-            <el-option :value="3" label="L3：+ 特征模型定案，LLM 收长尾">
-              <span class="level-opt">L3：+ 特征模型定案，LLM 收长尾</span>
+            <el-option :value="3" :label="modeLabels[3]">
+              <span class="level-opt">{{ modeLabels[3] }}</span>
               <el-tag
-                :type="store.l3Enabled ? 'success' : 'warning'"
+                :type="store.l3Enabled ? 'success' : 'info'"
                 size="small"
                 class="level-tag"
               >
-                {{ store.l3Enabled ? '特征模型已启用' : '特征模型未启用' }}
+                {{ store.l3Enabled ? '快速定案已启用' : '全量 AI 复查' }}
               </el-tag>
             </el-option>
           </el-select>
+          <div class="mode-hint">{{ modeHint }}</div>
           <div v-if="l2Warn" class="level-warn">{{ l2Warn }}</div>
         </el-form-item>
       </div>
@@ -216,9 +219,13 @@ const l2Warn = computed(() => {
 .err-guide { margin-top: 6px; font-size: 12.5px; line-height: 1.7; color: var(--el-text-color-regular); }
 .session-id-row { display: flex; gap: 8px; align-items: center; width: 100%; }
 .session-id-row :deep(.el-input) { flex: 1; min-width: 0; }
-/* 「响应级别」L2 选项：左侧文案 + 右侧决策模型启用状态标签 */
+/* 「检查模式」选项：左侧用户语言文案 + 右侧能力状态标签（级联细节只在此与管线状态条出现） */
 .level-opt { float: left; }
 .level-tag { float: right; margin-top: 2px; }
+.mode-hint {
+  margin-top: 6px; font-size: 12.5px; line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
 .level-warn {
   margin-top: 6px; padding: 6px 10px;
   background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: 6px;

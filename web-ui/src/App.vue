@@ -41,7 +41,7 @@ const showOnboarding = ref(false)
 onMounted(() => {
   // 拉取后端真实语言 / 引擎元信息（Web: GET /gec/languages；桌面: invoke('languages')）
   store.loadLanguages()
-  // 同步决策模型启用状态（「响应级别」L2 的状态显示用）
+  // 同步决策模型启用状态（「检查模式」标准检查的状态显示用）
   store.loadSettings()
   try {
     showOnboarding.value = !localStorage.getItem('langfixer.onboarded.v1')

@@ -491,11 +491,11 @@ onBeforeUnmount(() => {
           <el-option label="日本語" value="ja" />
         </el-select>
       </label>
-      <label class="param">响应级别
+      <label class="param">检查模式
         <el-select v-model="level" size="small" style="width: 118px">
-          <el-option :value="1" label="1 规则" />
-          <el-option :value="2" label="2 + 决策模型" />
-          <el-option :value="3" label="3 + LLM 兜底" />
+          <el-option :value="1" label="快速检查" />
+          <el-option :value="2" label="标准检查" />
+          <el-option :value="3" label="深度扫描" />
         </el-select>
       </label>
       <el-switch v-model="forceLlm" size="small" active-text="强制 LLM 兜底" />

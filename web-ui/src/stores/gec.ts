@@ -68,7 +68,7 @@ export const useGecStore = defineStore('gec', {
       errors: [] as ErrorItem[],
     analyzed: [] as AnalyzedError[],
     loading: false,
-    /** 当前正在执行的检测动作（区分「检测 + 归因」/「仅检测」/「漏报检测」三个按钮：
+    /** 当前正在执行的检测动作（区分「检测 + 归因」/「仅检测」/「深度重查」三个按钮：
      *  一个在执行时，其余按钮应呈禁用态而非等待态；null = 空闲） */
     detectKind: null as 'analyze' | 'detect' | 'detectLlm' | null,
     errorMsg: '',
@@ -95,10 +95,10 @@ export const useGecStore = defineStore('gec', {
     targetLanguage: '',
     /** 分类过滤（纯前端展示过滤，作用于检测结果列表；空 = 不过滤；不再作为检测参数下发） */
     categoryFilter: '',
-    /** 三级响应级别：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底；L3 未启用时回退决策模型弃权语义）；3 = + 强制 LLM */
+    /** 检查模式（内部 level，对用户展示为 快速检查/标准检查/深度扫描）：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底；L3 未启用时回退决策模型弃权语义）；3 = + 强制 LLM */
     level: draft.level ?? 1,
     /** 决策模型（vegaml）层启用状态（来自 GET /gec/settings 的 decision.enabled；
-     *  P0.5 起默认关闭，opt-in；与检测页「响应级别」L2 对齐：L3 未启用时 L2 的弃权兜底依赖它） */
+     *  P0.5 起默认关闭，opt-in；与检测页「标准检查」对齐：L3 未启用时其弃权兜底依赖它） */
     decisionEnabled: false,
     /** LLM 已配置（来自 GET /gec/settings 的 llm.enabled；检测管线 ③ LLM 兜底层状态显示用） */
     llmEnabled: false,
@@ -153,7 +153,7 @@ export const useGecStore = defineStore('gec', {
     isAnalyzing(): boolean {
       return this.detectKind === 'analyze'
     },
-    /** 「漏报检测」按钮是否正在执行（执行中显示 loading；其余检测按钮应禁用） */
+    /** 「深度重查」按钮是否正在执行（执行中显示 loading；其余检测按钮应禁用） */
     isDetectingLlm(): boolean {
       return this.detectKind === 'detectLlm'
     },
@@ -179,7 +179,7 @@ export const useGecStore = defineStore('gec', {
         // 拉取失败时保持空列表，Editor 会回退到默认文案
       }
     },
-    /** 拉取设置并同步检测管线各层启用状态（「响应级别」L2 状态显示 + 检测管线提示用） */
+    /** 拉取设置并同步检测管线各层启用状态（「检查模式」状态标签 + 检测管线提示用） */
     async loadSettings() {
       try {
         const s = await api.getSettings()
@@ -264,7 +264,7 @@ export const useGecStore = defineStore('gec', {
         this.finishDetect()
       }
     },
-    /** 漏报检测（force_llm 强制兜底）：规则 + 决策模型完成后，无条件对全文跑一次 LLM 兜底 */
+    /** 深度重查（force_llm 强制兜底）：规则 + 决策模型完成后，无条件对全文跑一次 LLM 兜底 */
     async detectLlm() {
       this.beginDetect('detectLlm')
       try {
