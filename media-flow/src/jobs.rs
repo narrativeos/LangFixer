@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use media_core::{Annotation, ApplyMode, Artifacts, CarrierInfo, CarrierKind, Stitched, TextUnit};
+use media_core::{
+    Annotation, ApplyMode, Artifacts, CarrierInfo, CarrierKind, JobMode, PreviewKind, Stitched,
+    TextUnit,
+};
 
 /// job 阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +44,16 @@ pub struct MediaJob {
     pub id: String,
     pub filename: String,
     pub kind: CarrierKind,
+    /// 工作模式（简单 = 零外部协作工具；高级 = 三家适配器）——决定读法与回写能力
+    #[serde(default)]
+    pub mode: JobMode,
+    /// 预览面（前端据此选渲染分支：位图画布 / 只读文档 / 无预览）
+    #[serde(default)]
+    pub preview_kind: PreviewKind,
+    /// 实际用了谁来读这份载体（`photocraft` / `pdfcraft` / `wordcraft` /
+    /// `document-parse` / `vision`）——留痕用，别看猜测
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     pub stage: MediaStage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -69,6 +82,18 @@ pub struct MediaJob {
     pub warnings: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl MediaJob {
+    /// 按 id 取文本单元（标注落点、上下文回看都按 id 找）
+    pub fn unit(&self, id: u32) -> Option<&TextUnit> {
+        self.units.iter().find(|u| u.id == id)
+    }
+
+    /// 按 id 取标注
+    pub fn annotation(&self, id: u32) -> Option<&Annotation> {
+        self.annotations.iter().find(|a| a.id == id)
+    }
 }
 
 /// job 存储（内存表 + 磁盘目录；P0 不落 SQLite，重启后 job 记录丢失但产物仍在）
@@ -135,6 +160,9 @@ mod tests {
             id: id.to_string(),
             filename: "a.psd".into(),
             kind: CarrierKind::Image,
+            mode: JobMode::Advanced,
+            preview_kind: PreviewKind::ImageCanvas,
+            tool: Some("photocraft".into()),
             stage: MediaStage::Queued,
             error: None,
             carrier: None,

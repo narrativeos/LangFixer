@@ -104,6 +104,14 @@ pub struct MediaSettings {
     pub pdfcraft_bin: String,
     #[serde(default)]
     pub wordcraft_bin: String,
+    /// 默认工作模式（`MULTIMODAL.md` §15.1）：`simple` = 零外部协作工具；
+    /// `advanced` = 交给三家适配器。UI 每次也能按 job 显式传 `mode` 覆盖
+    #[serde(default = "default_media_mode")]
+    pub mode: String,
+}
+
+fn default_media_mode() -> String {
+    "advanced".to_string()
 }
 
 fn default_media_apply_mode() -> String {
@@ -164,6 +172,7 @@ impl Default for MediaSettings {
             photocraft_bin: String::new(),
             pdfcraft_bin: String::new(),
             wordcraft_bin: String::new(),
+            mode: default_media_mode(),
         }
     }
 }
@@ -222,6 +231,8 @@ impl MediaSettings {
             photocraft_bin: env_or_empty("PHOTOCRAFT_CLI"),
             pdfcraft_bin: env_or_empty("PDFCRAFT_CLI"),
             wordcraft_bin: env_or_empty("WORDCRAFT_CLI"),
+            mode: std::env::var("GEC_MEDIA_MODE")
+                .unwrap_or_else(|_| default_media_mode()),
         }
     }
 }

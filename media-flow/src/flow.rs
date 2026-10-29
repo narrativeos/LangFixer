@@ -4,7 +4,7 @@
 //! 规则开关 / 白名单），桌面端用本地引擎（本地决策表 / 离线模式）。
 //! 其余（副本隔离、抽取档位选择、拼接与回映射、sidecar 落盘、回写、导出）**只有一份实现**。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -13,8 +13,9 @@ use serde::Deserialize;
 use langfixer_llm::LlmConfig;
 use langfixer_llm::templates::TemplateStore;
 use media_core::{
-    ApplyMode, ApplyRequest, CarrierKind, Collaborator, MediaError, PhotoCraft, PhotoCraftConfig,
-    ReportMeta, RowOverride, stitch_units,
+    ApplyMode, ApplyRequest, CarrierInfo, CarrierKind, Collaborator, JobMode, MediaError,
+    PdfCraft, PdfCraftConfig, PhotoCraft, PhotoCraftConfig, PreviewKind, ReportMeta, RowOverride,
+    TextUnit, WordCraft, WordCraftConfig, stitch_units,
 };
 use shared_model::Error as GecError;
 
@@ -97,6 +98,9 @@ pub struct FlowCtx {
 pub struct JobOptions {
     #[serde(default)]
     pub apply_mode: Option<String>,
+    /// 工作模式（`simple` / `advanced`；缺省 = 设置里的 `media.mode`）
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(default)]
     pub lang: Option<String>,
     #[serde(default)]
@@ -151,6 +155,135 @@ pub fn photo_craft(cfg: &MediaSettings) -> Result<PhotoCraft, FlowError> {
     .map_err(FlowError::from)
 }
 
+/// 按设置构造 PDF 适配器（高级模式）
+pub fn pdf_craft(cfg: &MediaSettings) -> Result<PdfCraft, FlowError> {
+    PdfCraft::new(PdfCraftConfig {
+        bin: Some(cfg.pdfcraft_bin.clone()),
+        timeout_secs: cfg.timeout_secs,
+        author: "LangFixer".to_string(),
+        mark_color: "#e03131".to_string(),
+        preview_dpi: 144,
+    })
+    .map_err(FlowError::from)
+}
+
+/// 按设置构造 Word 适配器（高级模式）
+pub fn word_craft(cfg: &MediaSettings) -> Result<WordCraft, FlowError> {
+    WordCraft::new(WordCraftConfig {
+        bin: Some(cfg.wordcraft_bin.clone()),
+        timeout_secs: cfg.timeout_secs,
+        author: "LangFixer".to_string(),
+    })
+    .map_err(FlowError::from)
+}
+
+/// 高级模式该载体对应的 CLI 名（`None` = 该载体没有高级模式）
+pub fn advanced_cli(kind: CarrierKind) -> Option<&'static str> {
+    match kind {
+        CarrierKind::Image => Some("photocraft-cli"),
+        CarrierKind::Pdf => Some("pdfcraft-cli"),
+        CarrierKind::Docx => Some("wordcraft-cli"),
+        CarrierKind::Other => None,
+    }
+}
+
+/// 高级模式所需 CLI 是否就位。返回 `None` = 就位；`Some(原因)` = 缺哪个、怎么补
+/// （只做路径解析，不起进程——能力深探测在 [`probes`]）
+pub fn advanced_cli_status(kind: CarrierKind, cfg: &MediaSettings) -> Option<String> {
+    use media_core::resolve_tool_bin;
+    let Some(name) = advanced_cli(kind) else {
+        return Some("该格式没有高级模式".to_string());
+    };
+    let explicit = match kind {
+        CarrierKind::Image => cfg.photocraft_bin.as_str(),
+        CarrierKind::Pdf => cfg.pdfcraft_bin.as_str(),
+        CarrierKind::Docx => cfg.wordcraft_bin.as_str(),
+        CarrierKind::Other => "",
+    };
+    if resolve_tool_bin(Some(explicit), name).is_some() {
+        return None;
+    }
+    Some(if explicit.trim().is_empty() {
+        format!("{name} 未找到（装到 ~/.local/bin/{name}，或在设置里给绝对路径）")
+    } else {
+        format!(
+            "{name} 未找到：设置里配的路径「{explicit}」不可用（改正那个路径，或留空自动查找）"
+        )
+    })
+}
+
+/// 高级模式所需 CLI 是否就位
+pub fn advanced_cli_found(kind: CarrierKind, cfg: &MediaSettings) -> bool {
+    advanced_cli_status(kind, cfg).is_none()
+}
+
+/// 视觉档是否可用（只看配置面，不发网络请求）
+pub fn vision_ready(ctx: &FlowCtx) -> bool {
+    ctx.media.use_vision && ctx.llm.enabled()
+}
+
+/// 某载体的模式可用性（§15.1）：UI 的模式卡与后端的 gate 用同一份判定，
+/// 否则「按钮能点但后端 503」就会漂出来
+#[derive(Debug, Clone)]
+pub struct ModeGate {
+    pub simple: bool,
+    pub simple_reason: Option<String>,
+    pub advanced: bool,
+    pub advanced_reason: Option<String>,
+}
+
+pub fn mode_gate(ctx: &FlowCtx, kind: CarrierKind) -> ModeGate {
+    let cfg = &ctx.media;
+    let advanced_reason = advanced_cli_status(kind, cfg);
+    let advanced = advanced_reason.is_none();
+    let (simple, simple_reason) = match kind {
+        CarrierKind::Image => {
+            if vision_ready(ctx) {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some(
+                        "图片简单模式靠视觉模型读字：需要 media.use_vision = true 且已配置 LLM（设置 → LLM）"
+                            .to_string(),
+                    ),
+                )
+            }
+        }
+        CarrierKind::Pdf | CarrierKind::Docx => (true, None),
+        CarrierKind::Other => (false, Some("该格式不支持审校".to_string())),
+    };
+    ModeGate {
+        simple,
+        simple_reason,
+        advanced,
+        advanced_reason,
+    }
+}
+
+/// 单个模式可否开工（建 job 的闸）。`None` = 可；`Some(原因)` = 不可，原因里必须带退路
+pub fn mode_available(ctx: &FlowCtx, kind: CarrierKind, mode: JobMode) -> Option<String> {
+    if mode == JobMode::Simple {
+        let g = mode_gate(ctx, kind);
+        return g.simple_reason;
+    }
+    let missing = advanced_cli_status(kind, &ctx.media)?;
+    Some(format!(
+        "{missing}。高级模式要用它读结构层并回写载体；改用 mode=simple（零 CLI：段落级定位、\
+         只读文档视图、正误表位置写真实页号）"
+    ))
+}
+
+/// 模式卡 JSON（`probes` 与 `inspect_carrier` 都回这个，前端只认一处口径）
+pub fn mode_gate_json(ctx: &FlowCtx, kind: CarrierKind) -> serde_json::Value {
+    let g = mode_gate(ctx, kind);
+    serde_json::json!({
+        "simple": { "available": g.simple, "reason": g.simple_reason },
+        "advanced": { "available": g.advanced, "reason": g.advanced_reason },
+    })
+}
+
+
 /// 未启用就挡住：必须给可执行的 remedy，而不是「未启用」三个字
 pub fn ensure_enabled(cfg: &MediaSettings) -> Result<(), FlowError> {
     if !cfg.enabled {
@@ -188,17 +321,34 @@ pub async fn probes(ctx: &FlowCtx) -> serde_json::Value {
         }
     };
     out.insert("photocraft".into(), photocraft);
-    // PDF / Word 适配器在 P2（契约已在 scripts/media_smoke_p2.sh 验证）
-    out.insert(
-        "pdfcraft".into(),
-        serde_json::json!({"app": "pdfcraft", "ready": false,
-            "degraded_reason": "适配器未实现（P2）；命令契约见 scripts/media_smoke_p2.sh"}),
-    );
-    out.insert(
-        "wordcraft".into(),
-        serde_json::json!({"app": "wordcraft", "ready": false,
-            "degraded_reason": "适配器未实现（P2）；命令契约见 scripts/media_smoke_p2.sh"}),
-    );
+    // PDF / Word：真探测（能力面靠 `tools` / `commands` 输出，不靠版本号猜）
+    let pdfcraft = match pdf_craft(cfg) {
+        Ok(tc) => match tc.probe().await {
+            Ok(p) => serde_json::to_value(p).unwrap(),
+            Err(e) => serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() }),
+        },
+        Err(e) => serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() }),
+    };
+    out.insert("pdfcraft".into(), pdfcraft);
+    let wordcraft = match word_craft(cfg) {
+        Ok(tc) => match tc.probe().await {
+            Ok(p) => serde_json::to_value(p).unwrap(),
+            Err(e) => serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() }),
+        },
+        Err(e) => serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() }),
+    };
+    out.insert("wordcraft".into(), wordcraft);
+    // 模式可用性（§15.1）：每种载体一份，前端模式卡与后端 gate 同一口径
+    let mut modes = serde_json::Map::new();
+    for (key, kind) in [
+        ("image", CarrierKind::Image),
+        ("pdf", CarrierKind::Pdf),
+        ("docx", CarrierKind::Docx),
+    ] {
+        modes.insert(key.into(), mode_gate_json(ctx, kind));
+    }
+    out.insert("modes".into(), serde_json::Value::Object(modes));
+    out.insert("mode_default".into(), serde_json::json!(cfg.mode));
     // B 档（视觉）就绪状态：只看配置面，不发网络请求（probes 必须保持只读且快）
     let template = ctx.prompts.for_lang_cefr("media", "vision").is_some();
     let model = if cfg.vision_model.trim().is_empty() {
@@ -243,6 +393,10 @@ pub async fn probes(ctx: &FlowCtx) -> serde_json::Value {
 }
 
 /// 载体能力探测（不落 job，用于上传前预判）
+///
+/// 三种载体 × 两种模式都要能探：`carrier` / `probe` 给「当前可用那一档」的实况
+/// （高级模式 CLI 在位就用它，否则用简单模式的读法），`modes` 给模式卡，
+/// `simple` 给简单模式单独探到的事实——前端据此决定默认选哪档、按钮为什么禁用。
 pub async fn inspect_carrier(
     ctx: &FlowCtx,
     filename: &str,
@@ -253,23 +407,125 @@ pub async fn inspect_carrier(
         return Err(FlowError::BadRequest("文件为空".into()));
     }
     let kind = carrier_kind_of(filename);
-    match kind {
-        CarrierKind::Image => {
-            let dir = temp_carrier_dir()?;
-            let path = dir.join(safe_name(filename));
-            if let Err(e) = std::fs::write(&path, bytes) {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(FlowError::Internal(e.to_string()));
-            }
-            let pc = photo_craft(&ctx.media)?;
-            let info = pc.inspect(&path).await.map_err(FlowError::from)?;
-            let probe = pc.probe().await.map_err(FlowError::from)?;
-            let _ = std::fs::remove_dir_all(&dir);
-            Ok(serde_json::json!({ "kind": kind, "carrier": info, "probe": probe }))
+    if kind == CarrierKind::Other {
+        return Err(FlowError::BadRequest(format!(
+            "{filename} 的格式不支持审校（支持：图片 / PDF / docx）"
+        )));
+    }
+    let modes = mode_gate_json(ctx, kind);
+    let dir = temp_carrier_dir()?;
+    let path = dir.join(safe_name(filename));
+    if let Err(e) = std::fs::write(&path, bytes) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(FlowError::Internal(e.to_string()));
+    }
+    // 简单模式：不起任何 CLI（文档 = 纯 Rust 解析；图片 = 只读尺寸）
+    let simple: Result<CarrierInfo, FlowError> = match kind {
+        CarrierKind::Pdf => Ok(media_core::docparse::parse_pdf(bytes)
+            .map_err(FlowError::from)?
+            .info),
+        CarrierKind::Docx => Ok(media_core::docparse::parse_docx(bytes)
+            .map_err(FlowError::from)?
+            .info),
+        CarrierKind::Image => match vision::image_dims(&path) {
+            Some((w, h)) => Ok(CarrierInfo {
+                kind,
+                width: Some(w),
+                height: Some(h),
+                pages: None,
+                text_units: 0,
+                editable: false,
+                warnings: vec!["简单模式靠视觉模型读字（扁平位图没有文字层）".to_string()],
+            }),
+            None => Err(FlowError::BadRequest(
+                "这个图片格式（psd / tif / heic…）简单模式读不了：请改用高级模式，或先导出 png / jpg"
+                    .to_string(),
+            )),
+        },
+        CarrierKind::Other => unreachable!(),
+    };
+    // 高级模式：CLI 在位就真探测；不在位不影响简单模式那一路
+    let mut out = serde_json::Map::new();
+    out.insert("kind".into(), serde_json::json!(kind));
+    out.insert("modes".into(), modes);
+    match &simple {
+        Ok(info) => {
+            out.insert("simple".into(), serde_json::to_value(info).unwrap());
         }
-        k => Err(FlowError::BadRequest(format!(
-            "{k:?} 载体的适配器未实现（P0 仅图片；PDF/Word 见 MULTIMODAL.md §14 P2）"
-        ))),
+        Err(e) => {
+            out.insert(
+                "simple".into(),
+                serde_json::json!({ "available": false, "reason": e.to_string() }),
+            );
+        }
+    }
+    if advanced_cli_found(kind, &ctx.media) {
+        let r = match kind {
+            CarrierKind::Image => {
+                let pc = photo_craft(&ctx.media)?;
+                let info = pc.inspect(&path).await;
+                (info, pc.probe().await)
+            }
+            CarrierKind::Pdf => {
+                let tc = pdf_craft(&ctx.media)?;
+                let (info, _units) = tc.inspect_with_units(&path).await?;
+                (Ok(info), tc.probe().await)
+            }
+            CarrierKind::Docx => {
+                let tc = word_craft(&ctx.media)?;
+                let (info, _units) = tc.inspect_with_units(&path).await?;
+                (Ok(info), tc.probe().await)
+            }
+            CarrierKind::Other => unreachable!(),
+        };
+        let (info, probe) = r;
+        match info {
+            Ok(info) => {
+                out.insert("carrier".into(), serde_json::to_value(info).unwrap());
+                out.insert("advanced_available".into(), serde_json::json!(true));
+            }
+            Err(e) => {
+                out.insert("advanced_error".into(), serde_json::json!(e.to_string()));
+            }
+        }
+        out.insert(
+            "probe".into(),
+            match probe {
+                Ok(p) => serde_json::to_value(p).unwrap(),
+                Err(e) => serde_json::json!({ "ready": false, "degraded_reason": e.to_string() }),
+            },
+        );
+    } else {
+        let gate = mode_gate(ctx, kind);
+        out.insert(
+            "probe".into(),
+            serde_json::json!({
+                "app": advanced_cli(kind).unwrap_or("none"),
+                "ready": false,
+                "degraded_reason": gate.advanced_reason.unwrap_or_default(),
+            }),
+        );
+        // 高级模式不可用 → `carrier` 就用简单模式探到的那份，前端不至于白屏
+        if let Ok(info) = &simple {
+            out.insert("carrier".into(), serde_json::to_value(info).unwrap());
+        }
+        out.insert("advanced_available".into(), serde_json::json!(false));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(serde_json::Value::Object(out))
+}
+
+/// 预览面（§15.3）：只有可信像素坐标的才给画布，其余走只读文档视图
+///
+/// - 图片（两档都有像素）→ 画布；
+/// - PDF 高级模式：`PageBox` 是页内归一化坐标，渲染页上能画真框 → 画布；
+/// - PDF 简单模式 / Word 两档：落点是段落 + 字符区间，没有像素坐标 → 只读文档视图。
+///   （Word 的 `--markup` 渲染图是可下载的凭证，但不是可交互画布，别混为一谈）
+pub fn preview_kind_for(kind: CarrierKind, mode: JobMode) -> PreviewKind {
+    match (kind, mode) {
+        (CarrierKind::Image, _) | (CarrierKind::Pdf, JobMode::Advanced) => PreviewKind::ImageCanvas,
+        (CarrierKind::Docx, _) | (CarrierKind::Pdf, JobMode::Simple) => PreviewKind::DocText,
+        (CarrierKind::Other, _) => PreviewKind::None,
     }
 }
 
@@ -294,12 +550,42 @@ pub fn create_job(
         )));
     }
     let kind = carrier_kind_of(filename);
-    if kind != CarrierKind::Image {
+    if kind == CarrierKind::Other {
         return Err(FlowError::BadRequest(format!(
-            "{kind:?} 载体适配器未实现（P0 仅图片；PDF/Word 见 MULTIMODAL.md §14 P2）"
+            "{filename} 的格式不支持审校（支持：图片 / PDF / docx）"
         )));
     }
-    let apply_mode = ApplyMode::parse(opts.apply_mode.as_deref().unwrap_or(&cfg.apply_mode));
+    // 模式（§15.1）：请求里显式传的优先，否则设置里的 `media.mode`
+    let requested = JobMode::parse(opts.mode.as_deref().unwrap_or(&cfg.mode));
+    let gate = mode_gate(ctx, kind);
+    let mode = match requested {
+        JobMode::Advanced if !gate.advanced => {
+            // 不静默换档：为什么不能用高级模式、能不能改用简单模式，都要说清
+            let reason = gate
+                .advanced_reason
+                .unwrap_or_else(|| "高级模式不可用".to_string());
+            if gate.simple {
+                return Err(FlowError::Unavailable(format!(
+                    "{reason}｜可以改用简单模式（mode=simple）：读文本与出正误表照样能做，只是不回写载体"
+                )));
+            }
+            return Err(FlowError::Unavailable(reason));
+        }
+        JobMode::Simple if !gate.simple => {
+            return Err(FlowError::Unavailable(
+                gate.simple_reason
+                    .unwrap_or_else(|| "简单模式不可用".to_string()),
+            ));
+        }
+        m => m,
+    };
+    // 简单模式没有回写原语 → 强制 ListOnly。这不是「默认值」，是能力边界，
+    // 写成默认值会让人以为改了就有回写（改了也白改）。
+    let apply_mode = if mode == JobMode::Simple {
+        ApplyMode::ListOnly
+    } else {
+        ApplyMode::parse(opts.apply_mode.as_deref().unwrap_or(&cfg.apply_mode))
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let name = safe_name(filename);
     let dir = ctx.store.read().unwrap().job_dir(&id);
@@ -327,6 +613,9 @@ pub fn create_job(
         id: id.clone(),
         filename: name,
         kind,
+        mode,
+        preview_kind: preview_kind_for(kind, mode),
+        tool: None,
         stage: MediaStage::Copying,
         error: None,
         carrier: None,
@@ -367,6 +656,7 @@ pub fn create_job(
             force_llm,
             category,
             apply_mode,
+            mode,
         )
         .await;
     });
@@ -376,6 +666,220 @@ pub fn create_job(
 /// job 阶段推进（写锁内只改内存，不做 IO）
 fn set_stage(ctx: &FlowCtx, id: &str, stage: MediaStage) {
     ctx.store.write().unwrap().update(id, |j| j.stage = stage);
+}
+
+/// 抽取阶段的结构化结果：模式 × 载体 → 谁来读、读到什么、预览面是什么
+struct Extracted {
+    carrier: CarrierInfo,
+    units: Vec<TextUnit>,
+    /// `structure`（结构层，真值）/ `vision`（视觉模型）/ `none`
+    extraction: String,
+    extraction_model: Option<String>,
+    preview_kind: PreviewKind,
+    /// 实际读这份载体的是谁（留痕，不给 UI 猜）
+    tool: String,
+    warnings: Vec<String>,
+}
+
+/// 谁来读这份载体（`MULTIMODAL.md` §15.1）
+///
+/// 简单模式：文档走 `document-parse`（纯 Rust），图片走视觉模型 + `image` 读尺寸——
+/// **一次外部 CLI 都不起**；高级模式：三家适配器读结构层。
+async fn extract_stage(
+    ctx: &FlowCtx,
+    cfg: &MediaSettings,
+    kind: CarrierKind,
+    mode: JobMode,
+    dir: &std::path::Path,
+    source: &std::path::Path,
+    lang: &str,
+) -> Result<Extracted, FlowError> {
+    let mut warnings: Vec<String> = Vec::new();
+    match (kind, mode) {
+        // 简单模式 · PDF / Word：纯 Rust 解析，保住页 / 段落结构
+        (CarrierKind::Pdf | CarrierKind::Docx, JobMode::Simple) => {
+            if !cfg.use_structure_layer {
+                return Err(FlowError::BadRequest(
+                    "简单模式只有结构层可读：要么打开 media.use_structure_layer，要么改用高级模式"
+                        .to_string(),
+                ));
+            }
+            let bytes = std::fs::read(source)
+                .map_err(|e| FlowError::Internal(format!("读取副本失败：{e}")))?;
+            let parsed = if kind == CarrierKind::Pdf {
+                media_core::docparse::parse_pdf(&bytes)?
+            } else {
+                media_core::docparse::parse_docx(&bytes)?
+            };
+            warnings.extend(parsed.info.warnings.clone());
+            Ok(Extracted {
+                carrier: parsed.info,
+                units: parsed.units,
+                extraction: "structure".to_string(),
+                extraction_model: None,
+                preview_kind: PreviewKind::DocText,
+                tool: "document-parse".to_string(),
+                warnings,
+            })
+        }
+        // 简单模式 · 图片：尺寸靠 `image`，文本靠视觉模型；不碰 PhotoCraft
+        (CarrierKind::Image, JobMode::Simple) => {
+            let (w, h) = vision::image_dims(source).ok_or_else(|| {
+                FlowError::BadRequest(
+                    "这个图片格式（psd / tif / heic…）简单模式读不了：请改用高级模式，或先导出 png / jpg"
+                        .to_string(),
+                )
+            })?;
+            let mut carrier = CarrierInfo {
+                kind,
+                width: Some(w),
+                height: Some(h),
+                pages: None,
+                text_units: 0,
+                editable: false,
+                warnings: Vec::new(),
+            };
+            if !vision_ready(ctx) {
+                return Err(FlowError::Unavailable(
+                    "图片简单模式靠视觉模型读字：需要 media.use_vision = true 且已配置 LLM"
+                        .to_string(),
+                ));
+            }
+            let out =
+                vision::extract_vision_units(&ctx.llm, cfg, &ctx.prompts, lang, source, &carrier)
+                    .await
+                    .map_err(|e| FlowError::Upstream(e.to_string()))?;
+            // 原始响应落盘：排查「模型到底说了什么」的唯一凭据
+            let _ = std::fs::write(dir.join("vision_raw.txt"), &out.raw);
+            warnings.extend(out.warnings);
+            carrier.text_units = out.units.len();
+            if out.units.is_empty() {
+                warnings.push(format!("视觉档（{}）未取到文本", out.model));
+            }
+            let extraction = if carrier.text_units == 0 {
+                "none".to_string()
+            } else {
+                "vision".to_string()
+            };
+            Ok(Extracted {
+                carrier,
+                units: out.units,
+                extraction,
+                extraction_model: Some(out.model),
+                preview_kind: PreviewKind::ImageCanvas,
+                tool: "vision".to_string(),
+                warnings,
+            })
+        }
+        // 高级模式 · 图片：PhotoCraft 读文字层，扁平位图再走视觉兜底
+        (CarrierKind::Image, JobMode::Advanced) => {
+            let pc = photo_craft(cfg)?;
+            let carrier = pc.inspect(source).await.map_err(FlowError::from)?;
+            warnings.extend(carrier.warnings.clone());
+            let mut units = if cfg.use_structure_layer {
+                pc.extract_units(source)
+                    .await
+                    .map_err(FlowError::from)?
+            } else {
+                warnings
+                    .push("已关闭结构层抽取（media.use_structure_layer=false）".to_string());
+                Vec::new()
+            };
+            let mut extraction = if units.is_empty() { "none" } else { "structure" }.to_string();
+            let mut extraction_model: Option<String> = None;
+            // 铁律：A 档取到文本就**绝不**用视觉文本覆盖——结构层是真值
+            if units.is_empty() && cfg.use_vision {
+                let ext = source.extension().and_then(|s| s.to_str()).unwrap_or("");
+                let vision_image = match media_core::vision_mime(ext) {
+                    Some(_) => source.to_path_buf(),
+                    None => {
+                        let png = dir.join("vision.png");
+                        match pc.render_preview(source, &png).await {
+                            Ok(()) => png,
+                            Err(e) => {
+                                warnings.push(format!("视觉档前置导出 png 失败：{e}"));
+                                source.to_path_buf()
+                            }
+                        }
+                    }
+                };
+                match vision::extract_vision_units(
+                    &ctx.llm,
+                    cfg,
+                    &ctx.prompts,
+                    lang,
+                    &vision_image,
+                    &carrier,
+                )
+                .await
+                {
+                    Ok(out) => {
+                        let _ = std::fs::write(dir.join("vision_raw.txt"), &out.raw);
+                        warnings.extend(out.warnings);
+                        extraction_model = Some(out.model.clone());
+                        if out.units.is_empty() {
+                            warnings.push(format!("视觉档（{}）未取到文本", out.model));
+                        } else {
+                            extraction = "vision".to_string();
+                            units = out.units;
+                        }
+                    }
+                    // 视觉档失败不判死整个 job：结构层结果仍然可用
+                    Err(e) => warnings.push(format!("视觉档失败：{e}")),
+                }
+            } else if units.is_empty() {
+                warnings.push(
+                    "未取到文本：该载体无文字层。开启视觉档（media.use_vision）或接 OCR 后可校对"
+                        .to_string(),
+                );
+            }
+            Ok(Extracted {
+                carrier,
+                units,
+                extraction,
+                extraction_model,
+                preview_kind: PreviewKind::ImageCanvas,
+                tool: "photocraft".to_string(),
+                warnings,
+            })
+        }
+        // 高级模式 · PDF / Word：适配器读结构层（带几何 / run 引用）
+        (CarrierKind::Pdf, JobMode::Advanced) => {
+            let tc = pdf_craft(cfg)?;
+            let (carrier, units) = tc
+                .inspect_with_units(source)
+                .await
+                .map_err(FlowError::from)?;
+            warnings.extend(carrier.warnings.clone());
+            Ok(Extracted {
+                carrier,
+                units,
+                extraction: "structure".to_string(),
+                extraction_model: None,
+                preview_kind: PreviewKind::ImageCanvas,
+                tool: "pdfcraft".to_string(),
+                warnings,
+            })
+        }
+        (CarrierKind::Docx, JobMode::Advanced) => {
+            let tc = word_craft(cfg)?;
+            let (carrier, units) = tc
+                .inspect_with_units(source)
+                .await
+                .map_err(FlowError::from)?;
+            warnings.extend(carrier.warnings.clone());
+            Ok(Extracted {
+                carrier,
+                units,
+                extraction: "structure".to_string(),
+                extraction_model: None,
+                preview_kind: PreviewKind::DocText,
+                tool: "wordcraft".to_string(),
+                warnings,
+            })
+        }
+        (CarrierKind::Other, _) => Err(FlowError::BadRequest("该格式不支持审校".to_string())),
+    }
 }
 
 /// 全链路：inspect → extract（A 档）→ 视觉兜底（B 档）→ stitch → detect → remap
@@ -392,99 +896,37 @@ pub async fn run_job(
     force_llm: bool,
     category: Option<String>,
     apply_mode: ApplyMode,
+    mode: JobMode,
 ) {
     let fail = |msg: String| {
         tracing::warn!(job = %id, error = %msg, "多模态 job 失败");
         ctx.store.write().unwrap().fail(&id, &msg);
     };
     let cfg = ctx.media.clone();
-    let (dir, name) = {
+    let (dir, name, kind) = {
         let guard = ctx.store.read().unwrap();
         match guard.get(&id) {
-            Some(j) => (guard.job_dir(&id), j.filename.clone()),
+            Some(j) => (guard.job_dir(&id), j.filename.clone(), j.kind),
             None => return,
         }
     };
     let source = dir.join(&name);
-    let pc = match photo_craft(&cfg) {
-        Ok(p) => p,
-        Err(e) => return fail(e.to_string()),
-    };
 
+    // 读这份载体的是谁，由（载体 × 模式）决定，见 [`extract_stage`]
     set_stage(&ctx, &id, MediaStage::Inspecting);
-    let carrier = match pc.inspect(&source).await {
-        Ok(c) => c,
+    let Extracted {
+        carrier,
+        units,
+        extraction,
+        extraction_model,
+        preview_kind,
+        tool,
+        mut warnings,
+    } = match extract_stage(&ctx, &cfg, kind, mode, &dir, &source, &lang).await {
+        Ok(e) => e,
         Err(e) => return fail(e.to_string()),
     };
-
     set_stage(&ctx, &id, MediaStage::Extracting);
-    let mut warnings = carrier.warnings.clone();
-    let mut units = if cfg.use_structure_layer {
-        match pc.extract_units(&source).await {
-            Ok(u) => u,
-            Err(e) => return fail(e.to_string()),
-        }
-    } else {
-        warnings.push("已关闭结构层抽取（media.use_structure_layer=false）".to_string());
-        Vec::new()
-    };
-    let mut extraction = if units.is_empty() {
-        "none"
-    } else {
-        "structure"
-    };
-    let mut extraction_model: Option<String> = None;
-
-    // A 档为空 → B 档视觉兜底（扁平位图没有文字层）。
-    // 铁律：A 档取到文本就**绝不**用视觉文本覆盖——结构层是真值。
-    if units.is_empty() && cfg.use_vision {
-        // 非位图载体（psd / tif…）先由适配器导出 png，再送视觉端点
-        let ext = source.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let vision_image = match media_core::vision_mime(ext) {
-            Some(_) => source.clone(),
-            None => {
-                let png = dir.join("vision.png");
-                match pc.render_preview(&source, &png).await {
-                    Ok(()) => png,
-                    Err(e) => {
-                        warnings.push(format!("视觉档前置导出 png 失败：{e}"));
-                        source.clone()
-                    }
-                }
-            }
-        };
-        match vision::extract_vision_units(
-            &ctx.llm,
-            // 视觉档的模型 / 超时 / 压缩参数都在 media 设置里（整页转录不是 CLI 调用那种量级）
-            &cfg,
-            &ctx.prompts,
-            &lang,
-            &vision_image,
-            &carrier,
-        )
-        .await
-        {
-            Ok(out) => {
-                // 原始响应落盘：排查「模型到底说了什么」的唯一凭据
-                let _ = std::fs::write(dir.join("vision_raw.txt"), &out.raw);
-                warnings.extend(out.warnings);
-                extraction_model = Some(out.model.clone());
-                if out.units.is_empty() {
-                    warnings.push(format!("视觉档（{}）未取到文本", out.model));
-                } else {
-                    extraction = "vision";
-                    units = out.units;
-                }
-            }
-            // 视觉档失败不判死整个 job：结构层结果仍然可用
-            Err(e) => warnings.push(format!("视觉档失败：{e}")),
-        }
-    } else if units.is_empty() {
-        warnings.push(
-            "未取到文本：该载体无文字层。开启视觉档（media.use_vision）或接 OCR 后可校对"
-                .to_string(),
-        );
-    }
 
     let (stitched, cleaned) = stitch_units(&units);
     let mut annotations = Vec::new();
@@ -553,8 +995,10 @@ pub async fn run_job(
         j.stage = MediaStage::Ready;
         j.carrier = Some(carrier);
         j.units = cleaned;
-        j.extraction = extraction.to_string();
+        j.extraction = extraction;
         j.extraction_model = extraction_model;
+        j.preview_kind = preview_kind;
+        j.tool = Some(tool);
         j.stitched = Some(stitched);
         j.annotations = annotations;
         j.layers = layers;
@@ -567,8 +1011,35 @@ pub async fn run_job(
                 .display()
                 .to_string(),
         );
-        j.artifacts.preview = Some(dir.join("result.png").display().to_string());
+        // 只读文档视图没有位图预览可取（回写后才有 `--markup` 渲染图），
+        // 提前写路径只会让前端去取一个不存在的文件
+        j.artifacts.preview = if preview_kind == PreviewKind::DocText {
+            None
+        } else {
+            Some(dir.join("result.png").display().to_string())
+        };
     });
+}
+
+/// 按扩展名给 content-type（预览回退到副本原件时必须给对，否则浏览器不显示）
+fn content_type_of(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        _ => "application/octet-stream",
+    }
 }
 
 /// 预览文件（无 `result.png` 时回退副本原件）：`(路径, content-type)`
@@ -582,7 +1053,9 @@ pub fn preview_file(ctx: &FlowCtx, id: &str) -> Result<(PathBuf, &'static str), 
     let (path, ctype) = if png.is_file() {
         (png, "image/png")
     } else {
-        (dir.join(&job.filename), "application/octet-stream")
+        let source = dir.join(&job.filename);
+        let ctype = content_type_of(&source);
+        (source, ctype)
     };
     if !path.is_file() {
         return Err(FlowError::NotFound(format!(
@@ -593,7 +1066,17 @@ pub fn preview_file(ctx: &FlowCtx, id: &str) -> Result<(PathBuf, &'static str), 
     Ok((path, ctype))
 }
 
-/// 回写（默认 Overlay；幂等：重跑先清历史 `mark-*` 图层）
+/// 回写产物后缀（图片沿用 PhotoCraft 的 psd；PDF / Word 回到各自原格式）
+fn result_ext(kind: CarrierKind) -> &'static str {
+    match kind {
+        CarrierKind::Image => "psd",
+        CarrierKind::Pdf => "pdf",
+        CarrierKind::Docx => "docx",
+        CarrierKind::Other => "bin",
+    }
+}
+
+/// 回写（默认 Overlay；幂等：图片清 `mark-*` 图层，PDF/Word 清同署名批注）
 pub async fn apply_job(
     ctx: &FlowCtx,
     id: &str,
@@ -601,7 +1084,7 @@ pub async fn apply_job(
 ) -> Result<MediaJob, FlowError> {
     let cfg = ctx.media.clone();
     ensure_enabled(&cfg)?;
-    let (source, target, preview_path, annotations, units, mode) = {
+    let (source, target, preview_path, annotations, units, mode, kind) = {
         let guard = ctx.store.read().unwrap();
         let j = guard
             .get(id)
@@ -612,18 +1095,25 @@ pub async fn apply_job(
                 j.stage
             )));
         }
+        // 简单模式没有回写原语——这不是「没做」，是这一档的能力边界，必须说明白
+        if j.mode == JobMode::Simple {
+            return Err(FlowError::Unavailable(
+                "简单模式不回写载体：它只出清单与正误表。要写回载体，请用高级模式（mode=advanced）重跑这份载体"
+                    .to_string(),
+            ));
+        }
         let dir = guard.job_dir(id);
         let mode = apply_mode.map(ApplyMode::parse).unwrap_or(j.apply_mode);
         (
             dir.join(&j.filename),
-            dir.join("result.psd"),
+            dir.join(format!("result.{}", result_ext(j.kind))),
             dir.join("result.png"),
             j.annotations.clone(),
             j.units.clone(),
             mode,
+            j.kind,
         )
     };
-    let pc = photo_craft(&cfg)?;
     set_stage(ctx, id, MediaStage::Applying);
     let req = ApplyRequest {
         source: &source,
@@ -635,16 +1125,31 @@ pub async fn apply_job(
         author: "LangFixer",
         group: media_core::DEFAULT_GROUP,
     };
-    let res = match pc.apply(&req).await {
+    // 按载体选路；各家原语在各自适配器里（flag 名不同，不能共用拼装器）
+    let res = match kind {
+        CarrierKind::Image => {
+            let pc = photo_craft(&cfg)?;
+            let r = pc.apply(&req).await;
+            if r.is_ok()
+                && let Err(e) = pc.render_preview(&target, &preview_path).await
+            {
+                tracing::warn!(error = %e, "预览导出失败（可编辑产物仍在）");
+            }
+            r
+        }
+        CarrierKind::Pdf => pdf_craft(&cfg)?.apply(&req).await,
+        CarrierKind::Docx => word_craft(&cfg)?.apply(&req).await,
+        CarrierKind::Other => {
+            Err(MediaError::Unsupported("该载体不支持回写".to_string()))
+        }
+    };
+    let res = match res {
         Ok(r) => r,
         Err(e) => {
             ctx.store.write().unwrap().fail(id, &e.to_string());
             return Err(FlowError::from(e));
         }
     };
-    if let Err(e) = pc.render_preview(&target, &preview_path).await {
-        tracing::warn!(error = %e, "预览导出失败（可编辑产物仍在）");
-    }
     let job = ctx
         .store
         .write()

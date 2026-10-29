@@ -17,8 +17,10 @@ pub mod settings;
 pub mod vision;
 
 pub use flow::{
-    CarrierDetector, DetectResult, FlowCtx, FlowError, JobOptions, ReportRequest, carrier_kind_of,
-    create_job, ensure_enabled, photo_craft, probes, safe_name,
+    CarrierDetector, DetectResult, FlowCtx, FlowError, JobOptions, ModeGate, ReportRequest,
+    advanced_cli, carrier_kind_of, create_job, ensure_enabled, mode_gate, mode_gate_json,
+    pdf_craft, photo_craft, preview_kind_for, probes, safe_name, vision_ready, word_craft,
 };
 pub use jobs::{MediaJob, MediaJobStore, MediaStage};
+pub use media_core::{JobMode, PreviewKind};
 pub use settings::MediaSettings;

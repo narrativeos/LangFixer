@@ -21,6 +21,15 @@ use media_core::{
 };
 use tokio::sync::Semaphore;
 
+/// 只读图片尺寸（不解码全图）
+///
+/// `image`  crate 解不了的格式（psd / heic / 部分 tif）→ `None`。
+/// 上层必须据此给出「请用高级模式（PhotoCraft 可解码）或先导出 png/jpg」的提示，
+/// **不去猜尺寸**——尺寸决定框的换算，猜了就是画假框。
+pub fn image_dims(path: &Path) -> Option<(u32, u32)> {
+    image::image_dimensions(path).ok()
+}
+
 /// 视觉档产物（job 里要落盘 `raw` 便于排查「模型到底说了什么」）
 pub struct VisionOutcome {
     pub units: Vec<TextUnit>,

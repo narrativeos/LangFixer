@@ -21,3 +21,4 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+zip = { workspace = true }

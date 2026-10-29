@@ -12,8 +12,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use media_core::{
-    MediaError, ReportFile, ReportMeta, ReportRow, render_html, render_json, render_markdown,
-    resolve_tool_bin,
+    MediaError, ReportFile, ReportMeta, ReportRow, not_found_msg, render_html, render_json,
+    render_markdown, resolve_tool_bin,
 };
 
 /// WordCraft 适配器（只做一件事：HTML → docx）
@@ -25,12 +25,8 @@ pub struct WordCraft {
 impl WordCraft {
     /// `explicit` = 设置里的 `media.wordcraft_bin`（空 = `$PATH` → 常见安装位置）
     pub fn new(explicit: Option<&str>, timeout_secs: u64) -> Result<Self, MediaError> {
-        let bin = resolve_tool_bin(explicit, "wordcraft-cli").ok_or_else(|| {
-            MediaError::NotReady(
-                "wordcraft-cli 未找到（装到 ~/.local/bin/wordcraft-cli，或在设置里给绝对路径）"
-                    .to_string(),
-            )
-        })?;
+        let bin = resolve_tool_bin(explicit, "wordcraft-cli")
+            .ok_or_else(|| MediaError::NotReady(not_found_msg("wordcraft-cli", explicit)))?;
         Ok(Self { bin, timeout_secs })
     }
 
