@@ -522,6 +522,9 @@ async fn gold_upper_bound_with_perfect_extraction() {
     let replay = std::env::var("LANGFIXER_REPLAY_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest_dir().join("../target/media-replay"));
+    // 产物目录必须自己造：`fs::write` 不建父目录。CI 的全新 `target/` 里没有 `media-replay`
+    // （本地跑过一轮才有），不建就只有 CI 红、本地绿
+    std::fs::create_dir_all(&replay).unwrap();
     let labels: Vec<String> = (0..gold.carriers.len())
         .map(|i| format!("图片{}", i + 1))
         .collect();
@@ -985,6 +988,8 @@ async fn gold_real_vision_eval() {
     let replay = std::env::var("LANGFIXER_REPLAY_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest_dir().join("../target/media-replay"));
+    // 同上：产物目录自己造，否则 `fs::write` 在新 `target/` 上直接 NotFound
+    std::fs::create_dir_all(&replay).unwrap();
     let labels: Vec<String> = (0..carrier_meta.len())
         .map(|i| format!("图片{}", i + 1))
         .collect();
