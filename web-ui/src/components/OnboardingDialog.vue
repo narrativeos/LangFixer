@@ -67,6 +67,7 @@ function goEvolution() {
           LLM 兜底，去
           <el-button size="small" @click="goSettings">设置</el-button>
           配置对应服务（可先点「测试全部」检查连通性）。未配置不影响基础检测——本地规则层始终可用。
+          注意：配置 LLM 后，检测文本会发送到你配置的模型端点，请使用可信服务。
         </span>
       </li>
       <li>

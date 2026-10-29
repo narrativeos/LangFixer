@@ -209,12 +209,13 @@ const MAX_ADOPTED: usize = 20000;
 /// 句对编辑密度上限：超过视为「用户改写」而非「纠错」，打 weak 标记
 const WEAK_EDIT_RATIO: f64 = 0.4;
 
-/// 采纳/放弃沉淀开关：**默认开**（自用产品定位）；多租户部署显式
-/// `GEC_L3_ADOPT_COLLECT=0`（或 `false`）关闭（隐私边界，见 README）。
+/// 采纳/放弃沉淀开关：**api-server 形态默认关**——共享部署不得默认把用户
+/// 数据用于训练；显式 `GEC_L3_ADOPT_COLLECT=1`（或 `true`）开启（隐私边界，见 README）。
+/// 桌面端自用默认开（desktop-app `commands.rs` 同构函数，默认相反，属本机单用户场景）。
 pub fn adopt_collect_enabled() -> bool {
     match std::env::var("GEC_L3_ADOPT_COLLECT") {
         Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),
-        Err(_) => true,
+        Err(_) => false,
     }
 }
 

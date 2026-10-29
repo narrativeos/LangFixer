@@ -246,7 +246,7 @@ async function save(): Promise<boolean> {
     savedSnapshot.value = s
     llmEnabled.value = s.llm.enabled
     if (s.decision) decisionEnabled.value = s.decision.enabled
-    // 保存成功：以服务端确认的状态同步全局 store，检测页「响应级别」L2 自动对齐
+    // 保存成功：以服务端确认的状态同步全局 store，检测页「标准检查」状态自动对齐
     store.decisionEnabled = !!s.decision?.enabled
     savedMsg.value = '已保存并即时生效（已持久化到设置文件，重启后仍生效）'
     return true
@@ -628,7 +628,7 @@ async function runTest(target: SettingsTestTarget) {
         <el-form-item label="启用决策层">
           <el-switch v-model="decisionEnabled" :loading="decisionApplying" />
           <span class="sub">
-            切换即自动保存（即时生效 + 持久化），检测页「响应级别」L2 状态自动同步；
+            切换即自动保存（即时生效 + 持久化），检测页「标准检查」状态自动同步；
             开启后规则引擎未命中的句子交由 vegaml 决策模型判断
           </span>
         </el-form-item>
@@ -667,12 +667,12 @@ async function runTest(target: SettingsTestTarget) {
         弃权（prob 低于阈值）则放行；服务不可用时自动回退纯规则，不影响检测。
         保存后即时重建检测器，无需重启。
         <br />
-        该开关与检测页「响应级别」对齐：
+        该开关与检测页「检查模式」对齐：
         <el-tag size="small" :type="decisionEnabled ? 'success' : 'warning'">
           当前{{ decisionEnabled ? '已启用' : '未启用' }}
         </el-tag>
-        —— L2（决策模型弃权时 LLM 兜底）仅在决策层启用时生效；未启用时 L2 等效 L1，
-        检测页 L2 选项会显示「决策模型未启用」状态。
+        ——「标准检查」（决策模型弃权时 LLM 复查）仅在决策层启用时生效；未启用时
+        标准检查等效快速检查。
       </div>
     </el-card>
 
@@ -758,11 +758,11 @@ async function runTest(target: SettingsTestTarget) {
             style="width: 420px"
           />
         </el-form-item>
-        <el-form-item label="响应级别">
+        <el-form-item label="检查模式（默认）">
           <el-select v-model="mediaLevel" style="width: 200px">
-            <el-option :value="1" label="1 规则" />
-            <el-option :value="2" label="2 + 决策模型" />
-            <el-option :value="3" label="3 + LLM 兜底" />
+            <el-option :value="1" label="快速检查" />
+            <el-option :value="2" label="标准检查" />
+            <el-option :value="3" label="深度扫描" />
           </el-select>
           <el-switch
             v-model="mediaForceLlm"
@@ -803,6 +803,13 @@ async function runTest(target: SettingsTestTarget) {
           <span class="sub">OpenAI 兼容接口（讲解 / 练习生成）</span>
         </div>
       </template>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        title="启用后，待检测与讲解的文本全文会发送到下方配置的模型端点——请使用可信服务，勿粘贴机密文本。"
+      />
       <el-form label-width="110px">
         <el-form-item label="纠错模型">
           <el-select v-model="llmModelId" placeholder="选择纠错模型预设" style="width: 420px">

@@ -4083,7 +4083,8 @@ const L3_MAX_ADOPTED: usize = 20000;
 /// 句对编辑密度上限：超过视为「用户改写」而非「纠错」，打 weak 标记
 const L3_WEAK_EDIT_RATIO: f64 = 0.4;
 
-/// 采纳/放弃沉淀开关：**默认开**（桌面端自用）；显式 `GEC_L3_ADOPT_COLLECT=0` 关闭
+/// 采纳/放弃沉淀开关：**默认开**（桌面端自用 = 本机单用户）；显式 `GEC_L3_ADOPT_COLLECT=0` 关闭
+/// （api-server 形态默认相反：默认关、`=1` 开启，见 api-server `routes/l3.rs`）
 fn adopt_collect_enabled() -> bool {
     match std::env::var("GEC_L3_ADOPT_COLLECT") {
         Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),

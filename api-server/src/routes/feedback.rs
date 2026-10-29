@@ -116,8 +116,8 @@ pub async fn feedback(
 ///   （训练资产 C：用户确认的 src→dst 平行句对）；
 /// - reject → 片段级负偏好沉淀 `rejected.jsonl`（偏好/DPO 材料）。
 ///
-/// 开关 [`crate::routes::l3::adopt_collect_enabled`]（默认开，多租户用
-/// `GEC_L3_ADOPT_COLLECT=0` 关闭）。仅 en/zh（L3 数据目录按语言组织）。
+/// 开关 [`crate::routes::l3::adopt_collect_enabled`]（**api-server 形态默认关**，
+/// `GEC_L3_ADOPT_COLLECT=1` 开启）。仅 en/zh（L3 数据目录按语言组织）。
 fn collect_feedback_assets(req: &FeedbackRequest, action: &str) {
     if !crate::routes::l3::adopt_collect_enabled() || !matches!(req.lang.as_str(), "en" | "zh") {
         return;
