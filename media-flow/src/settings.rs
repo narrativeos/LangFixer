@@ -231,8 +231,7 @@ impl MediaSettings {
             photocraft_bin: env_or_empty("PHOTOCRAFT_CLI"),
             pdfcraft_bin: env_or_empty("PDFCRAFT_CLI"),
             wordcraft_bin: env_or_empty("WORDCRAFT_CLI"),
-            mode: std::env::var("GEC_MEDIA_MODE")
-                .unwrap_or_else(|_| default_media_mode()),
+            mode: std::env::var("GEC_MEDIA_MODE").unwrap_or_else(|_| default_media_mode()),
         }
     }
 }

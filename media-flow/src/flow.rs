@@ -13,9 +13,9 @@ use serde::Deserialize;
 use langfixer_llm::LlmConfig;
 use langfixer_llm::templates::TemplateStore;
 use media_core::{
-    ApplyMode, ApplyRequest, CarrierInfo, CarrierKind, Collaborator, JobMode, MediaError,
-    PdfCraft, PdfCraftConfig, PhotoCraft, PhotoCraftConfig, PreviewKind, ReportMeta, RowOverride,
-    TextUnit, WordCraft, WordCraftConfig, stitch_units,
+    ApplyMode, ApplyRequest, CarrierInfo, CarrierKind, Collaborator, JobMode, MediaError, PdfCraft,
+    PdfCraftConfig, PhotoCraft, PhotoCraftConfig, PreviewKind, ReportMeta, RowOverride, TextUnit,
+    WordCraft, WordCraftConfig, stitch_units,
 };
 use shared_model::Error as GecError;
 
@@ -206,9 +206,7 @@ pub fn advanced_cli_status(kind: CarrierKind, cfg: &MediaSettings) -> Option<Str
     Some(if explicit.trim().is_empty() {
         format!("{name} 未找到（装到 ~/.local/bin/{name}，或在设置里给绝对路径）")
     } else {
-        format!(
-            "{name} 未找到：设置里配的路径「{explicit}」不可用（改正那个路径，或留空自动查找）"
-        )
+        format!("{name} 未找到：设置里配的路径「{explicit}」不可用（改正那个路径，或留空自动查找）")
     })
 }
 
@@ -283,7 +281,6 @@ pub fn mode_gate_json(ctx: &FlowCtx, kind: CarrierKind) -> serde_json::Value {
     })
 }
 
-
 /// 未启用就挡住：必须给可执行的 remedy，而不是「未启用」三个字
 pub fn ensure_enabled(cfg: &MediaSettings) -> Result<(), FlowError> {
     if !cfg.enabled {
@@ -325,17 +322,25 @@ pub async fn probes(ctx: &FlowCtx) -> serde_json::Value {
     let pdfcraft = match pdf_craft(cfg) {
         Ok(tc) => match tc.probe().await {
             Ok(p) => serde_json::to_value(p).unwrap(),
-            Err(e) => serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() }),
+            Err(e) => {
+                serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() })
+            }
         },
-        Err(e) => serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() }),
+        Err(e) => {
+            serde_json::json!({ "app": "pdfcraft", "ready": false, "degraded_reason": e.to_string() })
+        }
     };
     out.insert("pdfcraft".into(), pdfcraft);
     let wordcraft = match word_craft(cfg) {
         Ok(tc) => match tc.probe().await {
             Ok(p) => serde_json::to_value(p).unwrap(),
-            Err(e) => serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() }),
+            Err(e) => {
+                serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() })
+            }
         },
-        Err(e) => serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() }),
+        Err(e) => {
+            serde_json::json!({ "app": "wordcraft", "ready": false, "degraded_reason": e.to_string() })
+        }
     };
     out.insert("wordcraft".into(), wordcraft);
     // 模式可用性（§15.1）：每种载体一份，前端模式卡与后端 gate 同一口径
@@ -777,15 +782,17 @@ async fn extract_stage(
             let carrier = pc.inspect(source).await.map_err(FlowError::from)?;
             warnings.extend(carrier.warnings.clone());
             let mut units = if cfg.use_structure_layer {
-                pc.extract_units(source)
-                    .await
-                    .map_err(FlowError::from)?
+                pc.extract_units(source).await.map_err(FlowError::from)?
             } else {
-                warnings
-                    .push("已关闭结构层抽取（media.use_structure_layer=false）".to_string());
+                warnings.push("已关闭结构层抽取（media.use_structure_layer=false）".to_string());
                 Vec::new()
             };
-            let mut extraction = if units.is_empty() { "none" } else { "structure" }.to_string();
+            let mut extraction = if units.is_empty() {
+                "none"
+            } else {
+                "structure"
+            }
+            .to_string();
             let mut extraction_model: Option<String> = None;
             // 铁律：A 档取到文本就**绝不**用视觉文本覆盖——结构层是真值
             if units.is_empty() && cfg.use_vision {
@@ -1139,9 +1146,7 @@ pub async fn apply_job(
         }
         CarrierKind::Pdf => pdf_craft(&cfg)?.apply(&req).await,
         CarrierKind::Docx => word_craft(&cfg)?.apply(&req).await,
-        CarrierKind::Other => {
-            Err(MediaError::Unsupported("该载体不支持回写".to_string()))
-        }
+        CarrierKind::Other => Err(MediaError::Unsupported("该载体不支持回写".to_string())),
     };
     let res = match res {
         Ok(r) => r,

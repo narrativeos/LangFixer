@@ -71,7 +71,9 @@ mod tests {
                 .into_bytes(),
             );
             let stream = format!("BT /F0 12 Tf 20 200 Td ({line}) Tj ET");
-            objs.push(format!("<</Length {}>>stream\n{stream}\nendstream", stream.len()).into_bytes());
+            objs.push(
+                format!("<</Length {}>>stream\n{stream}\nendstream", stream.len()).into_bytes(),
+            );
         }
         let mut out = Vec::new();
         out.extend_from_slice(b"%PDF-1.4\n");
@@ -118,6 +120,9 @@ mod tests {
     #[test]
     fn empty_text_layer_reports_no_text_layer_not_corrupt() {
         let pdf = minimal_pdf(&[""]);
-        assert!(matches!(parse_pdf_pages(&pdf), Err(ParseError::NoTextLayer)));
+        assert!(matches!(
+            parse_pdf_pages(&pdf),
+            Err(ParseError::NoTextLayer)
+        ));
     }
 }

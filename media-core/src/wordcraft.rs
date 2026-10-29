@@ -31,13 +31,13 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::process::Command;
 
+use crate::Annotation;
 use crate::adapter::{
     ApplyRequest, ApplyResult, Collaborator, MediaError, ToolCapability, ToolProbe,
 };
 use crate::model::{ApplyMode, CarrierInfo, CarrierKind, ExtractSource, Region, TextUnit};
 use crate::photo::not_found_msg;
 use crate::photo::resolve_tool_bin;
-use crate::Annotation;
 
 pub const WORD_APP: &str = "wordcraft";
 pub const WORD_CLI: &str = "wordcraft-cli";
@@ -81,10 +81,7 @@ pub fn parse_blocks(inspect: &Value) -> Vec<Block> {
                         return None;
                     }
                     Some(Block {
-                        index: b
-                            .get("index")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize,
+                        index: b.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
                         text: text.to_string(),
                         style: b
                             .get("style")
@@ -251,7 +248,8 @@ pub fn apply_commands(
         }
     }
     if tracking {
-        let mut with = vec![json!({ "command": "review.trackChanges", "params": { "value": true } })];
+        let mut with =
+            vec![json!({ "command": "review.trackChanges", "params": { "value": true } })];
         with.append(&mut cmds);
         with.push(json!({ "command": "review.trackChanges", "params": { "value": false } }));
         cmds = with;
@@ -423,8 +421,9 @@ impl WordCraft {
             warnings.push("DOCX 已加密：文本可读，但回写可能被拒".to_string());
         }
         if info.get("trackChanges").and_then(Value::as_bool) == Some(true) {
-            warnings
-                .push("文档已有未处理的修订：InPlace 会在其上继续叠加，请先在 Word 里核对".to_string());
+            warnings.push(
+                "文档已有未处理的修订：InPlace 会在其上继续叠加，请先在 Word 里核对".to_string(),
+            );
         }
         if units.is_empty() {
             warnings.push("没有可校对的段落".to_string());
@@ -620,8 +619,7 @@ mod tests {
         {"index":1,"len":109,"style":"Normal","text":"The He'llo wrold sample paragraph for LangFixer round trip. Second line with wrold again for occurrence test.","type":"paragraph"}],
         "comments":0,"pages":1,"parts":[],"trackChanges":false,"words":18}"#;
     /// 真机输出（`run --cmd review.comments --print`）
-    const COMMENTS: &str =
-        "review.comments: [{\"anchor\":{\"off\":4,\"path\":[1],\"story\":\"body\"},\"author\":\"LangFixer\",\"date\":\"2026-10-28T11:43:37Z\",\"id\":0,\"parent\":null,\"resolved\":false,\"text\":\"#2 spelling: He'llo -> Hello\"}]";
+    const COMMENTS: &str = "review.comments: [{\"anchor\":{\"off\":4,\"path\":[1],\"story\":\"body\"},\"author\":\"LangFixer\",\"date\":\"2026-10-28T11:43:37Z\",\"id\":0,\"parent\":null,\"resolved\":false,\"text\":\"#2 spelling: He'llo -> Hello\"}]";
 
     fn blocks() -> Vec<Block> {
         parse_blocks(&parse_print_json(INSPECT).unwrap())
@@ -685,7 +683,10 @@ mod tests {
         let b = blocks();
         let text = &b[1].text;
         let first = text.find("wrold").unwrap();
-        let second = text[first + 1..].find("wrold").map(|i| first + 1 + i).unwrap();
+        let second = text[first + 1..]
+            .find("wrold")
+            .map(|i| first + 1 + i)
+            .unwrap();
         assert_eq!(occurrence_of(&b, 1, [first, first + 5], "wrold"), Some(1));
         assert_eq!(occurrence_of(&b, 1, [second, second + 5], "wrold"), Some(2));
     }
@@ -724,8 +725,7 @@ mod tests {
         let b = blocks();
         let first = b[1].text.find("wrold").unwrap();
         let a = annotation(2, [first, first + 5], "wrold", None);
-        let (cmds, skipped) =
-            apply_commands(std::slice::from_ref(&a), &b, ApplyMode::InPlace);
+        let (cmds, skipped) = apply_commands(std::slice::from_ref(&a), &b, ApplyMode::InPlace);
         assert!(skipped.is_empty());
         assert!(!cmds.iter().any(|c| c["command"] == "text.delete"));
         assert!(cmds.iter().any(|c| c["command"] == "review.newComment"));
@@ -752,7 +752,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要本机 wordcraft-cli 与 LANGFIXER_TEST_DOCX"]
     async fn real_cli_contract() {
-        let docx = std::env::var("LANGFIXER_TEST_DOCX").expect("设置 LANGFIXER_TEST_DOCX=/path.docx");
+        let docx =
+            std::env::var("LANGFIXER_TEST_DOCX").expect("设置 LANGFIXER_TEST_DOCX=/path.docx");
         let file = PathBuf::from(&docx);
         let tool = WordCraft::new(WordCraftConfig::default()).unwrap();
         let probe = tool.probe().await.unwrap();
@@ -765,8 +766,3 @@ mod tests {
         assert!(png.exists());
     }
 }
-
-
-
-
-

@@ -273,7 +273,10 @@ mod tests {
         let p = parse_docx_paragraphs(&docx_fixture()).expect("段落级解析");
         assert_eq!(p.paragraphs.len(), 3, "段落边界不能丢");
         assert_eq!(p.paragraphs[0], (Some(1), "Proof".to_string()));
-        assert_eq!(p.paragraphs[1], (None, "The He'llo wrold paragraph.".to_string()));
+        assert_eq!(
+            p.paragraphs[1],
+            (None, "The He'llo wrold paragraph.".to_string())
+        );
 
         // 知识库导入入口（按标题切章）行为不变
         let d = crate::docx::parse_docx(&docx_fixture()).expect("切章入口");

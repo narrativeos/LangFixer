@@ -98,7 +98,11 @@ pub fn parse_page_sizes(info: &Value) -> Vec<PageSize> {
                     let width = p.get("width").and_then(Value::as_f64)?;
                     let height = p.get("height").and_then(Value::as_f64)?;
                     if width > 0.0 && height > 0.0 {
-                        Some(PageSize { page, width, height })
+                        Some(PageSize {
+                            page,
+                            width,
+                            height,
+                        })
                     } else {
                         None
                     }
@@ -246,7 +250,12 @@ pub fn comment_step(
                 Some("定位失败（未定位）→ 不画假框，只进清单".to_string()),
             );
         }
-        _ => return (None, Some("该落点类型 PdfCraft 不支持（非页内矩形）".to_string())),
+        _ => {
+            return (
+                None,
+                Some("该落点类型 PdfCraft 不支持（非页内矩形）".to_string()),
+            );
+        }
     };
     let Some(size) = page_size(sizes, page) else {
         return (
@@ -433,7 +442,9 @@ impl PdfCraft {
         if got != DOC {
             return Err(MediaError::ToolFailed {
                 tool: PDF_CLI.into(),
-                detail: format!("doc_open 返回 doc={got}，与脚本假设的 {DOC} 不符 → 拒绝继续，不猜"),
+                detail: format!(
+                    "doc_open 返回 doc={got}，与脚本假设的 {DOC} 不符 → 拒绝继续，不猜"
+                ),
             });
         }
         let info = rows.get(1).cloned().unwrap_or(Value::Null);
@@ -498,7 +509,10 @@ impl PdfCraft {
             height: None,
             pages: Some(count),
             text_units: units.len(),
-            editable: opened.get("editable").and_then(Value::as_bool).unwrap_or(true),
+            editable: opened
+                .get("editable")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             warnings,
         };
         Ok((info, units))
@@ -737,7 +751,8 @@ impl PdfCraft {
             }
         }
         if res.applied.is_empty() {
-            res.warnings.push("没有可落点的标注 → 不生成 result.pdf".to_string());
+            res.warnings
+                .push("没有可落点的标注 → 不生成 result.pdf".to_string());
             return Ok(res);
         }
         steps.push(json!({
@@ -753,7 +768,9 @@ impl PdfCraft {
             .await
         {
             Ok(()) => res.artifacts.push(req.preview.to_path_buf()),
-            Err(e) => res.warnings.push(format!("批注已写入，但预览渲染失败：{e}")),
+            Err(e) => res
+                .warnings
+                .push(format!("批注已写入，但预览渲染失败：{e}")),
         }
         Ok(res)
     }
@@ -885,7 +902,10 @@ mod tests {
     fn idempotent_cleanup_targets_only_our_comments() {
         let list: Value = serde_json::from_str(COMMENT_LIST).unwrap();
         assert_eq!(our_comment_ids(&list, "LangFixer"), vec!["ec16c442-afbb"]);
-        assert!(our_comment_ids(&list, "别人").is_empty(), "别人写的批注不能动");
+        assert!(
+            our_comment_ids(&list, "别人").is_empty(),
+            "别人写的批注不能动"
+        );
     }
 
     #[test]
@@ -913,8 +933,13 @@ mod tests {
         let info: Value = serde_json::from_str(DOC_INFO).unwrap();
         let sizes = parse_page_sizes(&info);
         let a = annotation(Region::Unlocated);
-        let (step, why) =
-            comment_step(DOC, &a, &sizes, &PdfCraftConfig::default(), ApplyMode::Overlay);
+        let (step, why) = comment_step(
+            DOC,
+            &a,
+            &sizes,
+            &PdfCraftConfig::default(),
+            ApplyMode::Overlay,
+        );
         assert!(step.is_none());
         assert!(why.unwrap().contains("不画假框"));
     }
@@ -942,7 +967,8 @@ pdfcraft-cli: step 2 (comment_add): squiggly needs `find`"#;
     #[tokio::test]
     #[ignore = "需要本机 pdfcraft-cli 与 LANGFIXER_TEST_PDF"]
     async fn real_cli_contract() {
-        let pdf = std::env::var("LANGFIXER_TEST_PDF").expect("设置 LANGFIXER_TEST_PDF=/path/to.pdf");
+        let pdf =
+            std::env::var("LANGFIXER_TEST_PDF").expect("设置 LANGFIXER_TEST_PDF=/path/to.pdf");
         let file = PathBuf::from(&pdf);
         let tool = PdfCraft::new(PdfCraftConfig::default()).unwrap();
         let probe = tool.probe().await.unwrap();
@@ -957,9 +983,3 @@ pdfcraft-cli: step 2 (comment_add): squiggly needs `find`"#;
         assert!(png.exists());
     }
 }
-
-
-
-
-
-

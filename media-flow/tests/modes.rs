@@ -133,7 +133,11 @@ impl CarrierDetector for MockDetector {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lf_modes_{}_{}", tag, uuid::Uuid::new_v4().simple()));
+    let d = std::env::temp_dir().join(format!(
+        "lf_modes_{}_{}",
+        tag,
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -228,7 +232,12 @@ async fn pdf_simple_mode_needs_no_cli_and_keeps_page_numbers() {
     let mut parts: Vec<String> = Vec::new();
     for a in &job.annotations {
         match &job.unit(a.unit_id).map(|u| (&a.region, u)) {
-            Some((media_core::Region::RunRef { part, run_range, .. }, u)) => {
+            Some((
+                media_core::Region::RunRef {
+                    part, run_range, ..
+                },
+                u,
+            )) => {
                 // 落点必须是「第N页 + 该页正文的真实字符区间」——简单模式没有假像素框
                 parts.push(part.clone());
                 let text = u.text.clone();
@@ -242,13 +251,19 @@ async fn pdf_simple_mode_needs_no_cli_and_keeps_page_numbers() {
         }
     }
     assert_eq!(parts, vec!["第1页", "第2页"], "页号必须按载体顺序");
-    assert!(job.artifacts.preview.is_none(), "只读文档视图没有位图预览可取");
+    assert!(
+        job.artifacts.preview.is_none(),
+        "只读文档视图没有位图预览可取"
+    );
     // 简单模式没有回写原语 → 必须明确拒绝并给出 remedy，而不是静默 ListOnly
     let err = flow::apply_job(&c, &created.id, Some("overlay"))
         .await
         .expect_err("简单模式不回写载体，必须报错");
     let msg = err.to_string();
-    assert!(msg.contains("简单模式") && msg.contains("advanced"), "{msg}");
+    assert!(
+        msg.contains("简单模式") && msg.contains("advanced"),
+        "{msg}"
+    );
 
     let report = flow::build_report(&c, Default::default())
         .await
@@ -338,7 +353,10 @@ async fn inspect_carrier_reports_modes_for_documents() {
     let wd = temp_dir("inspect");
     let c = ctx(&wd);
     let cases: Vec<(&str, Vec<u8>)> = vec![
-        ("note.pdf", minimal_pdf(&["Notice: the pool closes at 6pm."])),
+        (
+            "note.pdf",
+            minimal_pdf(&["Notice: the pool closes at 6pm."]),
+        ),
         (
             "note.docx",
             minimal_docx(&[("", "Notice: the pool closes at 6pm.")]),
@@ -348,7 +366,11 @@ async fn inspect_carrier_reports_modes_for_documents() {
         let v = flow::inspect_carrier(&c, name, &bytes)
             .await
             .unwrap_or_else(|e| panic!("{name} 探测失败：{e}"));
-        assert_eq!(v["modes"]["simple"]["available"], json!(true), "{name}: {v}");
+        assert_eq!(
+            v["modes"]["simple"]["available"],
+            json!(true),
+            "{name}: {v}"
+        );
         assert_eq!(
             v["modes"]["advanced"]["available"],
             json!(false),
@@ -399,7 +421,11 @@ async fn pdf_advanced_end_to_end() {
     assert_eq!(job.stage, MediaStage::Ready, "job 失败：{:?}", job.error);
     assert_eq!(job.tool.as_deref(), Some("pdfcraft"));
     assert_eq!(job.extraction, "structure");
-    let stitched = job.stitched.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+    let stitched = job
+        .stitched
+        .as_ref()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
     assert!(
         stitched.contains("a apple"),
         "样本必须带文本层且含「a apple」：{stitched:?}"
@@ -408,7 +434,10 @@ async fn pdf_advanced_end_to_end() {
     assert!(
         job.annotations.iter().any(|a| a.region.is_locatable()),
         "高级模式的落点必须能画到载体上：{:?}",
-        job.annotations.iter().map(|a| &a.region).collect::<Vec<_>>()
+        job.annotations
+            .iter()
+            .map(|a| &a.region)
+            .collect::<Vec<_>>()
     );
     let applied = flow::apply_job(&c, &created.id, Some("overlay"))
         .await
@@ -445,7 +474,11 @@ async fn docx_advanced_end_to_end() {
     let job = wait_terminal(&c, &created.id).await;
     assert_eq!(job.stage, MediaStage::Ready, "job 失败：{:?}", job.error);
     assert_eq!(job.tool.as_deref(), Some("wordcraft"));
-    let stitched = job.stitched.as_ref().map(|s| s.text.clone()).unwrap_or_default();
+    let stitched = job
+        .stitched
+        .as_ref()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
     assert!(
         stitched.contains("a apple"),
         "样本必须含「a apple」：{stitched:?}"
@@ -458,6 +491,3 @@ async fn docx_advanced_end_to_end() {
     assert!(std::path::Path::new(&out).exists(), "产物必须落盘：{out}");
     let _ = std::fs::remove_dir_all(&wd);
 }
-
-
-

@@ -54,9 +54,7 @@ pub fn parse_docx(bytes: &[u8]) -> Result<ParsedDoc, MediaError> {
         .map_err(|e| MediaError::Unsupported(format!("DOCX 解析失败：{e}")))?;
     let units = docx_units(&parsed.paragraphs);
     if units.is_empty() {
-        return Err(MediaError::Unsupported(
-            "DOCX 没有可校对段落".to_string(),
-        ));
+        return Err(MediaError::Unsupported("DOCX 没有可校对段落".to_string()));
     }
     Ok(ParsedDoc {
         info: CarrierInfo {

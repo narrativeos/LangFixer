@@ -75,7 +75,10 @@ pub fn resolve_bin(explicit: Option<&str>) -> Option<PathBuf> {
 /// 「CLI 没找到」的报错文案：设置里配过路径就点名那个路径——
 /// 让人去装已经装过的东西，是把人往错的方向引
 pub fn not_found_msg(name: &str, explicit: Option<&str>) -> String {
-    match explicit.map(str::trim).filter(|s| !s.is_empty() && s.contains('/')) {
+    match explicit
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.contains('/'))
+    {
         Some(p) => format!(
             "{name} 未找到：设置里配的路径「{p}」不可用（改正那个路径，或留空让它自动查找）"
         ),
@@ -253,8 +256,9 @@ fn mark_rect(a: &crate::model::Annotation) -> Option<[f64; 4]> {
 
 impl PhotoCraft {
     pub fn new(cfg: PhotoCraftConfig) -> Result<Self, MediaError> {
-        let bin = resolve_bin(cfg.bin.as_deref())
-            .ok_or_else(|| MediaError::NotReady(not_found_msg("photocraft-cli", cfg.bin.as_deref())))?;
+        let bin = resolve_bin(cfg.bin.as_deref()).ok_or_else(|| {
+            MediaError::NotReady(not_found_msg("photocraft-cli", cfg.bin.as_deref()))
+        })?;
         Ok(Self { bin, cfg })
     }
 
