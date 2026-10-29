@@ -3566,6 +3566,8 @@ pub struct UpdateSettingsRequest {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct UpdateMediaRequest {
     pub enabled: Option<bool>,
+    /// 工作模式：`simple`（零 CLI）/ `advanced`（三家适配器，可回写）
+    pub mode: Option<String>,
     pub apply_mode: Option<String>,
     pub workdir: Option<String>,
     pub use_structure_layer: Option<bool>,
@@ -3704,6 +3706,16 @@ pub fn update_settings(
         // 的目录解析——job 存储是在启动时按 `media.workdir` 建的，改目录要重启才换地方
         if let Some(v) = media.enabled {
             next.media.enabled = v;
+        }
+        if let Some(v) = &media.mode {
+            // 不用 JobMode::parse 兜底：那是宽松解析，会把拼错的值悄悄变成 advanced
+            let v = v.trim().to_ascii_lowercase().replace('-', "_");
+            if !matches!(v.as_str(), "simple" | "advanced") {
+                return Err(format!(
+                    "media.mode 无效: {v}（应为 simple = 零 CLI / advanced = 三家适配器）"
+                ));
+            }
+            next.media.mode = v;
         }
         if let Some(v) = &media.apply_mode {
             let v = v.trim().to_string();

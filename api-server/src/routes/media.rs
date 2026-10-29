@@ -124,6 +124,10 @@ pub struct JobQuery {
     /// 仅返回指定分类（语义同 /gec/detect）
     #[serde(default)]
     pub category: Option<String>,
+    /// 媒体模式：`simple`（零 CLI：段落级定位 + 只读文档视图）/ `advanced`（CLI 读结构层并回写）。
+    /// 缺省取设置里的 `media.mode`（默认 advanced）；不可用时后端会给出原因与退路，不会静默换档
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// POST /gec/media/probes — 三家工具探测（只读，不写文件）
@@ -159,6 +163,7 @@ pub async fn create_job(
         level: q.level,
         force_llm: q.force_llm,
         category: q.category,
+        mode: q.mode,
     };
     flow::create_job(&ctx, detector, &q.filename, &body, opts)
         .map(Json)

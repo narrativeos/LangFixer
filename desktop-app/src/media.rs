@@ -173,6 +173,7 @@ pub async fn media_create_job(
     level: Option<u8>,
     force_llm: Option<bool>,
     category: Option<String>,
+    mode: Option<String>,
 ) -> Result<MediaJob, String> {
     // 后台任务需要 'static：克隆 Core 的 Arc 出来用（State 生命周期不够）
     let core = core.inner().clone();
@@ -189,6 +190,7 @@ pub async fn media_create_job(
             level,
             force_llm,
             category,
+            mode,
         },
     )
     .map_err(|e| e.to_string())
