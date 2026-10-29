@@ -541,7 +541,7 @@ async fn explain_with_mock_llm_and_session() {
         "native_language": "en",
     });
     let record: SessionRecord = c
-        .post(format!("{base}/student/bob1/record"))
+        .post(format!("{base}/gec/sessions/bob1/record"))
         .json(&body)
         .send()
         .await

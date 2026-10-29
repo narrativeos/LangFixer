@@ -79,7 +79,7 @@ pub async fn restore(
     ))
 }
 
-/// POST /gec/sessions/:id/record — 记录犯错（兼容旧 /student/:id/record）
+/// POST /gec/sessions/:id/record — 记录犯错
 #[derive(serde::Deserialize)]
 pub struct SessionRecordRequest {
     pub lang: String,

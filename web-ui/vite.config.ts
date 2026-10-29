@@ -10,7 +10,6 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       '/gec': { target: 'http://localhost:4801', changeOrigin: true },
-      '/student': { target: 'http://localhost:4801', changeOrigin: true },
     },
   },
 })

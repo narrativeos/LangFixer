@@ -291,8 +291,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/gec/feedback/history",
             axum::routing::get(feedback::feedback_history),
         )
-        .route("/student/:id/profile", axum::routing::get(session::get))
-        .route("/student/:id/record", axum::routing::post(session::record))
         .route(
             "/gec/sessions",
             axum::routing::post(session::create).delete(session::remove_all),
