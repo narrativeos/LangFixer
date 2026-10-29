@@ -27,8 +27,15 @@ watch(
 )
 
 function finish() {
+  // 工作场景落位（能力位）：引导只覆盖学习 / 编校；运营不在引导中出现
+  store.setCap('learning', scenarioLearning.value)
+  store.setCap('proofreading', scenarioProofreading.value)
   emit('done')
 }
+
+// 首次引导的场景选择：默认取当前能力位（重复打开引导时不改已保存偏好）
+const scenarioLearning = ref(store.caps.learning)
+const scenarioProofreading = ref(store.caps.proofreading)
 
 function goSettings() {
   store.requestNav('settings')
@@ -72,13 +79,25 @@ function goEvolution() {
       </li>
       <li>
         <b>让系统自我改进</b>
-        <span>
+        <span v-if="store.caps.ops">
           使用「检测」积累的反馈可汇入
           <el-button size="small" @click="goEvolution">进化中心</el-button>
           ：测评（量化能力）→ 反思（发现问题与建议）→ 训练（应用改进）→ 贡献与轮次（验证效果）。
         </span>
+        <span v-else>
+          你在「检测」中确认与采纳的纠错会沉淀为改进素材，由平台维护者在进化中心
+          （测评 / 反思 / 训练）持续优化检测质量。
+        </span>
       </li>
     </ol>
+    <div class="onboard-scenario">
+      <b>我的工作场景</b>
+      <span class="sub">（之后可在「设置 → 工作场景与角色」调整）</span>
+      <div class="onboard-scenario-opts">
+        <el-checkbox v-model="scenarioLearning">学习语言（练习与复习、个性化讲解）</el-checkbox>
+        <el-checkbox v-model="scenarioProofreading">做编校工作（载体审校、正误表导出）</el-checkbox>
+      </div>
+    </div>
     <template #footer>
       <el-button type="primary" @click="finish">开始使用</el-button>
     </template>
@@ -91,4 +110,7 @@ function goEvolution() {
 .onboard-steps li { display: flex; gap: 8px; line-height: 1.7; font-size: 13.5px; }
 .onboard-steps li > b { flex-shrink: 0; }
 .onboard-steps li > span { color: var(--el-text-color-regular); }
+.onboard-scenario { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--el-border-color); font-size: 13.5px; }
+.onboard-scenario .sub { color: var(--el-text-color-secondary); font-size: 12px; }
+.onboard-scenario-opts { display: flex; gap: 18px; margin-top: 6px; }
 </style>

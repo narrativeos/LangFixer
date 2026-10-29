@@ -568,6 +568,10 @@ export interface SessionMeta {
   lang: string
   status: string
   created_at: string
+  /** 学习者画像：母语（用户自报；讲解 prompt 注入用） */
+  native_language?: string | null
+  /** 学习者画像：自评 CEFR（A1-C2；讲解模板缺省档位） */
+  cefr?: string | null
 }
 
 export interface ErrorHistoryEntry {

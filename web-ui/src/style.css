@@ -199,6 +199,9 @@ html.desktop .main-area > .manage-pane {
   overflow-y: auto; overscroll-behavior: contain;
 }
 
+/* 深链命中未解锁视图：工作区顶部一次性说明卡 */
+.locked-view-hint { margin-bottom: 14px; }
+
 /* ── 顶部品牌区 ── */
 .app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .brand-mark {

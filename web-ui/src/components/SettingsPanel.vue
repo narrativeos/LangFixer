@@ -31,6 +31,97 @@ const saving = ref(false)
 const error = ref('')
 const savedMsg = ref('')
 
+// ── 工作场景与角色（能力位门控，见 lib/caps.ts） ──
+// 核心工作区共享；学习 / 编校 / 运营三个扩展按需开关。
+// ops 在 web 形态解锁需 token 验证（POST /gec/ops/unlock，服务端防线是 token 鉴权端点）；
+// 桌面端本地单用户直接解锁。
+const showOpsToken = ref(false)
+const opsToken = ref('')
+const opsUnlocking = ref(false)
+const opsUnlockError = ref('')
+
+function onCapToggle(key: 'learning' | 'proofreading' | 'ops', value: boolean) {
+  if (key !== 'ops') {
+    store.setCap(key, value)
+    return
+  }
+  if (!value) {
+    store.setCap('ops', false)
+    showOpsToken.value = false
+    return
+  }
+  if (isTauri) {
+    store.setCap('ops', true)
+    return
+  }
+  // web 形态：先展示内联 token 验证表单，验证通过才真正开启
+  showOpsToken.value = true
+}
+
+async function unlockOps() {
+  opsUnlocking.value = true
+  opsUnlockError.value = ''
+  try {
+    await api.opsUnlock(opsToken.value || undefined)
+    store.setCap('ops', true)
+    showOpsToken.value = false
+    opsToken.value = ''
+    ElMessage.success('已解锁平台运营功能')
+  } catch (e) {
+    opsUnlockError.value = errMsg(e)
+  } finally {
+    opsUnlocking.value = false
+  }
+}
+
+// ── 我的档案（学习者画像：母语 + 自评 CEFR → 注入 LLM 讲解 prompt / 缺省档位） ──
+const CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
+const NATIVE_OPTIONS = ['中文', 'English', '日本語', '한국어', 'français', 'español', 'Deutsch']
+const profileNative = ref('')
+const profileCefr = ref('')
+const profileSaving = ref(false)
+const profileError = ref('')
+
+/** 画像挂在会话上：无会话 ID 时本地生成（PUT profile / get_session 两端都会自动建档） */
+function ensureSessionId(): string {
+  if (store.sessionId) return store.sessionId
+  const id = `s_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  store.sessionId = id
+  return id
+}
+
+async function loadProfile() {
+  if (!store.sessionId) return
+  try {
+    const rec = await api.getSession(store.sessionId, store.lang)
+    profileNative.value = rec.meta.native_language ?? ''
+    profileCefr.value = rec.meta.cefr ?? ''
+  } catch {
+    // REST 形态会话不存在（404）：按空档案处理，保存时自动建档
+  }
+}
+void loadProfile()
+
+async function saveProfile() {
+  profileSaving.value = true
+  profileError.value = ''
+  try {
+    const id = ensureSessionId()
+    const rec = await api.updateSessionProfile(id, {
+      lang: store.lang,
+      native_language: profileNative.value || undefined,
+      cefr: profileCefr.value || undefined,
+    })
+    profileNative.value = rec.meta.native_language ?? profileNative.value
+    profileCefr.value = rec.meta.cefr ?? profileCefr.value
+    ElMessage.success('档案已保存：LLM 讲解将按画像自动个性化')
+  } catch (e) {
+    profileError.value = errMsg(e)
+  } finally {
+    profileSaving.value = false
+  }
+}
+
 const hanlpEndpoint = ref('')
 /** 离线模式（GEC_OFFLINE）：检测器仅用本地规则，跳过远端 NLP 服务 */
 const offlineMode = ref(false)
@@ -532,6 +623,95 @@ async function runTest(target: SettingsTestTarget) {
 
 <template>
   <div class="settings-wrap">
+    <!-- 工作场景与角色（能力位）：核心工作区共享，三个扩展按需开启 -->
+    <el-card shadow="never" id="set-caps" class="settings-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">工作场景与角色</span>
+          <span class="sub">检测工作区对所有人共享；以下扩展按需开启</span>
+        </div>
+      </template>
+      <div class="cap-row">
+        <div>
+          <b>语言学习</b>
+          <div class="sub">「练习与复习」入口、学习者档案（母语 / CEFR 个性化讲解）</div>
+        </div>
+        <el-switch :model-value="store.caps.learning" @update:model-value="(v: boolean) => onCapToggle('learning', v)" />
+      </div>
+      <div class="cap-row">
+        <div>
+          <b>编校工作</b>
+          <div class="sub">载体审校工作区：图片文字提取 → 检测 → 落点画框 → 回写 / 正误表导出</div>
+        </div>
+        <el-switch :model-value="store.caps.proofreading" @update:model-value="(v: boolean) => onCapToggle('proofreading', v)" />
+      </div>
+      <div class="cap-row">
+        <div>
+          <b>平台运营</b>
+          <div class="sub">规则管理、知识维护、进化中心，以及决策模型 / 特征模型等高级设置（面向平台维护者）</div>
+        </div>
+        <el-switch :model-value="store.caps.ops" @update:model-value="(v: boolean) => onCapToggle('ops', v)" />
+      </div>
+      <div v-if="showOpsToken" class="ops-unlock">
+        <el-input
+          v-model="opsToken"
+          type="password"
+          show-password
+          placeholder="运营 token（服务端 GEC_TABLES_UPDATE_TOKEN）"
+          style="max-width: 320px"
+        />
+        <el-button type="primary" :loading="opsUnlocking" @click="unlockOps">验证并解锁</el-button>
+        <span v-if="opsUnlockError" class="apply-err">{{ opsUnlockError }}</span>
+      </div>
+      <p class="desc">
+        能力位是本机偏好（仅保存在此设备）。web 形态解锁平台运营需 token 验证；
+        未解锁时相关写端点本身也受服务端 token 保护。
+      </p>
+    </el-card>
+
+    <!-- 我的档案（学习者画像）：母语 + 自评 CEFR → LLM 讲解自动个性化 -->
+    <el-card shadow="never" id="set-profile" class="settings-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">我的档案</span>
+          <span class="sub">母语与自评 CEFR 会注入讲解 prompt：讲解深度、示例语言自动贴合你的水平</span>
+        </div>
+      </template>
+      <el-form label-width="110px" @submit.prevent>
+        <el-form-item label="母语">
+          <el-select
+            v-model="profileNative"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="如：中文（留空 = 不注入）"
+            style="max-width: 280px"
+          >
+            <el-option v-for="n in NATIVE_OPTIONS" :key="n" :label="n" :value="n" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="自评 CEFR">
+          <el-select
+            v-model="profileCefr"
+            clearable
+            placeholder="未评估（讲解默认按 A1 档）"
+            style="max-width: 280px"
+          >
+            <el-option v-for="c in CEFR_LEVELS" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="actions">
+        <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存档案</el-button>
+        <span v-if="profileError" class="apply-err">{{ profileError }}</span>
+        <span v-else class="hint">
+          档案挂在当前会话（{{ store.sessionId || '保存时自动生成' }}）；
+          讲解请求未显式指定档位时自动采用画像自评 CEFR
+        </span>
+      </div>
+    </el-card>
+
     <!-- 桌面端：进程内运行（默认离线）；下方表单所有项均可修改（即时生效 + 持久化到本地设置文件） -->
     <el-card v-if="isTauri" shadow="never" class="settings-card">
       <template #header>
@@ -614,7 +794,8 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <el-card shadow="never" id="set-decision" class="settings-card">
+    <!-- 高级（运营）：决策模型层——阈值 / 端点 / 消融开关，面向平台维护者 -->
+    <el-card v-if="store.caps.ops" shadow="never" id="set-decision" class="settings-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">决策模型（vegaml）</span>
@@ -720,7 +901,8 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <el-card shadow="never" id="set-media" class="settings-card">
+    <!-- 编校场景专属：载体审校服务配置（OCR 等） -->
+    <el-card v-if="store.caps.proofreading" shadow="never" id="set-media" class="settings-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">载体审校（图片 / PDF / Word）</span>
@@ -868,7 +1050,8 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <el-card shadow="never" id="set-l3" class="settings-card">
+    <!-- 高级（运营）：L3 特征模型层 -->
+    <el-card v-if="store.caps.ops" shadow="never" id="set-l3" class="settings-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">L3 特征模型</span>
@@ -926,7 +1109,7 @@ async function runTest(target: SettingsTestTarget) {
     </el-card>
 
     <!-- L3 训练飞轮（三期闭环）：确认样本积累 → 重训练提醒 → 重训练 → 热切换 -->
-    <el-card v-if="l3Enabled" shadow="never" class="settings-card">
+    <el-card v-if="l3Enabled && store.caps.ops" shadow="never" class="settings-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">L3 训练飞轮</span>
@@ -984,7 +1167,8 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <el-card shadow="never" id="set-dirs" class="settings-card">
+    <!-- 高级（运营）：目录配置 -->
+    <el-card v-if="store.caps.ops" shadow="never" id="set-dirs" class="settings-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">数据目录</span>
@@ -1075,4 +1259,11 @@ async function runTest(target: SettingsTestTarget) {
 .apply-err { color: var(--danger); font-size: 13px; }
 /* 「测试全部」逐项结果行 */
 .test-line { font-size: 13px; line-height: 1.9; }
+/* 「工作场景与角色」能力位行 */
+.cap-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  padding: 10px 0; border-bottom: 1px dashed var(--el-border-color);
+}
+.cap-row:last-of-type { border-bottom: none; }
+.ops-unlock { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 </style>

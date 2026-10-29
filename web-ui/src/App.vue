@@ -14,12 +14,15 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
 import MediaWorkspace from './components/MediaWorkspace.vue'
+import LearningPanel from './components/LearningPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
+import { viewAllowed, type AppView } from './lib/caps'
 
 const store = useGecStore()
-/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置（右上角切换） */
-type AppView = 'workspace' | 'media' | 'rules' | 'knowledge' | 'evolution' | 'settings'
-const APP_VIEWS: AppView[] = ['workspace', 'media', 'rules', 'knowledge', 'evolution', 'settings']
+/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置。
+ *  门控（lib/caps 能力位）：workspace/settings 共享核心；learning 扩展默认开；
+ *  载体审校 = 编校扩展（proofreading）；规则/知识/进化 = 运营扩展（ops，web 形态需 token 解锁） */
+const APP_VIEWS: AppView[] = ['workspace', 'learning', 'media', 'rules', 'knowledge', 'evolution', 'settings']
 
 /** `?view=media` 深链：刷新 / 分享链接都停在同一视图（也便于无头浏览器冒烟测试） */
 function viewFromUrl(): AppView | null {
@@ -31,7 +34,19 @@ function viewFromUrl(): AppView | null {
   }
 }
 
-const activeView = ref<AppView>(viewFromUrl() ?? 'workspace')
+/** 深链与能力位校验：打开未启用能力的视图不硬跳转，
+ *  留在核心工作区并展示一次性说明卡（解释这是什么、去哪开启） */
+const lockedViewHint = ref<AppView | null>(null)
+function resolveInitialView(): AppView {
+  const v = viewFromUrl() ?? 'workspace'
+  if (!viewAllowed(v, store.caps)) {
+    lockedViewHint.value = v
+    return 'workspace'
+  }
+  return v
+}
+
+const activeView = ref<AppView>(resolveInitialView())
 const rulesSub = ref('tables')
 const knowledgeSub = ref('attribution')
 
@@ -74,10 +89,15 @@ watch(activeView, (v) => {
 })
 
 // 反思流程导航：「到规则面板查看 / 积累后重训练」建议 → 切换顶层视图
+// （能力门控：目标视图未解锁时忽略——反思本身是运营功能，正常路径不会触发）
 watch(
   () => store.navNonce,
   (n) => {
     if (n === 0 || !store.navView) return
+    if (!viewAllowed(store.navView, store.caps)) {
+      store.navView = null
+      return
+    }
     activeView.value = store.navView
     if (store.navView === 'rules') rulesSub.value = 'rules'
     store.navView = null
@@ -149,6 +169,15 @@ function toggleTheme() {
         检测
       </el-button>
       <el-button
+        v-if="store.caps.learning"
+        :class="{ 'nav-active': activeView === 'learning' }"
+        :aria-current="activeView === 'learning' ? 'page' : undefined"
+        @click="activeView = 'learning'"
+      >
+        练习与复习
+      </el-button>
+      <el-button
+        v-if="store.caps.proofreading"
         :class="{ 'nav-active': activeView === 'media' }"
         :aria-current="activeView === 'media' ? 'page' : undefined"
         @click="activeView = 'media'"
@@ -156,6 +185,7 @@ function toggleTheme() {
         载体审校
       </el-button>
       <el-button
+        v-if="store.caps.ops"
         :class="{ 'nav-active': activeView === 'rules' }"
         :aria-current="activeView === 'rules' ? 'page' : undefined"
         @click="activeView = 'rules'"
@@ -163,6 +193,7 @@ function toggleTheme() {
         规则管理
       </el-button>
       <el-button
+        v-if="store.caps.ops"
         :class="{ 'nav-active': activeView === 'knowledge' }"
         :aria-current="activeView === 'knowledge' ? 'page' : undefined"
         @click="activeView = 'knowledge'"
@@ -170,6 +201,7 @@ function toggleTheme() {
         知识维护
       </el-button>
       <el-button
+        v-if="store.caps.ops"
         :class="{ 'nav-active': activeView === 'evolution' }"
         :aria-current="activeView === 'evolution' ? 'page' : undefined"
         @click="activeView = 'evolution'"
@@ -193,6 +225,38 @@ function toggleTheme() {
   <main class="main-area">
     <!-- 主工作区：检测与归因（三列）+ 检测历史，直接展示 -->
     <template v-if="activeView === 'workspace'">
+      <!-- 深链命中未解锁视图：一次性说明卡（解释这是什么、去哪开启），不硬跳转 -->
+      <el-alert
+        v-if="lockedViewHint"
+        class="locked-view-hint"
+        type="info"
+        show-icon
+        @close="lockedViewHint = null"
+      >
+        <template #title>
+          <template v-if="lockedViewHint === 'media'">
+            「载体审校」是编校工作流：图片 / 扫描件文字提取 → 检测 → 落点画框 → 回写 / 正误表导出。
+          </template>
+          <template v-else-if="lockedViewHint === 'learning'">
+            「练习与复习」是学习扩展：错题沉淀 → 间隔复习 → 掌握度回顾。
+          </template>
+          <template v-else>
+            「规则管理 / 知识维护 / 进化中心」属于平台运营功能，面向平台维护者。
+          </template>
+        </template>
+        <el-button
+          v-if="lockedViewHint === 'media' || lockedViewHint === 'learning'"
+          size="small"
+          type="primary"
+          plain
+          @click="store.setCap(lockedViewHint === 'media' ? 'proofreading' : 'learning', true); activeView = lockedViewHint; lockedViewHint = null"
+        >
+          启用该场景并进入
+        </el-button>
+        <el-button size="small" plain @click="lockedViewHint = null; activeView = 'settings'">
+          到设置调整场景
+        </el-button>
+      </el-alert>
       <!-- 系统状态总览（T1-1）：管线各层可用 / 未启用 / 未配置；点项跳设置，可一键测试全部 -->
       <PipelineStatus />
       <section class="detect-layout">
@@ -218,6 +282,11 @@ function toggleTheme() {
         <HistoryPanel :lang="store.lang" />
       </section>
     </template>
+
+    <!-- 练习与复习（学习扩展）：错题 → 间隔复习 → 掌握度（Phase 2 建设中） -->
+    <section v-else-if="activeView === 'learning'" class="manage-pane">
+      <LearningPanel />
+    </section>
 
     <!-- 载体审校：图片（P0）——探测 → 抽取 → 检测 → 落点画框 → 勾选 → 回写 / 正误表 -->
     <section v-else-if="activeView === 'media'" class="manage-pane">

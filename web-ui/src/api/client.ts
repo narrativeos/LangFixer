@@ -787,9 +787,43 @@ export const api = {
     return http.post<SessionMeta>('/gec/sessions', body).then((r) => r.data)
   },
 
-  /** GET /gec/sessions/:id — 获取会话详情 */
-  getSession(id: string): Promise<SessionRecord> {
+  /** GET /gec/sessions/:id — 获取会话详情（桌面端：invoke('get_session')，不存在时按 lang 建档） */
+  getSession(id: string, lang = 'zh'): Promise<SessionRecord> {
+    if (inTauri)
+      return tauri!.invoke('get_session', { sessionId: id, lang }).then((r) => r as SessionRecord)
     return http.get<SessionRecord>(`/gec/sessions/${id}`).then((r) => r.data)
+  },
+
+  /** PUT /gec/sessions/:id/profile — 更新学习者画像（母语 / 自评 CEFR；部分更新）
+   *  桌面端：invoke('update_session_profile')（同构） */
+  updateSessionProfile(
+    id: string,
+    body: { lang?: string; native_language?: string; cefr?: string },
+  ): Promise<SessionRecord> {
+    const lang = body.lang ?? 'zh'
+    if (inTauri)
+      return tauri!
+        .invoke('update_session_profile', {
+          sessionId: id,
+          lang,
+          nativeLanguage: body.native_language ?? null,
+          cefr: body.cefr ?? null,
+        })
+        .then((r) => r as SessionRecord)
+    return http.put<SessionRecord>(`/gec/sessions/${id}/profile`, body).then((r) => r.data)
+  },
+
+  /** POST /gec/ops/unlock — 「平台运营」角色解锁验证（web 形态；配置了
+   *  GEC_TABLES_UPDATE_TOKEN 时需匹配 token，否则 401）。桌面端本地单用户直接放行 */
+  opsUnlock(token?: string): Promise<{ unlocked: boolean }> {
+    if (inTauri) return Promise.resolve({ unlocked: true })
+    return http
+      .post<{ unlocked: boolean }>(
+        '/gec/ops/unlock',
+        {},
+        token ? { headers: { 'X-Tables-Update-Token': token } } : undefined,
+      )
+      .then((r) => r.data)
   },
 
   /** PUT /gec/sessions/:id/archive — 归档 */

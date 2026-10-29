@@ -1,5 +1,6 @@
 import { errMsg, isCancelError } from '../lib/err'
 import { applyCorrections } from '../lib/correct'
+import { loadCaps, saveCaps, type Caps } from '../lib/caps'
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
 import type {
@@ -91,6 +92,9 @@ export const useGecStore = defineStore('gec', {
     languages: [] as LanguageInfo[],
     /** 会话 ID（Editor 输入，讲解/归因共用） */
     sessionId: draft.sessionId ?? '',
+    /** 能力位（角色门控）：learning 学习扩展 / proofreading 编校扩展 / ops 平台运营扩展。
+     *  本地偏好（localStorage 持久化），门控导航与视图；ops 的服务端防线是 token 鉴权端点 */
+    caps: loadCaps() as Caps,
     /** 讲解目标语言（空 = 跟随检测语言） */
     targetLanguage: '',
     /** 分类过滤（纯前端展示过滤，作用于检测结果列表；空 = 不过滤；不再作为检测参数下发） */
@@ -356,6 +360,11 @@ export const useGecStore = defineStore('gec', {
       this.navView = view
       this.settingsAnchor = anchor ?? ''
       this.navNonce += 1
+    },
+    /** 能力位开关（设置页「工作场景与角色」/ 引导 / 深链解锁共用）：更新即持久化 */
+    setCap(key: keyof Caps, value: boolean) {
+      this.caps = { ...this.caps, [key]: value }
+      saveCaps(this.caps)
     },
     /** 进化中心 tab 级导航：请求切换到指定 tab（测评 / 反思 / 训练 / 贡献与轮次） */
     requestNavTab(tab: 'eval' | 'reflect' | 'train' | 'contribution') {
