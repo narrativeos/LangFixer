@@ -336,9 +336,10 @@ LANGFIXER_MEDIA_DIR=<原图目录> cargo test -p api-server --test media_gold_ev
 
 **①的实测结论**：本地规则层对这份金集**召回 0%**，而同批文本里的正对照
 （半角逗号）稳定检出——管线没问题，是中文规则覆盖不足：
-出厂词表里 `ZH_CONFUSABLE` / `ZH_MISSING_SUBJECT` 的 `enabled = false`
+出厂词表当时 `ZH_CONFUSABLE` / `ZH_MISSING_SUBJECT` 的 `enabled = false`
 （抑制层会丢掉它们检出的错误），且 `confusables` 里也没有「报到/报道」这类条目。
 即：**多模态载体的召回瓶颈在检测层覆盖，不在抽取**。
+（注：两条规则已于 2026-10 下旬改为出厂开启，但「报到/报道」类条目仍缺——覆盖结论不变。）
 
 **③ 重演 → 勾选 → 输出正误表**（两个 harness 现在都会写 `candidates.json` + `report.*` 到
 `target/media-replay/`，可用 `LANGFIXER_REPLAY_DIR` 改目录）：
