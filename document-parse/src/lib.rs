@@ -19,6 +19,10 @@ mod text;
 mod xmlscan;
 
 pub use error::ParseError;
+// 多模态审校 A 档入口（保住页/段落边界，`MULTIMODAL.md` §15.2）：
+// 与 `parse_document`（知识库导入，按标题切章）用途不同，勿混用。
+pub use docx::{DocxParagraphs, parse_docx_paragraphs};
+pub use pdf::parse_pdf_pages;
 
 /// 解析出的章节（heading 可为空；text 为纯文本/轻 markdown）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -249,6 +253,56 @@ mod tests {
         // 实体解码 + 内联标签剥离
         assert!(doc.chapters[1].text.contains("the apple & an apple"));
         assert!(doc.char_count > 20);
+    }
+
+    fn docx_fixture() -> Vec<u8> {
+        zip_of(&[(
+            "word/document.xml",
+            r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Proof</w:t></w:r></w:p>
+<w:p><w:r><w:t>The He'llo wrold paragraph.</w:t></w:r></w:p>
+<w:p><w:r><w:t>Second wrold paragraph.</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )])
+    }
+
+    #[test]
+    fn docx_paragraph_entry_keeps_paragraphs_and_heading_levels() {
+        // 多模态 A 档要的是段落级结构（列表定位都要）；切章入口不能反过来影响它
+        let p = parse_docx_paragraphs(&docx_fixture()).expect("段落级解析");
+        assert_eq!(p.paragraphs.len(), 3, "段落边界不能丢");
+        assert_eq!(p.paragraphs[0], (Some(1), "Proof".to_string()));
+        assert_eq!(p.paragraphs[1], (None, "The He'llo wrold paragraph.".to_string()));
+
+        // 知识库导入入口（按标题切章）行为不变
+        let d = crate::docx::parse_docx(&docx_fixture()).expect("切章入口");
+        assert_eq!(d.chapters.len(), 1);
+        assert_eq!(d.chapters[0].0, "Proof");
+        assert_eq!(
+            d.chapters[0].1,
+            "The He'llo wrold paragraph.\n\nSecond wrold paragraph."
+        );
+    }
+
+    #[test]
+    fn docx_paragraph_indexes_keep_empty_paragraphs() {
+        // 段落号是给用户的定位口径：空段落被丢掉，后面的「段落N」就会整体前漂一位
+        let docx = zip_of(&[(
+            "word/document.xml",
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Proof</w:t></w:r></w:p>
+<w:p></w:p>
+<w:p><w:r><w:t>Third one.</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )]);
+        let p = parse_docx_paragraphs(&docx).expect("段落级解析");
+        assert_eq!(p.paragraphs.len(), 3, "空段落也要占一个序号");
+        assert_eq!(p.paragraphs[1], (None, String::new()));
+        assert_eq!(p.paragraphs[2], (None, "Third one.".to_string()));
+        // 切章入口照旧跳过空段落
+        let d = crate::docx::parse_docx(&docx).expect("切章入口");
+        assert_eq!(d.chapters[0].1, "Third one.");
     }
 
     #[test]

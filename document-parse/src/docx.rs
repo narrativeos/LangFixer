@@ -15,6 +15,50 @@ pub struct DocxDoc {
 }
 
 pub fn parse_docx(bytes: &[u8]) -> Result<DocxDoc, ParseError> {
+    let parsed = parse_docx_paragraphs(bytes)?;
+    // 按标题切章（级别 1-6 均开新章；正文并入当前章）
+    let mut chapters: Vec<(String, String)> = Vec::new();
+    let mut heading = String::new();
+    let mut buf: Vec<String> = Vec::new();
+    for (level, text) in parsed.paragraphs {
+        if let Some(_l) = level {
+            if !buf.is_empty() || !heading.is_empty() {
+                chapters.push((heading.clone(), buf.join("\n\n")));
+            }
+            heading = text;
+            buf.clear();
+        } else if !text.is_empty() {
+            buf.push(text);
+        }
+    }
+    if !buf.is_empty() || !heading.is_empty() {
+        chapters.push((heading, buf.join("\n\n")));
+    }
+    chapters.retain(|(_, t)| !t.trim().is_empty());
+    if chapters.is_empty() {
+        return Err(ParseError::Empty("DOCX 未提取到任何正文文本".into()));
+    }
+    Ok(DocxDoc {
+        title: parsed.title,
+        author: parsed.author,
+        chapters,
+        warnings: parsed.warnings,
+    })
+}
+
+/// 段落级解析结果（多模态审校 A 档用）
+pub struct DocxParagraphs {
+    pub title: String,
+    pub author: String,
+    /// `(标题级别, 文本)`：1-6 = HeadingN/标题N；`None` = 正文段落
+    pub paragraphs: Vec<(Option<u8>, String)>,
+    pub warnings: Vec<String>,
+}
+
+/// 段落级解析：保住段落边界与标题级别，**不切章**
+/// （知识库导入走 [`parse_docx`]，那里按标题切章会打散段落结构——两个用途不同，
+/// 见 `MULTIMODAL.md` §15.2）
+pub fn parse_docx_paragraphs(bytes: &[u8]) -> Result<DocxParagraphs, ParseError> {
     let cursor = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor)
         .map_err(|e| ParseError::Corrupt(format!("DOCX 解压失败: {e}")))?;
@@ -62,9 +106,9 @@ pub fn parse_docx(bytes: &[u8]) -> Result<DocxDoc, ParseError> {
                 "w:instrText" => in_skip = in_skip.saturating_sub(1),
                 "w:p" => {
                     let text = text_content(&cur).trim().to_string();
-                    if !text.is_empty() || cur_level.is_some() {
-                        paragraphs.push((cur_level, text));
-                    }
+                    // 空段落也保留：段落号是给用户的定位口径，跳过空段落会让后面的
+                    // 「段落N」整体前漂一位，用户按号去找就找错地方
+                    paragraphs.push((cur_level, text));
                     cur.clear();
                     cur_level = None;
                 }
@@ -82,32 +126,10 @@ pub fn parse_docx(bytes: &[u8]) -> Result<DocxDoc, ParseError> {
         paragraphs.push((cur_level, tail));
     }
 
-    // 按标题切章（级别 1-6 均开新章；正文并入当前章）
-    let mut chapters: Vec<(String, String)> = Vec::new();
-    let mut heading = String::new();
-    let mut buf: Vec<String> = Vec::new();
-    for (level, text) in paragraphs {
-        if let Some(_l) = level {
-            if !buf.is_empty() || !heading.is_empty() {
-                chapters.push((heading.clone(), buf.join("\n\n")));
-            }
-            heading = text;
-            buf.clear();
-        } else if !text.is_empty() {
-            buf.push(text);
-        }
-    }
-    if !buf.is_empty() || !heading.is_empty() {
-        chapters.push((heading, buf.join("\n\n")));
-    }
-    chapters.retain(|(_, t)| !t.trim().is_empty());
-    if chapters.is_empty() {
-        return Err(ParseError::Empty("DOCX 未提取到任何正文文本".into()));
-    }
-    Ok(DocxDoc {
+    Ok(DocxParagraphs {
         title,
         author,
-        chapters,
+        paragraphs,
         warnings,
     })
 }
