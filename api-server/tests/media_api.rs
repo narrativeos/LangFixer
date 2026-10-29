@@ -1,7 +1,8 @@
 //! 多模态审校 API 集成测试（`MULTIMODAL.md` §14 P0）
 //!
 //! 两类断言：
-//! 1. **不依赖外部工具**：开关关闭 → 503；未知 job → 404；job 目录隔离；
+//! 1. **不依赖外部工具**：开关关闭 → 503；未知 job → 404；job 目录隔离（走 PDF +
+//!    `mode=simple`——模式门下唯一零 CLI / 零 LLM 的档，见 §15.1）；
 //! 2. **依赖 PhotoCraft CLI**（`PHOTOCRAFT_CLI` 或已安装才跑，否则跳过）：
 //!    造含文字层的 PSD → 上传 → 全链路（取文本 / 检测 / 回映射）→ 回写 →
 //!    **重跑幂等**（标注图层不翻倍）。
@@ -197,18 +198,25 @@ async fn probes_report_vision_and_ocr_readiness() {
 async fn job_is_isolated_in_its_own_dir() {
     let wd = temp_dir("iso");
     let base = start_media_server(true, &wd).await;
+    // 必须用 PDF + `mode=simple`：PDF 简单模式是纯 Rust 解析，零 CLI、零 LLM，任何机器
+    // （含 CI runner）都能建单。换成图片载体就出环境依赖——advanced 档要 `photocraft-cli`、
+    // simple 档要视觉模型 + LLM，裸机上两档都被模式门挡掉，建单直接 503（§15.1）
     let resp = reqwest::Client::new()
-        .post(format!("{base}/gec/media/jobs?filename=poster.psd&lang=en"))
-        .body(b"not-a-real-psd".to_vec())
+        .post(format!(
+            "{base}/gec/media/jobs?filename=poster.pdf&lang=en&mode=simple"
+        ))
+        .body(b"not-a-real-pdf".to_vec())
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    let status = resp.status();
     let job: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(status, 200, "PDF 简单模式零依赖，必须能建单：{job}");
     let id = job["id"].as_str().unwrap().to_string();
     assert_eq!(job["stage"], "copying");
+    assert_eq!(job["mode"], "simple", "必须按请求选档，不静默换档");
     // 副本落在 job 专属目录，文件名可控（无目录穿越）
-    assert!(wd.join(&id).join("poster.psd").is_file());
+    assert!(wd.join(&id).join("poster.pdf").is_file());
     // 轮询到终态（坏文件必须 failed，不能卡住）
     let mut stage = String::new();
     for _ in 0..60 {
