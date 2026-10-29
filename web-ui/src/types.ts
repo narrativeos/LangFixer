@@ -757,6 +757,8 @@ export interface AppSettings {
 export interface MediaSettingsView {
   /** 总开关（默认关闭：未开启时载体面板给出「为什么不能开工」） */
   enabled: boolean
+  /** 默认工作模式：simple（零 CLI，只出清单/正误表）/ advanced（三家适配器，可回写） */
+  mode: string
   /** 默认回写模式：overlay（决策 ①）/ comment / in_place / list_only */
   apply_mode: string
   /** job 工作目录根（空 = 相对当前目录的 media-jobs/；改目录需重启） */
@@ -815,6 +817,7 @@ export interface UpdateSettingsBody {
   /** 载体（图片 / PDF / Word）审校设置（部分更新；两端同构） */
   media?: {
     enabled?: boolean
+    mode?: string
     apply_mode?: string
     workdir?: string
     use_structure_layer?: boolean
@@ -1467,6 +1470,28 @@ export type MediaCarrierKind = 'image' | 'pdf' | 'docx' | 'other'
 /** 回写模式（`ApplyMode`；默认 overlay = 不改原文） */
 export type MediaApplyMode = 'overlay' | 'comment' | 'in_place' | 'list_only'
 
+/**
+ * 工作模式（`JobMode`，§15.1）：决定「谁来读这份载体」。
+ * `simple` = 零外部 CLI（文档纯 Rust 解析、图片走视觉模型），只出清单与正误表，不回写载体；
+ * `advanced` = 交给三家适配器（photocraft / pdfcraft / wordcraft），可回写载体。
+ */
+export type MediaMode = 'simple' | 'advanced'
+
+/** 预览面种类（`PreviewKind`）：前端据此选渲染分支——画布能画框，文档视图只高亮不画框 */
+export type MediaPreviewKind = 'none' | 'image_canvas' | 'doc_text'
+
+/** 某载体的模式可用性（后端 `mode_gate` 的口径：灰掉的原因必须带退路） */
+export interface MediaModeAvailability {
+  available: boolean
+  reason?: string | null
+}
+
+/** 模式卡：`probes.modes[carrier]` 与 `inspect.modes` 同一结构 */
+export interface MediaModeCards {
+  simple: MediaModeAvailability
+  advanced: MediaModeAvailability
+}
+
 /** 文本来源档（`ExtractSource`） */
 export type MediaExtractSource = 'structure' | 'vision' | 'ocr'
 
@@ -1551,6 +1576,12 @@ export interface MediaJob {
   id: string
   filename: string
   kind: MediaCarrierKind
+  /** 工作模式：simple = 零 CLI；advanced = 三家适配器 */
+  mode: MediaMode
+  /** 预览面：image_canvas 才能画框；doc_text 只做段落高亮（§15.3） */
+  preview_kind: MediaPreviewKind
+  /** 实际干活的工具（document-parse / photocraft / pdfcraft / wordcraft / vision） */
+  tool?: string
   stage: MediaStage
   error?: string
   carrier?: MediaCarrierInfo
@@ -1571,6 +1602,10 @@ export interface MediaJob {
 export interface MediaProbes {
   /** 多模态总开关（`media.enabled`）：false = 探测可用但建 job 会 503 */
   enabled?: boolean
+  /** 各载体的模式卡（§15.1）：前端灰不灰、后端放不放行必须同一口径 */
+  modes?: Partial<Record<'image' | 'pdf' | 'docx', MediaModeCards>>
+  /** 设置里的默认档（`media.mode`） */
+  mode_default?: MediaMode
   photocraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
   pdfcraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
   wordcraft?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
@@ -1593,6 +1628,10 @@ export interface MediaProbes {
 /** POST /gec/media/inspect 响应 */
 export interface MediaInspectResult {
   kind: MediaCarrierKind
+  /** 模式卡：哪一档能开工、不能的话原因与退路（与后端 gate 同一口径） */
+  modes?: MediaModeCards
+  /** 简单模式探到的结构（零 CLI，不猜坐标） */
+  simple?: MediaCarrierInfo
   carrier: MediaCarrierInfo
   probe?: { app: string; ready: boolean; version?: string; bin?: string; degraded_reason?: string }
 }

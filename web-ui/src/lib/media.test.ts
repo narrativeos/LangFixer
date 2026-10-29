@@ -1,17 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import {
+  advancedBlockNote,
   buildReportBody,
   carrierSize,
   compressionText,
   detectorBadge,
+  kindOfFilename,
+  modeCardsFor,
   overlayModel,
   parseRowKey,
+  previewIsCanvas,
   probeBlockers,
   regionBox,
   rowKey,
   stageProgress,
 } from './media'
-import type { ErrorItem, MediaAnnotation, MediaCarrierInfo, MediaRegion } from '../types'
+import type {
+  ErrorItem,
+  MediaAnnotation,
+  MediaCarrierInfo,
+  MediaProbes,
+  MediaRegion,
+} from '../types'
 
 /** 与后端 `annotations.json` 同形状（`Region` 是内部标签 `region`，snake_case） */
 function ann(id: number, region: MediaRegion, over: Partial<MediaAnnotation> = {}): MediaAnnotation {
@@ -197,5 +207,53 @@ describe('badges / blockers', () => {
     )
     expect(compressionText(undefined)).toBe('')
     expect(compressionText({ max_edge: 2000 })).toBe('')
+  })
+})
+
+describe('模式卡（§15.1）', () => {
+  const PROBES: MediaProbes = {
+    mode_default: 'advanced',
+    modes: {
+      pdf: {
+        simple: { available: true },
+        advanced: {
+          available: false,
+          reason: 'pdfcraft-cli 未找到（装到 ~/.local/bin/pdfcraft-cli，或在设置里给绝对路径）',
+        },
+      },
+      docx: {
+        simple: { available: true },
+        advanced: { available: true },
+      },
+    },
+  }
+
+  it('文件名 → 载体大类与后端同一口径', () => {
+    expect(kindOfFilename('Note.PDF')).toBe('pdf')
+    expect(kindOfFilename('proof.docx')).toBe('docx')
+    expect(kindOfFilename('shot.PNG')).toBe('image')
+    expect(kindOfFilename('notes.txt')).toBe('other')
+  })
+
+  it('模式卡只认后端 probes.modes，缺字段不猜可用', () => {
+    expect(modeCardsFor(PROBES, 'a.pdf')?.advanced.available).toBe(false)
+    expect(modeCardsFor(PROBES, 'a.docx')?.advanced.available).toBe(true)
+    expect(modeCardsFor(PROBES, 'a.txt')).toBeNull()
+    expect(modeCardsFor({}, 'a.pdf')).toBeNull()
+  })
+
+  it('选了高档但工具缺失 → 一句话带退路；简单模式不受影响', () => {
+    const note = advancedBlockNote(PROBES, ['a.pdf', 'b.docx'], 'advanced')
+    expect(note).toContain('pdfcraft-cli 未找到')
+    expect(note).not.toContain('docx')
+    expect(advancedBlockNote(PROBES, ['a.pdf'], 'simple')).toBe('')
+    // 同一原因只说一次，不刷屏
+    expect(advancedBlockNote(PROBES, ['a.pdf', 'b.pdf'], 'advanced').split('；')).toHaveLength(1)
+  })
+
+  it('预览面决定能不能画框：doc_text 绝不画框（§15.3）', () => {
+    expect(previewIsCanvas({ preview_kind: 'image_canvas' })).toBe(true)
+    expect(previewIsCanvas({ preview_kind: 'doc_text' })).toBe(false)
+    expect(previewIsCanvas(undefined)).toBe(false)
   })
 })

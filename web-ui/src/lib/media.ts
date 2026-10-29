@@ -11,6 +11,10 @@ import type {
   ErrorItem,
   MediaAnnotation,
   MediaCarrierInfo,
+  MediaMode,
+  MediaModeCards,
+  MediaPreviewKind,
+  MediaProbes,
   MediaRegion,
   MediaReportBody,
   MediaRowOverride,
@@ -273,3 +277,51 @@ export function compressionText(vision?: {
   const q = vision.jpeg_quality ? ` JPEG q${vision.jpeg_quality}` : ''
   return `上传前压缩 ≤${vision.max_edge}px / ≤${(Math.round(mb * 10) / 10).toFixed(1)}MB${q}`
 }
+
+/** 文件名 → 载体大类（与后端 `carrier_kind_of` 同一口径，模式卡按它取） */
+export function kindOfFilename(name: string): 'image' | 'pdf' | 'docx' | 'other' {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'pdf') return 'pdf'
+  if (ext === 'docx') return 'docx'
+  if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tif', 'tiff', 'heic', 'psd'].includes(ext))
+    return 'image'
+  return 'other'
+}
+
+/**
+ * 某载体的模式卡（§15.1）：只认后端 `probes.modes` 的口径——
+ * 前端自己判「CLI 在不在」就会与后端 gate 漂开（按钮能点、后端 503）。
+ * 缺字段 = 未知，按「不可用」处理并说明未知，不猜。
+ */
+export function modeCardsFor(probes: MediaProbes, filename: string): MediaModeCards | null {
+  const kind = kindOfFilename(filename)
+  if (kind === 'other') return null
+  return probes.modes?.[kind] ?? null
+}
+
+/**
+ * 选了高档但某个文件的档不可用 → 一句人话（带退路）；可用 → 空串。
+ * 多个文件同一原因只说一次，避免同一句话刷屏。
+ */
+export function advancedBlockNote(
+  probes: MediaProbes,
+  files: string[],
+  mode: MediaMode,
+): string {
+  if (mode !== 'advanced') return ''
+  const reasons: string[] = []
+  for (const f of files) {
+    const cards = modeCardsFor(probes, f)
+    if (!cards) continue
+    if (cards.advanced?.available) continue
+    const reason = cards.advanced?.reason || `${kindOfFilename(f)} 的高级模式不可用`
+    if (!reasons.includes(reason)) reasons.push(reason)
+  }
+  return reasons.join('；')
+}
+
+/** 预览面是否位图画布：`doc_text` 没有可信像素坐标，绝不画框（§15.3） */
+export function previewIsCanvas(job?: { preview_kind?: MediaPreviewKind } | null): boolean {
+  return job?.preview_kind === 'image_canvas'
+}
+

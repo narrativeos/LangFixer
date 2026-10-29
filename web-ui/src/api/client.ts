@@ -75,6 +75,7 @@ import type {
   MediaApplyMode,
   MediaInspectResult,
   MediaJob,
+  MediaMode,
   MediaProbes,
   MediaReportBody,
   MediaReportResult,
@@ -1311,6 +1312,9 @@ export const api = {
     lang?: string
     level?: number
     force_llm?: boolean
+    category?: string
+    /** 工作模式（§15.1）：缺省走设置里的 `media.mode`；不可用时后端报错并给出退路，不会静默换档 */
+    mode?: MediaMode
   }): Promise<MediaJob> {
     if (inTauri)
       return tauri!
@@ -1321,6 +1325,8 @@ export const api = {
           lang: body.lang ?? null,
           level: body.level ?? null,
           forceLlm: body.force_llm ?? null,
+          category: body.category ?? null,
+          mode: body.mode ?? null,
         })
         .then((r) => r as MediaJob)
     return http
@@ -1331,6 +1337,8 @@ export const api = {
           ...(body.lang ? { lang: body.lang } : {}),
           ...(body.level !== undefined ? { level: body.level } : {}),
           ...(body.force_llm !== undefined ? { force_llm: body.force_llm } : {}),
+          ...(body.category ? { category: body.category } : {}),
+          ...(body.mode ? { mode: body.mode } : {}),
         },
         headers: { 'Content-Type': 'application/octet-stream' },
         timeout: 180000,

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * 载体（图片）审校工作区（`MULTIMODAL.md` §7）
+ * 载体（图片 / PDF / Word）审校工作区（`MULTIMODAL.md` §7、§15）
  *
- * 一条链走完：导入 + 探测 → 建 job（副本隔离，永不改原件）→ 预览画布
- * （`result.png` + SVG 画框，点框 ↔ 点行联动）→ 勾选（采纳 / 放弃 / 计错数）
- * → 回写（默认 Overlay）→ 导出正误表（JSON / Markdown / HTML / docx）。
+ * 一条链走完：导入 + 探测 → 选模式（简单 = 零 CLI，只出清单/正误表；高级 = 三家适配器，可回写）
+ * → 建 job（副本隔离，永不改原件）→ 预览面（`image_canvas` 才画框；`doc_text` 只按段落定位）
+ * → 勾选（采纳 / 放弃 / 计错数）→ 回写（默认 Overlay）→ 导出正误表（JSON / Markdown / HTML / docx）。
  *
  * 两条硬规矩：
  * 1. **不静默**——视觉上传前压缩、网关重试、跨单元丢弃、LLM 降级等告警原样列出；
@@ -18,13 +18,16 @@ import { api } from '../api/client'
 import { CAT_LABELS, CAT_TYPES, confBand } from '../lib/errorDisplay'
 import { layerStatusLabel } from '../lib/labels'
 import {
+  advancedBlockNote,
   buildReportBody,
   carrierSize,
   compressionText,
   consensusOf,
   detectorBadge,
   extractionText,
+  modeCardsFor,
   overlayModel,
+  previewIsCanvas,
   probeBlockers,
   rowKey,
   stageProgress,
@@ -34,6 +37,7 @@ import type {
   MediaApplyMode,
   MediaAnnotation,
   MediaJob,
+  MediaMode,
   MediaProbes,
   MediaReportResult,
 } from '../types'
@@ -46,14 +50,36 @@ const APPLY_MODES: { value: MediaApplyMode; label: string; hint: string }[] = [
   { value: 'list_only', label: '只出清单', hint: '不碰载体，只出 sidecar 与正误表' },
 ]
 
+/**
+ * 工作模式（§15.1）：决定「谁来读这份载体」。
+ * 可用性只认后端 `probes.modes` 的口径——前端自己判 CLI 在不在，就会与后端 gate 漂开
+ * （按钮能点、后端 503）。
+ */
+const MODES: { value: MediaMode; label: string; hint: string }[] = [
+  { value: 'simple', label: '简单', hint: '零外部工具：只出清单与正误表，不回写载体' },
+  { value: 'advanced', label: '高级', hint: '交给 PhotoCraft / PdfCraft / WordCraft：可回写载体' },
+]
+
+/** 载体大类 → 正误表里的标号名词（与后端 `carrier_label` 同一口径） */
+const CARRIER_NOUNS: Record<string, string> = {
+  image: '图片',
+  pdf: 'PDF',
+  docx: '文档',
+  other: '载体',
+}
+
 const probes = ref<MediaProbes>({})
 const probeError = ref('')
 const blockers = computed(() => probeBlockers(probes.value as unknown as Record<string, unknown>))
 
-/** 待处理文件（P0 只有图片适配器；PDF / Word 见 §14 P2） */
+/** 待处理载体（图片 / PDF / Word；PDF 与 Word 见 §14 P2，现已接入） */
 const picked = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const applyMode = ref<MediaApplyMode>('overlay')
+/** 工作模式：默认高档（与设置里的 `media.mode` 同默认）；不可用时不静默换档，而是把原因摊开 */
+const mode = ref<MediaMode>('advanced')
+/** 用户手动选过模式 → 之后不再被探测里的默认值覆盖 */
+const modeTouched = ref(false)
 const level = ref(3)
 const forceLlm = ref(true)
 const lang = ref('zh')
@@ -83,6 +109,26 @@ const canInPlace = computed(() => activeJob.value?.carrier?.editable === true)
 const photocraftReady = computed(() => probes.value.photocraft?.ready === true)
 /** 视觉上传压缩口径（探测返回值给的就显示，缺字段不编数字） */
 const compression = computed(() => compressionText(probes.value.vision))
+/** 选了高档但某些载体的高档不可用 → 原因（含退路）；空串 = 都能跑 */
+const modeNote = computed(() =>
+  advancedBlockNote(probes.value, picked.value.map((f) => f.name), mode.value),
+)
+/**
+ * 这份载体能不能回写（后端口径，不在前端猜）：
+ * 简单模式没有回写原语；高级模式要看该载体对应的工具在不在（图片 PhotoCraft / PDF PdfCraft / Word WordCraft）。
+ */
+const writebackBlock = computed(() => {
+  const job = activeJob.value
+  if (!job) return ''
+  if (!['ready', 'applied'].includes(job.stage)) return '还没跑完，暂时没有可回写的判定'
+  if (job.mode === 'simple')
+    return '简单模式不回写载体：只出清单与正误表。要写回载体，请用「高级」模式重跑这份载体'
+  const cards = modeCardsFor(probes.value, job.filename)
+  if (cards) return cards.advanced.available ? '' : cards.advanced.reason || '高级模式所需工具不可用'
+  // 探测里没这张模式卡（旧后端 / 未知载体）→ 退回图片档的 PhotoCraft 口径，不假装可用
+  return photocraftReady.value ? '' : 'PhotoCraft 不可用：图片载体无法回写'
+})
+const canWriteback = computed(() => writebackBlock.value === '')
 /** 可画的 id（列表据此标「未定位」，与画布同一判定 → 不会出现「列表说定位了、图上没框」） */
 const drawableIds = computed(() => new Set(overlay.value.boxes.map((b) => b.id)))
 /** SVG 用载体像素做 viewBox：线宽 / 字号按比例换算，缩放时不会糊成一团 */
@@ -117,13 +163,17 @@ function sleep(ms: number): Promise<void> {
 
 function labelOf(job: MediaJob): string {
   const i = jobs.value.findIndex((j) => j.id === job.id)
-  return `图片${i + 1} · ${job.filename}`
+  const noun = CARRIER_NOUNS[job.kind] ?? '载体'
+  return `${noun}${i + 1} · ${job.filename}`
 }
 
 async function loadProbes() {
   try {
     probes.value = await api.mediaProbes()
     probeError.value = ''
+    // 模式默认值跟随后端设置里的 `media.mode`（用户手动选过就不再覆盖）
+    const d = probes.value.mode_default
+    if (!modeTouched.value && (d === 'simple' || d === 'advanced')) mode.value = d
   } catch (e) {
     probeError.value = errText(e)
   }
@@ -164,7 +214,12 @@ function pickFiles() {
 /** 建 job → 轮询到终态（逐个载体串行：视觉档共用一个网关） */
 async function runAll() {
   if (!picked.value.length) {
-    ElMessage.warning('先选择要审校的图片')
+    ElMessage.warning('先选择要审校的载体')
+    return
+  }
+  // 高档不可用就摊开原因，不静默换档：换了档，产物形态与正误表口径都会跟着变
+  if (modeNote.value) {
+    ElMessage.error(modeNote.value)
     return
   }
   busy.value = true
@@ -182,6 +237,7 @@ async function runAll() {
         lang: lang.value,
         level: level.value,
         force_llm: forceLlm.value,
+        mode: mode.value,
       })
       upsertJob(created)
       await openJob(created.id)
@@ -229,8 +285,22 @@ async function loadPreview(id: string) {
     URL.revokeObjectURL(previewUrl.value)
     previewUrl.value = ''
   }
+  const job = jobs.value.find((j) => j.id === id)
+  // 预览面不是位图画布 → 不取图、不画框（§15.3：文档没有可信像素坐标，画了就是假框）
+  if (job && !previewIsCanvas(job)) {
+    previewNote.value =
+      job.mode === 'simple'
+        ? '简单模式：段落级定位 + 正误表，没有位图预览，也不画框（要回写载体请切「高级」）'
+        : '这份载体的预览不是位图画布：按段落定位，不画框'
+    return
+  }
   try {
     const blob = await api.mediaPreviewBlob(id)
+    // 后端没有 `result.png` 时回退副本原件：PDF / docx 不是位图，塞进 `<img>` 只会得到破图
+    if (blob.type && !blob.type.startsWith('image/')) {
+      previewNote.value = `还没有位图预览（后端给回的是 ${blob.type} 原件）：回写后生成 result.png；判定与正误表不受影响`
+      return
+    }
     previewUrl.value = URL.createObjectURL(blob)
     previewNote.value = ''
   } catch (e) {
@@ -354,7 +424,7 @@ onBeforeUnmount(() => {
   <el-card shadow="never" class="media-card">
     <template #header>
       <div class="card-header">
-        <span class="card-title">载体审校（图片）</span>
+        <span class="card-title">载体审校（图片 / PDF / Word）</span>
         <span class="media-sub">副本隔离 · 默认叠加标注，不改原件</span>
         <span class="spacer"></span>
         <el-button size="small" text @click="loadProbes">重新探测</el-button>
@@ -378,22 +448,42 @@ onBeforeUnmount(() => {
       <el-tag size="small" :type="photocraftReady ? 'success' : 'info'" effect="plain">
         PhotoCraft {{ photocraftReady ? probes.photocraft?.version ?? '就绪' : '不可用（只出清单）' }}
       </el-tag>
+      <el-tag size="small" :type="probes.pdfcraft?.ready ? 'success' : 'info'" effect="plain">
+        PdfCraft {{ probes.pdfcraft?.ready ? probes.pdfcraft?.version ?? '就绪' : '不可用（PDF 走简单模式）' }}
+      </el-tag>
+      <el-tag size="small" :type="probes.wordcraft?.ready ? 'success' : 'info'" effect="plain">
+        WordCraft {{ probes.wordcraft?.ready ? probes.wordcraft?.version ?? '就绪' : '不可用（Word 走简单模式）' }}
+      </el-tag>
       <el-tag size="small" :type="probes.vision?.ready ? 'success' : 'info'" effect="plain">
         视觉档 {{ probes.vision?.ready ? probes.vision?.model : '未就绪' }}
         <template v-if="compression">· {{ compression }}</template>
       </el-tag>
-      <el-tag size="small" effect="plain">
-        WordCraft 载体 {{ probes.wordcraft?.ready ? '就绪' : '未实现（P2；图片模式与 docx 导出不受影响）' }}
-      </el-tag>
     </div>
 
     <div class="import-row">
-      <input ref="fileInput" type="file" accept="image/*" multiple class="hidden-file" @change="onPick" />
-      <el-button @click="pickFiles">选择图片</el-button>
+      <input
+        ref="fileInput"
+        type="file"
+        accept="image/*,.pdf,.docx"
+        multiple
+        class="hidden-file"
+        @change="onPick"
+      />
+      <el-button @click="pickFiles">选择载体</el-button>
       <span class="file-names">
-        {{ picked.map((f) => f.name).join('、') || '未选择（png / jpg / webp / psd…，逐个串行处理）' }}
+        {{ picked.map((f) => f.name).join('、') || '未选择（图片 / PDF / docx，逐个串行处理）' }}
       </span>
       <span class="spacer"></span>
+      <label class="param">模式
+        <el-radio-group v-model="mode" size="small" @change="modeTouched = true">
+          <el-radio
+            v-for="m in MODES"
+            :key="m.value"
+            :value="m.value"
+            :title="m.hint"
+          >{{ m.label }}</el-radio>
+        </el-radio-group>
+      </label>
       <label class="param">语言
         <el-select v-model="lang" size="small" style="width: 92px">
           <el-option label="中文" value="zh" />
@@ -411,6 +501,19 @@ onBeforeUnmount(() => {
       <el-switch v-model="forceLlm" size="small" active-text="强制 LLM 兜底" />
       <el-button type="primary" :loading="busy" @click="runAll">开始审校</el-button>
     </div>
+
+    <!-- 高档不可用就把原因摊开（含退路），不静默换档 -->
+    <el-alert
+      v-if="modeNote"
+      class="mode-note"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="modeNote"
+    />
+    <p v-else-if="mode === 'simple'" class="mode-note">
+      简单模式不依赖任何外部工具：只出段落级定位与正误表，载体回写不可用（要回写请切「高级」）。
+    </p>
 
     <div v-if="jobs.length" class="job-tabs">
       <el-button
@@ -440,6 +543,13 @@ onBeforeUnmount(() => {
       />
       <div class="job-meta">
         <el-tag size="small" effect="plain">{{ statusText || progress.label }}</el-tag>
+        <el-tag size="small" :type="activeJob.mode === 'simple' ? 'info' : 'success'" effect="plain">
+          {{ activeJob.mode === 'simple' ? '简单模式 · 零 CLI' : '高级模式' }}
+          <template v-if="activeJob.tool">· {{ activeJob.tool }}</template>
+        </el-tag>
+        <el-tag size="small" effect="plain">
+          预览面 {{ activeJob.preview_kind === 'image_canvas' ? '位图画布（可画框）' : '文档文本（不画框）' }}
+        </el-tag>
         <el-tag size="small" effect="plain">
           载体 {{ size ? `${size.w}×${size.h}` : '尺寸未知' }}
           {{ activeJob.carrier?.editable ? '· 含文字层' : '· 无文字层' }}
@@ -597,7 +707,7 @@ onBeforeUnmount(() => {
             v-for="m in APPLY_MODES"
             :key="m.value"
             :value="m.value"
-            :disabled="m.value === 'in_place' && !canInPlace"
+            :disabled="(m.value === 'in_place' && !canInPlace) || activeJob.mode === 'simple'"
             :title="m.hint"
           >
             {{ m.label }}
@@ -606,8 +716,9 @@ onBeforeUnmount(() => {
         <span class="spacer"></span>
         <el-button
           size="small"
-          :disabled="!['ready', 'applied'].includes(activeJob.stage) || !photocraftReady"
+          :disabled="!canWriteback"
           :loading="busy"
+          :title="writebackBlock || undefined"
           @click="applyWrite"
         >
           应用并回写
@@ -622,7 +733,8 @@ onBeforeUnmount(() => {
           导出正误表
         </el-button>
       </div>
-      <p v-if="applyMode === 'in_place' && !canInPlace" class="hint">
+      <p v-if="writebackBlock" class="hint">{{ writebackBlock }}</p>
+      <p v-else-if="applyMode === 'in_place' && !canInPlace" class="hint">
         本载体无文字层（扁平位图）→「改原文」不可用，只能用叠加标注
       </p>
 
@@ -652,7 +764,8 @@ onBeforeUnmount(() => {
     </template>
 
     <p v-else class="empty-hint">
-      选择图片后点「开始审校」：探测载体 → 取文本（无文字层走视觉档）→ 检测 → 回映射落点。
+      选择载体（图片 / PDF / docx）后点「开始审校」：探测载体 → 取文本（无文字层走视觉档）→ 检测 → 回映射落点。
+      「简单」模式零外部工具，只出清单与正误表；「高级」模式交给 PhotoCraft / PdfCraft / WordCraft，可回写载体。
       原件不会被修改，所有产物在 job 独立目录里。
     </p>
   </el-card>
@@ -669,6 +782,13 @@ onBeforeUnmount(() => {
 .ann-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .probe-row { margin-bottom: 10px; }
 .import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+/* 模式说明 / 不可用原因：紧贴操作条，用户点「开始审校」之前就看得见 */
+.mode-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
 .file-names {
   font-size: 12px;
   color: var(--el-text-color-secondary);

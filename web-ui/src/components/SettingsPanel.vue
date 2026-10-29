@@ -71,6 +71,8 @@ const mediaUseVision = ref(false)
 const mediaUseOcr = ref(false)
 const mediaLevel = ref(3)
 const mediaForceLlm = ref(true)
+/** 默认工作模式：simple = 零 CLI（只出清单/正误表）/ advanced = 三家适配器（可回写） */
+const mediaMode = ref('advanced')
 const mediaApplyMode = ref('overlay')
 const mediaVisionModel = ref('')
 const mediaWorkdir = ref('')
@@ -127,6 +129,7 @@ async function load() {
       mediaUseOcr.value = s.media.use_ocr
       mediaLevel.value = s.media.level
       mediaForceLlm.value = s.media.force_llm
+      mediaMode.value = s.media.mode
       mediaApplyMode.value = s.media.apply_mode
       mediaVisionModel.value = s.media.vision_model
       mediaWorkdir.value = s.media.workdir
@@ -182,6 +185,7 @@ function formIsDirty(): boolean {
         mediaUseOcr.value !== s.media.use_ocr ||
         mediaLevel.value !== s.media.level ||
         mediaForceLlm.value !== s.media.force_llm ||
+        mediaMode.value !== s.media.mode ||
         mediaApplyMode.value !== s.media.apply_mode ||
         mediaVisionModel.value.trim() !== s.media.vision_model ||
         mediaWorkdir.value.trim() !== s.media.workdir))
@@ -228,6 +232,7 @@ async function save(): Promise<boolean> {
       },
       media: {
         enabled: mediaEnabled.value,
+        mode: mediaMode.value,
         apply_mode: mediaApplyMode.value,
         workdir: mediaWorkdir.value.trim(),
         use_structure_layer: mediaUseStructure.value,
@@ -728,6 +733,18 @@ async function runTest(target: SettingsTestTarget) {
       <el-form label-width="110px">
         <el-form-item label="总开关">
           <el-switch v-model="mediaEnabled" active-text="开启载体审校" />
+        </el-form-item>
+        <el-form-item label="工作模式">
+          <el-radio-group v-model="mediaMode">
+            <el-radio value="simple">简单（零 CLI）</el-radio>
+            <el-radio value="advanced">高级（三家适配器）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="">
+          <span class="sub">
+            简单模式不装任何外部工具：读文本、出清单与正误表照样能用，但载体回写不可用；
+            高级模式交给 PhotoCraft / PdfCraft / WordCraft，可回写载体（缺 CLI 时后端会说明原因，不会静默换档）。
+          </span>
         </el-form-item>
         <el-form-item label="抽取档位">
           <el-checkbox v-model="mediaUseStructure">A 档 · 结构层（文字层 / docx run，真值）</el-checkbox>
