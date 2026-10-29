@@ -134,6 +134,19 @@ pub fn partition_cross_unit(st: &Stitched, errors: Vec<Error>) -> (Vec<Error>, V
 ///   （跨文字层的修正无法落到单个原对象，宁可进「未定位」也不画假框）；
 /// - span 落在分隔符/越界 → 同上；
 /// - 空 span（纯插入建议）→ 挂到包含该点的单元。
+/// RunRef 的 `run_range` 语义 = **该标注在单元内的字符区间**。
+/// 单元存的是整段（`[0, len]`），标注必须收窄到错误本身——否则正误表的位置与
+/// 前端的跳转会指到整段文字上，用户按号去找就找不到。
+fn narrow_run_ref(region: &Region, local: [usize; 2]) -> Region {
+    match region {
+        Region::RunRef { part, .. } => Region::RunRef {
+            part: part.clone(),
+            run_range: local,
+        },
+        other => other.clone(),
+    }
+}
+
 pub fn remap(
     st: &Stitched,
     units: &[TextUnit],
@@ -149,14 +162,15 @@ pub fn remap(
             1 => {
                 let (id, r) = hits[0];
                 let unit = by_id.get(&id).copied();
+                let local = [s - r[0], en - r[0]];
                 let region = unit
-                    .map(|u| u.region.clone())
+                    .map(|u| narrow_run_ref(&u.region, local))
                     .filter(|rg| rg.is_locatable())
                     .unwrap_or(Region::Unlocated);
                 let warn = unit
                     .filter(|u| u.confidence < 0.6)
                     .map(|u| format!("定位置信度偏低（{:.2}），框仅供参考", u.confidence));
-                (id, region, [s - r[0], en - r[0]], warn)
+                (id, region, local, warn)
             }
             0 => (
                 0,
@@ -235,6 +249,29 @@ mod tests {
             let want = units.iter().find(|u| u.id == *id).unwrap();
             assert_eq!(&st.text[r[0]..r[1]], want.text, "unit {id} 切片不符");
         }
+    }
+
+    #[test]
+    fn remap_narrows_run_ref_to_the_error_itself() {
+        // 段落级单元存的是整段范围（[0, len]）；标注必须收窄到错误本身，
+        // 否则正误表的位置会指到整段文字上
+        let mut units = vec![unit(1, "I saw a apple here")];
+        units[0].region = Region::RunRef {
+            part: "第1页".to_string(),
+            run_range: [0, 18],
+        };
+        let st = stitch(&units);
+        let e = err(&st.text, "a apple", "an apple");
+        let ann = remap(&st, &units, &[e], ApplyMode::ListOnly);
+        assert_eq!(ann.len(), 1);
+        assert_eq!(
+            ann[0].region,
+            Region::RunRef {
+                part: "第1页".to_string(),
+                run_range: [6, 13]
+            }
+        );
+        assert_eq!(ann[0].local_span, [6, 13]);
     }
 
     #[test]

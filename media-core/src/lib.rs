@@ -19,12 +19,15 @@
 
 pub mod adapter;
 pub mod casebase;
+pub mod docparse;
 pub mod gold;
 pub mod model;
+pub mod pdfcraft;
 pub mod photo;
 pub mod report;
 pub mod stitch;
 pub mod vision;
+pub mod wordcraft;
 
 pub use adapter::{ApplyRequest, ApplyResult, Collaborator, MediaError, ToolCapability, ToolProbe};
 pub use casebase::{Case, CaseBase, CaseHit, MIN_CASE_CHARS};
@@ -35,12 +38,22 @@ pub use gold::{
     score_texts as score_gold_texts, span_relation as gold_span_relation,
 };
 pub use model::{
-    Annotation, ApplyMode, Artifacts, CarrierInfo, CarrierKind, ExtractSource, LayerKind, MarkKind,
-    MarkStyle, Region, Stitched, TextUnit,
+    Annotation, ApplyMode, Artifacts, CarrierInfo, CarrierKind, ExtractSource, JobMode, LayerKind,
+    MarkKind, MarkStyle, PreviewKind, Region, Stitched, TextUnit,
 };
+pub use docparse::{ParsedDoc, docx_units, parse_docx, parse_pdf, pdf_units};
 pub use photo::{
     DEFAULT_GROUP, MARK_PREFIX, PhotoCraft, PhotoCraftConfig, Plan, TypeLayer, collect_type_layers,
-    default_candidates_for, resolve_tool_bin,
+    default_candidates_for, not_found_msg, resolve_bin, resolve_tool_bin,
+};
+pub use pdfcraft::{
+    PDF_APP, PDF_CLI, PageParagraphs, PageSize, PdfCraft, PdfCraftConfig, comment_text,
+    our_comment_ids, page_box_to_rect, paragraph_units, parse_page_sizes, rect_to_page_box,
+    rect_to_quad,
+};
+pub use wordcraft::{
+    WORD_APP, WORD_CLI, Block, WordCraft, WordCraftConfig, apply_commands, block_units, doc_text,
+    occurrence_of, our_comment_ids as word_comment_ids, parse_blocks, parse_print_json,
 };
 pub use report::{
     COUNTED_NO, COUNTED_YES, CarrierAttach, CarrierReplay, CarrierScore, CarrierSource,

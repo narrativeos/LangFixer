@@ -217,7 +217,15 @@ pub fn describe_location(region: &Region, label: &str, size: Option<(f64, f64)>)
             bands(&label, *x, *y, *w, *h, 1.0, 1.0)
         }
         Region::RunRef { part, run_range } => {
-            format!("{label} {part} 正文 {}-{}", run_range[0], run_range[1])
+            // `part` 自带定位口径（"第1页" / "段落3"）：别把载体标号和它拼成「第1页 第1页」
+            let head = if part.is_empty() {
+                label.to_string()
+            } else if label.is_empty() || part.contains(label) {
+                part.clone()
+            } else {
+                format!("{label} {part}")
+            };
+            format!("{head} 正文 {}-{}", run_range[0], run_range[1])
         }
     }
 }

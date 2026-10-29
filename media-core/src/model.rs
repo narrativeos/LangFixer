@@ -17,6 +17,47 @@ pub enum CarrierKind {
     Other,
 }
 
+/// 工作模式（`MULTIMODAL.md` §15.1）——决定「谁来读这份载体」
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobMode {
+    /// 简单：零外部协作工具。文档走纯 Rust 解析（`document-parse`），图片走视觉模型；
+    /// 只出清单 / 报告，不回写载体（`ApplyMode::ListOnly`）
+    Simple,
+    /// 高级：交给三家适配器（PhotoCraft / PdfCraft / WordCraft），可回写载体
+    #[default]
+    Advanced,
+}
+
+impl JobMode {
+    /// 宽松解析（UI / API / 设置三处输入都走这里）
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "simple" | "easy" | "basic" => Self::Simple,
+            _ => Self::Advanced,
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Advanced => "advanced",
+        }
+    }
+}
+
+/// 预览面种类（前端据此选渲染分支，见 §15.3）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewKind {
+    /// 没有可渲染的预览（只出列表）
+    #[default]
+    None,
+    /// 位图画布：可以画框（图片 + PhotoCraft 产物）
+    ImageCanvas,
+    /// 文档只读视图：段落高亮，**不画框**（PDF/Word 没有可信像素坐标时）
+    DocText,
+}
+
 /// 图层对象类型（PhotoCraft `info` 的 `kind`：`Type` / `Pixel` / `Group` …）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +248,33 @@ pub struct Annotation {
     /// 不允许把定位失败伪装成定位成功
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locate_warning: Option<String>,
+}
+
+/// 标注正文（三家适配器 + 清单 + 报告共用同一措辞：用户在载体里看到的
+/// 必须和列表里看到的一致，否则「核对」变成「猜」）
+impl Annotation {
+    pub fn mark_text(&self) -> String {
+        let category = self
+            .error
+            .category
+            .clone()
+            .unwrap_or_else(|| self.error.error_type.clone());
+        let original = self.error.original.trim();
+        let fix = self
+            .error
+            .correction
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let body = match (original.is_empty(), fix.is_empty()) {
+            (false, false) => format!("{original} → {fix}"),
+            (false, true) => original.to_string(),
+            (_, false) => fix,
+            _ => self.error.message.trim().to_string(),
+        };
+        format!("#{} {category}：{body}", self.id)
+    }
 }
 
 /// 载体探测结果（`inspect` 阶段产物；决定能走哪几档、能否无损回写）

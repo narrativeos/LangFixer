@@ -67,18 +67,38 @@ fn lookup_in_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// 三级解析：配置里的绝对路径 → `$PATH` → 常见安装位置
+/// 同 [`resolve_tool_bin`]，工具名固定为 photocraft-cli
 pub fn resolve_bin(explicit: Option<&str>) -> Option<PathBuf> {
     resolve_tool_bin(explicit, "photocraft-cli")
 }
 
-/// 同 [`resolve_bin`]，但工具名可变（wordcraft-cli / pdfcraft-cli）
+/// 「CLI 没找到」的报错文案：设置里配过路径就点名那个路径——
+/// 让人去装已经装过的东西，是把人往错的方向引
+pub fn not_found_msg(name: &str, explicit: Option<&str>) -> String {
+    match explicit.map(str::trim).filter(|s| !s.is_empty() && s.contains('/')) {
+        Some(p) => format!(
+            "{name} 未找到：设置里配的路径「{p}」不可用（改正那个路径，或留空让它自动查找）"
+        ),
+        None => format!("{name} 未找到（装到 ~/.local/bin/{name}，或在设置里给绝对路径）"),
+    }
+}
+
+/// 三级解析：配置里的绝对路径 → `$PATH` → 常见安装位置
+///
+/// **显式配过的路径不做静默回退**：指到哪个就用哪个，指错了就报「这个路径不可用」。
+/// 高级模式的能力探测、CLI 版本与产物都跟着这个路径走，悄悄换成另一个二进制会让
+/// 「为什么这份产物长这样」无从排查（`MULTIMODAL.md` §15.1）。
+/// 只填了工具名（不含 `/`）时仍走回退链——那是查找键，不是路径声明。
 pub fn resolve_tool_bin(explicit: Option<&str>, name: &str) -> Option<PathBuf> {
     if let Some(e) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(p) = lookup_in_path(e) {
             return Some(p);
         }
-        tracing::warn!(explicit = %e, "配置的可执行路径不可用，回退 $PATH / 常见位置");
+        if e.contains('/') {
+            tracing::warn!(explicit = %e, tool = name, "配置的可执行路径不可用（按配置为准，不回退）");
+            return None;
+        }
+        tracing::warn!(explicit = %e, "配置的可执行名不可用，回退 $PATH / 常见位置");
     }
     if let Some(p) = lookup_in_path(name) {
         return Some(p);
@@ -233,12 +253,8 @@ fn mark_rect(a: &crate::model::Annotation) -> Option<[f64; 4]> {
 
 impl PhotoCraft {
     pub fn new(cfg: PhotoCraftConfig) -> Result<Self, MediaError> {
-        let bin = resolve_bin(cfg.bin.as_deref()).ok_or_else(|| {
-            MediaError::NotReady(
-                "photocraft-cli 未找到（装到 ~/.local/bin/photocraft-cli，或在设置里给绝对路径）"
-                    .to_string(),
-            )
-        })?;
+        let bin = resolve_bin(cfg.bin.as_deref())
+            .ok_or_else(|| MediaError::NotReady(not_found_msg("photocraft-cli", cfg.bin.as_deref())))?;
         Ok(Self { bin, cfg })
     }
 
@@ -731,10 +747,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bin_falls_back_when_explicit_missing() {
-        let p = resolve_bin(Some("/nonexistent/photocraft-cli"));
-        // 本机装了就能在 PATH/常见位置找到；没装则 None。两种都不 panic
-        if let Some(p) = p {
+    fn explicit_path_is_authoritative_no_silent_fallback() {
+        // 显式配了路径却指错：不能用另一个二进制顶上（探测/版本/产物都要能对上号）
+        assert!(resolve_bin(Some("/nonexistent/photocraft-cli")).is_none());
+        // 只填工具名 = 查找键，仍允许回退到常见安装位置
+        if let Some(p) = resolve_bin(Some("photocraft-cli")) {
+            assert!(p.is_file());
+        }
+        // 留空 = 自动查找（本机装了就能找到）
+        if let Some(p) = resolve_bin(None) {
             assert!(p.is_file());
         }
     }
