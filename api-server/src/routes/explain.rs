@@ -47,11 +47,14 @@ pub fn split_explanation(full: &str) -> (String, String) {
     }
 }
 
-/// 从会话档案取画像上下文（母语 + 历史错误类型分布 + 总犯错次数）
+/// 从会话档案取画像上下文（母语 + 自评 CEFR + 历史错误类型分布 + 总犯错次数）
+///
+/// 母语取 `meta.native_language`（用户自报画像）——**不是** `meta.lang`（会话检测语言），
+/// 两者混淆会把「检测的语种」当「用户的母语」注入讲解 prompt（Phase 1 修正）。
 fn session_context(
     state: &AppState,
     session_id: Option<&str>,
-) -> (Option<String>, Option<String>, u32) {
+) -> (Option<String>, Option<String>, Option<String>, u32) {
     match session_id {
         Some(id) => {
             let record = state.sessions.get_or_create(id, "zh");
@@ -72,10 +75,14 @@ fn session_context(
                         .join(", "),
                 )
             };
-            let native = record.meta.lang.clone();
-            (Some(native), distribution, record.total_errors())
+            (
+                record.meta.native_language.clone(),
+                record.meta.cefr.clone(),
+                distribution,
+                record.total_errors(),
+            )
         }
-        None => (None, None, 0),
+        None => (None, None, None, 0),
     }
 }
 
@@ -93,10 +100,11 @@ pub async fn explain(
             "LLM 服务未启用（请设置 LLM_API_KEY 或在「设置」界面配置 LLM 参数）".into(),
         ));
     }
-    let cefr = req.cefr.unwrap_or_else(|| "A1".into());
     let attribution = req.attribution.clone().unwrap_or_else(|| "unknown".into());
-    let (native_language, distribution, history_from_store) =
+    let (native_language, profile_cefr, distribution, history_from_store) =
         session_context(&state, req.session_id.as_deref());
+    // CEFR 档位优先级：请求显式指定 > 会话画像自评 > A1
+    let cefr = req.cefr.or(profile_cefr).unwrap_or_else(|| "A1".into());
     let history = req
         .session_error_count
         .or(Some(history_from_store))
@@ -153,10 +161,11 @@ pub async fn explain_stream(
             "LLM 服务未启用（请设置 LLM_API_KEY 或在「设置」界面配置 LLM 参数）".into(),
         ));
     }
-    let cefr = req.cefr.unwrap_or_else(|| "A1".into());
     let attribution = req.attribution.clone().unwrap_or_else(|| "unknown".into());
-    let (native_language, distribution, history_from_store) =
+    let (native_language, profile_cefr, distribution, history_from_store) =
         session_context(&state, req.session_id.as_deref());
+    // CEFR 档位优先级：请求显式指定 > 会话画像自评 > A1
+    let cefr = req.cefr.or(profile_cefr).unwrap_or_else(|| "A1".into());
     let history = req
         .session_error_count
         .or(Some(history_from_store))

@@ -36,7 +36,7 @@
 | `LLM_MODEL` | `gpt-4o-mini` | 模型名——必须是该端点 `/v1/models` 里存在的名字（名字错 = 每次调用 HTTP 400，LLM 层整层白跑） |
 | `LLM_TIMEOUT_SECS` | `30` | LLM 请求超时（思考模型 / 整载体长文要放宽：实测整载体检测 60s+，30s 必然超时失败并降级 level 1） |
 | `LLM_PROMPTS_DIR` | `prompts` | 提示词模板目录（`{lang}_{cefr}_prompt.json`，改文件即热更新；含 `{lang}_detect` 兜底检测模板） |
-| `GEC_TABLES_UPDATE_TOKEN` | — | 决策表热更新鉴权 token；设置后 `PUT /gec/tables/:lang` / `POST /gec/tables/:lang/rollback` 需携带匹配的 `X-Tables-Update-Token` 头（未设置时不鉴权） |
+| `GEC_TABLES_UPDATE_TOKEN` | — | 运营写操作鉴权 token；设置后 `PUT /gec/tables/:lang` / `POST /gec/tables/:lang/rollback` / 知识库 PUT / 数据集导入 / `POST /gec/ops/unlock`（前端「平台运营」角色解锁）需携带匹配的 `X-Tables-Update-Token` 头（未设置时不鉴权） |
 | `GEC_RULE_STATE_FILE` | `langfixer-rule-state.json` | 规则运行时开关持久化文件（`{rule_id: bool}`；启动时加载，`PUT /gec/rules/:lang/toggles` 后写回） |
 | `CORS_ORIGINS` | — | 允许的跨域来源（逗号分隔）；未设置时允许任意来源（本地开发） |
 

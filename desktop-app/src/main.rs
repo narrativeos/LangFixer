@@ -68,6 +68,8 @@ fn main() {
             commands::remove_learned_knowledge,
             commands::llm_feedback,
             commands::test_knowledge_recall,
+            commands::get_session,
+            commands::update_session_profile,
             commands::l3_collect,
             commands::l3_status,
             commands::l3_retrain,

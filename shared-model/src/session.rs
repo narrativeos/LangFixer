@@ -19,6 +19,12 @@ pub struct SessionMeta {
     pub status: String,
     /// ISO 8601 创建时间
     pub created_at: String,
+    /// 学习者画像：母语（用户自报；LLM 讲解 prompt 注入用，区别于会话检测语言）
+    #[serde(default)]
+    pub native_language: Option<String>,
+    /// 学习者画像：自评 CEFR 等级（A1-C2；讲解模板缺省档位）
+    #[serde(default)]
+    pub cefr: Option<String>,
 }
 
 fn default_status() -> String {
@@ -32,6 +38,8 @@ impl SessionMeta {
             lang: lang.into(),
             status: "active".into(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            native_language: None,
+            cefr: None,
         }
     }
 }
@@ -129,6 +137,28 @@ impl SessionStore {
         record.clone()
     }
 
+    /// 更新学习者画像（母语 / 自评 CEFR）；None 字段保持原值（部分更新），
+    /// 返回更新后的档案（会话不存在时按 lang 创建）
+    pub fn set_profile(
+        &self,
+        session_id: &str,
+        lang: &str,
+        native_language: Option<String>,
+        cefr: Option<String>,
+    ) -> SessionRecord {
+        let mut map = self.records.write().unwrap();
+        let record = map
+            .entry(session_id.to_string())
+            .or_insert_with(|| SessionRecord::new(SessionMeta::new(session_id, lang)));
+        if let Some(n) = native_language.filter(|s| !s.trim().is_empty()) {
+            record.meta.native_language = Some(n);
+        }
+        if let Some(c) = cefr.filter(|s| !s.trim().is_empty()) {
+            record.meta.cefr = Some(c);
+        }
+        record.clone()
+    }
+
     /// 归档会话
     pub fn archive(&self, session_id: &str) -> bool {
         let mut map = self.records.write().unwrap();
@@ -189,5 +219,18 @@ mod tests {
         assert!(store.restore("s_1"));
         let r = store.get("s_1").unwrap();
         assert_eq!(r.meta.status, "active");
+    }
+
+    #[test]
+    fn set_profile_partial_update() {
+        let store = SessionStore::new();
+        // 不存在时建档；空串视为未提供
+        let r = store.set_profile("s_p", "en", Some("中文".into()), Some("".into()));
+        assert_eq!(r.meta.native_language.as_deref(), Some("中文"));
+        assert_eq!(r.meta.cefr.as_deref(), None);
+        // 部分更新：只改 cefr，母语保持
+        let r = store.set_profile("s_p", "en", None, Some("B1".into()));
+        assert_eq!(r.meta.native_language.as_deref(), Some("中文"));
+        assert_eq!(r.meta.cefr.as_deref(), Some("B1"));
     }
 }

@@ -304,6 +304,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(session::record),
         )
         .route(
+            "/gec/sessions/:id/profile",
+            axum::routing::put(session::update_profile),
+        )
+        .route(
             "/gec/sessions/:id/analysis",
             axum::routing::get(session::analysis),
         )
@@ -328,6 +332,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(settings::get).put(settings::put),
         )
         .route("/gec/settings/test", axum::routing::post(settings::test))
+        .route("/gec/ops/unlock", axum::routing::post(settings::ops_unlock))
         .route(
             "/gec/learned-knowledge",
             axum::routing::get(learned_knowledge::list).post(learned_knowledge::add),

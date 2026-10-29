@@ -189,8 +189,15 @@ async fn start_mock_llm() -> String {
                          data: [DONE]\n\n";
                 sse.into_response()
             } else {
+                // 把最后一条 user 消息回显进 content：测试据此断言 prompt 变量
+                // （如会话画像的母语）确实被渲染注入，而不是只走通了调用链
+                let last_user = req["messages"]
+                    .as_array()
+                    .and_then(|m| m.iter().rev().find(|x| x["role"] == "user"))
+                    .and_then(|x| x["content"].as_str())
+                    .unwrap_or("");
                 let resp = serde_json::json!({
-                    "choices": [{ "message": { "content": "完整讲解。\n【练习】1. 练习题" } }]
+                    "choices": [{ "message": { "content": format!("完整讲解。\n【练习】1. 练习题\n[ECHO] {last_user}") } }]
                 });
                 (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
             }
@@ -576,6 +583,123 @@ async fn explain_with_mock_llm_and_session() {
         "练习切分应包含 mock 返回的练习部分: {}",
         res.exercises
     );
+}
+
+#[tokio::test]
+async fn session_profile_injected_into_explain_prompt() {
+    // Phase 1 验收：画像（母语 + 自评 CEFR）经 PUT /gec/sessions/:id/profile 写入后，
+    // 讲解 prompt 注入真实母语（非 unknown / 非检测语言），CEFR 缺省档位取画像自评
+    let mock = start_mock_llm().await;
+    let base = {
+        let _guard = env_guard();
+        unsafe {
+            std::env::set_var("LLM_BASE_URL", &mock);
+            std::env::set_var("LLM_API_KEY", "test-key");
+            std::env::set_var("LLM_MODEL", "gpt-4o-mini");
+            std::env::set_var("LLM_PROMPTS_DIR", "../prompts");
+        }
+        build_server_locked(None, Some(&lexicons_abs())).await
+    };
+    let c = client();
+
+    // 1. 写入画像（母语用可辨识标记值，便于回显断言）
+    let body = serde_json::json!({
+        "lang": "zh",
+        "native_language": "nativelang-TESTVAL",
+        "cefr": "B1",
+    });
+    let rec: SessionRecord = c
+        .put(format!("{base}/gec/sessions/prof1/profile"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        rec.meta.native_language.as_deref(),
+        Some("nativelang-TESTVAL")
+    );
+    assert_eq!(rec.meta.cefr.as_deref(), Some("B1"));
+
+    // 2. 会话详情读回画像
+    let got: SessionRecord = c
+        .get(format!("{base}/gec/sessions/prof1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        got.meta.native_language.as_deref(),
+        Some("nativelang-TESTVAL"),
+        "GET 会话应读回画像母语"
+    );
+
+    // 3. 讲解不显式传 cefr → 取画像自评 B1 档；mock 回显证明 prompt 注入了画像母语
+    let body = serde_json::json!({
+        "lang": "zh",
+        "error_type": "spelling",
+        "attribution": "knowledge_gap",
+        "session_id": "prof1",
+    });
+    let res: ExplainOut = c
+        .post(format!("{base}/gec/explain"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(res.template, "zh_B1", "缺省 CEFR 档位应取画像自评");
+    // 回显在【练习】标记之后 → 落在 exercises 段（split_explanation 切分点在前）
+    assert!(
+        res.exercises.contains("nativelang-TESTVAL"),
+        "讲解 prompt 应注入画像母语（mock 回显）: {}",
+        res.exercises
+    );
+}
+
+#[tokio::test]
+async fn ops_unlock_requires_token_when_configured() {
+    // 「平台运营」角色解锁端点：配置 token 时必须携带匹配头（与决策表热更新同语义）
+    let base = {
+        let _guard = env_guard();
+        unsafe {
+            std::env::set_var("GEC_TABLES_UPDATE_TOKEN", "secret-token");
+        }
+        build_server_locked(None, Some(&lexicons_abs())).await
+    };
+    let c = client();
+
+    let status = c
+        .post(format!("{base}/gec/ops/unlock"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::UNAUTHORIZED);
+
+    let status = c
+        .post(format!("{base}/gec/ops/unlock"))
+        .header("x-tables-update-token", "wrong")
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::UNAUTHORIZED);
+
+    let status = c
+        .post(format!("{base}/gec/ops/unlock"))
+        .header("x-tables-update-token", "secret-token")
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::OK);
 }
 
 #[tokio::test]

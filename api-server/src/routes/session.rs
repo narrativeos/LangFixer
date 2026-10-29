@@ -2,6 +2,7 @@
 //!
 //! - POST   /gec/sessions              — 创建会话
 //! - GET    /gec/sessions/:id          — 获取会话详情
+//! - PUT    /gec/sessions/:id/profile  — 更新学习者画像（母语 / 自评 CEFR）
 //! - PUT    /gec/sessions/:id/archive  — 归档
 //! - PUT    /gec/sessions/:id/restore  — 恢复
 //! - DELETE /gec/sessions/:id          — 删除（级联删除历史）
@@ -84,6 +85,34 @@ pub async fn restore(
 pub struct SessionRecordRequest {
     pub lang: String,
     pub error_type: String,
+}
+
+/// PUT /gec/sessions/:id/profile — 更新学习者画像（母语 / 自评 CEFR）
+///
+/// 部分更新：None / 空串字段保持原值；会话不存在时按请求 lang 建档。
+/// 画像注入 LLM 讲解 prompt（母语 + 错误分布）并作为讲解模板 CEFR 缺省档位。
+#[derive(serde::Deserialize)]
+pub struct SessionProfileRequest {
+    /// 请求会话的检测语言（建档时用；已有会话不改 meta.lang）
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub native_language: Option<String>,
+    #[serde(default)]
+    pub cefr: Option<String>,
+}
+
+pub async fn update_profile(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SessionProfileRequest>,
+) -> Json<SessionRecord> {
+    let lang = req.lang.unwrap_or_else(|| "zh".into());
+    Json(
+        state
+            .sessions
+            .set_profile(&id, &lang, req.native_language, req.cefr),
+    )
 }
 
 pub async fn record(

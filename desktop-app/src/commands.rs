@@ -2524,34 +2524,44 @@ pub async fn explain(
     session_error_count: Option<u32>,
     target_language: Option<String>,
 ) -> Result<String, String> {
-    let cefr = cefr.unwrap_or_else(|| "A1".to_string());
+    let cefr_req = cefr;
     let attribution = attribution.unwrap_or_else(|| "unknown".to_string());
-    // 会话画像：母语 + 历史错误类型分布（有 session_id 时以档案为准）
-    let (native_language, distribution, history_from_store) = match session_id.as_deref() {
-        Some(id) => {
-            let record = core.sessions.get_or_create(id, &lang);
-            let distribution = if record.error_type_counts.is_empty() {
-                None
-            } else {
-                let mut items: Vec<(String, u32)> = record
-                    .error_type_counts
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect();
-                items.sort_by(|a, b| b.1.cmp(&a.1));
-                Some(
-                    items
+    // 会话画像：母语 + 自评 CEFR + 历史错误类型分布（有 session_id 时以档案为准）
+    // 母语取 meta.native_language（用户自报），不是 meta.lang（检测语言）——与 api-server 同构修正
+    let (native_language, profile_cefr, distribution, history_from_store) =
+        match session_id.as_deref() {
+            Some(id) => {
+                let record = core.sessions.get_or_create(id, &lang);
+                let distribution = if record.error_type_counts.is_empty() {
+                    None
+                } else {
+                    let mut items: Vec<(String, u32)> = record
+                        .error_type_counts
                         .iter()
-                        .map(|(k, v)| format!("{k}: {v}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+                    items.sort_by(|a, b| b.1.cmp(&a.1));
+                    Some(
+                        items
+                            .iter()
+                            .map(|(k, v)| format!("{k}: {v}"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )
+                };
+                (
+                    record.meta.native_language.clone(),
+                    record.meta.cefr.clone(),
+                    distribution,
+                    record.total_errors(),
                 )
-            };
-            let native = record.meta.lang.clone();
-            (Some(native), distribution, record.total_errors())
-        }
-        None => (None, None, 0),
-    };
+            }
+            None => (None, None, None, 0),
+        };
+    // CEFR 档位优先级：请求显式指定 > 会话画像自评 > A1
+    let cefr = cefr_req
+        .or(profile_cefr)
+        .unwrap_or_else(|| "A1".to_string());
     let history = session_error_count
         .or(Some(history_from_store))
         .unwrap_or(0);
@@ -4332,6 +4342,32 @@ fn l3_retrain_ready(total: usize, last_at: Option<&str>) -> bool {
             chrono::Utc::now().timestamp() - secs >= L3_RETRAIN_COOLDOWN
         }
     }
+}
+
+/// 会话记录（不存在时按 lang 建档返回；与 api-server GET /gec/sessions/:id 同构，
+/// 差别：桌面端本地单用户，get 允许隐式建档）
+#[tauri::command]
+pub async fn get_session(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+    lang: String,
+) -> Result<SessionRecord, String> {
+    Ok(core.sessions.get_or_create(&session_id, &lang))
+}
+
+/// 更新学习者画像（母语 / 自评 CEFR；部分更新，None/空串保持原值；
+/// 与 api-server PUT /gec/sessions/:id/profile 同构）
+#[tauri::command]
+pub async fn update_session_profile(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+    lang: String,
+    native_language: Option<String>,
+    cefr: Option<String>,
+) -> Result<SessionRecord, String> {
+    Ok(core
+        .sessions
+        .set_profile(&session_id, &lang, native_language, cefr))
 }
 
 /// L3 飞轮：采集一条样本（前端「采纳」LLM 错误 / 干净句自动汇入）

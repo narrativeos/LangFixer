@@ -572,3 +572,26 @@ pub async fn test(
     }
     Ok(Json(resp))
 }
+
+/// POST /gec/ops/unlock — 「平台运营」角色解锁验证（web 形态）
+///
+/// 前端「工作场景与角色」开启运营扩展（规则管理 / 知识维护 / 进化中心）前调用。
+/// 鉴权与决策表热更新一致：设置了 `GEC_TABLES_UPDATE_TOKEN` 时要求匹配的
+/// `X-Tables-Update-Token` 头，否则 401；未设置 token 时直接放行（本地开发语义）。
+/// 桌面端本地单用户，前端不经此端点（直接解锁）。
+pub async fn ops_unlock(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if let Some(expected) = &state.tables_update_token {
+        let got = headers
+            .get("x-tables-update-token")
+            .and_then(|v| v.to_str().ok());
+        if got != Some(expected.as_str()) {
+            return Err(ApiError::Unauthorized(
+                "解锁运营功能需提供有效的 X-Tables-Update-Token".into(),
+            ));
+        }
+    }
+    Ok(Json(serde_json::json!({ "unlocked": true })))
+}
