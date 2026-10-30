@@ -11,12 +11,14 @@ import { ElMessage } from 'element-plus'
 import { useGecStore } from '../stores/gec'
 import { api } from '../api/client'
 import { errorTypeLabel } from '../lib/labels'
-import type { Mistake } from '../types'
+import type { Mistake, SessionAnalysis } from '../types'
 
 const store = useGecStore()
 
 const mistakes = ref<Mistake[]>([])
 const queue = ref<Mistake[]>([])
+/** 统一错误画像（与审校侧习惯性错误分析同一投影，GET analysis） */
+const profile = ref<SessionAnalysis | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 const errorMsg = ref('')
@@ -38,6 +40,14 @@ const masteredCount = computed(
   () => mistakes.value.filter((m) => m.mastery_status === 'mastered').length,
 )
 
+/** 习惯性（主导）错误类型集合：来自统一画像，与审校侧同一判定口径 */
+const dominantTypes = computed(
+  () =>
+    new Set(
+      (profile.value?.habitual ?? []).filter((h) => h.is_dominant).map((h) => h.error_type),
+    ),
+)
+
 /** 按错误类型聚合（保持最近出现顺序） */
 const groups = computed(() => {
   const map = new Map<string, Mistake[]>()
@@ -50,6 +60,7 @@ const groups = computed(() => {
     type,
     label: errorTypeLabel(type),
     total: items.reduce((s, m) => s + m.count, 0),
+    habitual: dominantTypes.value.has(type),
     items,
   }))
 })
@@ -69,18 +80,21 @@ async function load() {
   if (!store.sessionId) {
     mistakes.value = []
     queue.value = []
+    profile.value = null
     loaded.value = true
     return
   }
   loading.value = true
   errorMsg.value = ''
   try {
-    const [ms, q] = await Promise.all([
+    const [ms, q, p] = await Promise.all([
       api.listSessionMistakes(store.sessionId),
       api.listReviewQueue(store.sessionId),
+      api.getSessionAnalysis(store.sessionId).catch(() => null),
     ])
     mistakes.value = ms
     queue.value = q
+    profile.value = p
     revealed.value = false
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
@@ -169,6 +183,9 @@ onMounted(load)
 
     <div v-if="groups.length" class="summary">
       共 {{ mistakes.length }} 条错题 · 待复习 {{ queue.length }} · 已掌握 {{ masteredCount }}
+      <span v-if="profile?.basis === 'confirmed'" class="basis">
+        · 画像基于确认错误（误报与未采纳建议不计入）
+      </span>
     </div>
 
     <template v-if="loading && !groups.length">
@@ -189,6 +206,7 @@ onMounted(load)
       <div v-for="g in groups" :key="g.type" class="group">
         <div class="group-head">
           <span class="group-label">{{ g.label }}</span>
+          <el-tag v-if="g.habitual" size="small" type="danger" effect="plain">习惯性</el-tag>
           <el-tag size="small" type="info" round>{{ g.total }} 次</el-tag>
         </div>
         <div v-for="m in g.items" :key="m.id" class="mistake">

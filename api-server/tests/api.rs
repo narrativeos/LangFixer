@@ -2699,3 +2699,94 @@ async fn detect_force_llm_without_llm_configured_returns_503() {
         "LLM 未配置时 force_llm 应返回 503"
     );
 }
+
+// ─── Phase 3: 统一错误画像（错题本 + 习惯性错误同一投影）─────────────────────
+
+#[tokio::test]
+async fn analysis_unified_prefers_confirmed_basis() {
+    // 采纳过错误的会话：画像以确认错误（mistakes）为基准，含掌握度摘要
+    let base = start_server().await;
+    let c = client();
+    let src = "第一句正常。他昨天去了去了商店。后面正常。";
+    let start = src.find("去了去了").unwrap();
+    let body = serde_json::json!({
+        "lang": "zh",
+        "session_id": "profile_s1",
+        "src_text": src,
+        "error": {
+            "lang": "zh",
+            "error_type": "grammar",
+            "confidence": 0.8,
+            "span": [start, start + "去了去了".len()],
+            "original": "去了去了",
+            "correction": "去了",
+            "message": "动词重复",
+            "rule_id": "ZH_MISSING_SUBJECT",
+            "source": "rule",
+        },
+        "action": "adopt",
+    });
+    let resp = c
+        .post(format!("{base}/gec/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let p: serde_json::Value = c
+        .get(format!("{base}/gec/sessions/profile_s1/analysis"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["basis"], "confirmed", "有采纳错误时应以确认错误为基准");
+    assert_eq!(p["total_errors"], 1);
+    assert_eq!(p["type_distribution"]["grammar"], 1);
+    assert_eq!(p["habitual"][0]["error_type"], "grammar");
+    assert_eq!(p["habitual"][0]["is_dominant"], true, "1/1 占比应判主导");
+    assert_eq!(
+        p["habitual"][0]["examples"][0], "去了去了 → 去了",
+        "主导类型应带改错示例"
+    );
+    assert_eq!(p["mastery_summary"]["confirmed"], 1);
+    assert_eq!(p["mastery_summary"]["new"], 1);
+}
+
+#[tokio::test]
+async fn analysis_falls_back_to_detected_basis() {
+    // 无采纳动作的旧会话：回退到检测记录基准，无掌握度摘要
+    let base = start_server().await;
+    let body = serde_json::json!({
+        "lang": "en",
+        "text": "I saw a apple.",
+        "session_id": "profile_s2",
+    });
+    let res: api_server::routes::analyze::AnalyzeResponse = client()
+        .post(format!("{base}/gec/analyze"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!res.errors.is_empty());
+
+    let p: serde_json::Value = client()
+        .get(format!("{base}/gec/sessions/profile_s2/analysis"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["basis"], "detected", "无确认错误时应回退检测记录");
+    assert!(p["total_errors"].as_u64().unwrap_or(0) >= 1);
+    assert!(
+        p["mastery_summary"].is_null(),
+        "detected 基准不带掌握度摘要"
+    );
+}

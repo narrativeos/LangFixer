@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **统一错误画像（Phase 3）**：学生错题本 / 间隔复习与审校侧「作者习惯性错误」合并为同一分析模型（`shared-model::profile::ErrorProfile`）——同一主体（会话）随时间沉淀的错误模式的统一投影：类型分布 / 习惯性（主导，占比 ≥ 0.3）错误 + 示例 / 高频改错对 / 掌握度摘要。`GET /gec/sessions/:id/analysis`（桌面端 `session_analysis`）改为该投影：错题本非空时以**确认错误**为基准（`basis = confirmed`，误报与未采纳建议不再污染画像），旧会话回退检测记录（`basis = detected`，向后兼容）；「练习与复习」错题类型按同一口径标记「习惯性」
 - **间隔复习与掌握度（Phase 2 第二片）**：错题本新增 `mistake_mastery` 表（`new / reviewing / mastered` + 下次复习调度：连对间隔 1/3/7/14/30 天、连对 6 次 = 已掌握；没记住清零次日再练）；新增 `GET /gec/sessions/:id/review` 与 `POST /gec/sessions/:id/mistakes/:mid/review`（桌面端 `session_review_queue` / `review_mistake`）；「练习与复习」新增「今日复习」练习卡（句子挖空 → 显示答案 → 记住 / 没记住）与掌握度徽章、汇总行
 - **错题本（Phase 2 第一片）**：检测反馈「采纳」带会话时自动沉淀进会话错题本（SQLite `mistakes` 表；同类型 + 同原文 + 同修正聚合计数，句级上下文按错误 span 从原文提取）；新增 `GET /gec/sessions/:id/mistakes`（桌面端 `session_mistakes` 命令）；「练习与复习」视图从占位升级为错题本（按类型分组 + 计数 + 修正对照）
 - **会话持久化（Phase 1.5）**：会话与学习者画像（母语 / 自评 CEFR）、犯错流水从内存实现迁移到 SQLite（`shared-model` 新增 feature-gated `SqliteSessionStore`，api-server / 桌面端与 detect_history 共用同一 db 文件），重启不丢档案；内存版 `SessionStore` 移除
@@ -27,6 +28,7 @@
 ### 移除
 
 - `/student/:id/*` 遗留路由（与 `/gec/sessions/:id/*` 重复，前端从未调用）及 `routes/student.rs` 孤儿文件
+- `SessionPanel.vue` 孤儿组件（「会话分析」独立卡片从未被任何视图引用；习惯性错误分析并入统一错误画像，入口收敛到「练习与复习」与 `GET /gec/sessions/:id/analysis`）
 
 ## [v0.1.0-preview] - 2026-10-23
 

@@ -73,6 +73,7 @@ fn main() {
             commands::session_mistakes,
             commands::session_review_queue,
             commands::review_mistake,
+            commands::session_analysis,
             commands::l3_collect,
             commands::l3_status,
             commands::l3_retrain,

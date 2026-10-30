@@ -203,129 +203,61 @@ pub async fn remove_all(
     Ok(Json(serde_json::json!({ "deleted": n })))
 }
 
-// ─── 习惯性错误分析 ─────────────────────────────────────────────────────────
+// ─── 统一错误画像（Phase 3）──────────────────────────────────────────────────
+//
+// 学习场景的错题本（mistakes + mistake_mastery）与审校场景的作者习惯性错误
+// 是同一模型的两个视图：**同一主体（会话）随时间沉淀的错误模式**。
+// 投影逻辑统一在 shared_model::profile，两端（REST / 桌面命令）共用同一口径。
+//
+// 数据基准（basis）：
+// - `confirmed`：错题本非空 → 以确认错误为准（含掌握度摘要）。误报与未采纳
+//   建议不污染画像——这是相对旧实现（纯 detect_history 聚合）的语义修正。
+// - `detected`：错题本为空的旧会话回退到检测记录聚合（向后兼容）。
 
-#[derive(serde::Serialize)]
-pub struct HabitualErrorType {
-    pub error_type: String,
-    pub count: u32,
-    pub ratio: f64,
-    pub is_dominant: bool,
-    pub examples: Vec<String>,
-}
+use shared_model::profile::{
+    BASIS_CONFIRMED, BASIS_DETECTED, ErrorObservation, ErrorProfile, build_error_profile,
+    mastery_summary_from_mistakes, observations_from_mistakes,
+};
 
-#[derive(serde::Serialize)]
-pub struct TopCorrection {
-    pub from: String,
-    pub to: String,
-    pub count: u32,
-}
-
-#[derive(serde::Serialize)]
-pub struct SessionAnalysis {
-    pub session_id: String,
-    pub total_errors: u32,
-    pub type_distribution: std::collections::HashMap<String, u32>,
-    pub habitual: Vec<HabitualErrorType>,
-    pub top_corrections: Vec<TopCorrection>,
-}
-
-/// GET /gec/sessions/:id/analysis — 会话习惯性错误分析
+/// GET /gec/sessions/:id/analysis — 会话统一错误画像
 pub async fn analysis(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<SessionAnalysis>, ApiError> {
-    // 1. 从 detect_history 聚合该 session 的所有错误
+) -> Result<Json<ErrorProfile>, ApiError> {
+    let mistakes = state.sessions.list_mistakes(&id);
+    if !mistakes.is_empty() {
+        let observations = observations_from_mistakes(&mistakes);
+        let summary = mastery_summary_from_mistakes(&mistakes);
+        return Ok(Json(build_error_profile(
+            &id,
+            BASIS_CONFIRMED,
+            &observations,
+            Some(summary),
+        )));
+    }
+
+    // 回退：检测记录基准（旧会话无采纳动作）
     let records = state
         .detect_history
         .list(Some(&id), None, 200)
         .map_err(|e| ApiError::Internal(format!("查询历史失败: {e}")))?;
-
-    let mut type_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut correction_pairs: std::collections::HashMap<(String, String), u32> =
-        std::collections::HashMap::new();
-    let mut total: u32 = 0;
-
+    let mut observations: Vec<ErrorObservation> = Vec::new();
     for record in &records {
         let errors: Vec<shared_model::Error> =
             serde_json::from_str(&record.errors_json).unwrap_or_default();
-        for err in &errors {
-            *type_counts.entry(err.error_type.clone()).or_insert(0) += 1;
-            total += 1;
-            if let Some(correction) = &err.correction {
-                let key = (err.original.clone(), correction.clone());
-                *correction_pairs.entry(key).or_insert(0) += 1;
-            }
+        for err in errors {
+            observations.push(ErrorObservation {
+                error_type: err.error_type,
+                original: err.original,
+                correction: err.correction,
+                weight: 1,
+            });
         }
     }
-
-    // 2. 计算占比，判定 is_dominant（≥ 0.3）
-    let mut habitual: Vec<HabitualErrorType> = type_counts
-        .iter()
-        .map(|(et, count)| {
-            let ratio = if total > 0 {
-                *count as f64 / total as f64
-            } else {
-                0.0
-            };
-            HabitualErrorType {
-                error_type: et.clone(),
-                count: *count,
-                ratio,
-                is_dominant: ratio >= 0.3,
-                examples: Vec::new(),
-            }
-        })
-        .collect();
-
-    // 3. 为 dominant 类型收集最多 5 个示例
-    for h in &mut habitual {
-        if !h.is_dominant {
-            continue;
-        }
-        let mut examples = Vec::new();
-        for record in &records {
-            if examples.len() >= 5 {
-                break;
-            }
-            let errors: Vec<shared_model::Error> =
-                serde_json::from_str(&record.errors_json).unwrap_or_default();
-            for err in &errors {
-                if examples.len() >= 5 {
-                    break;
-                }
-                if err.error_type == h.error_type {
-                    let example = if let Some(correction) = &err.correction {
-                        format!("{} → {}", err.original, correction)
-                    } else {
-                        err.original.clone()
-                    };
-                    if !examples.contains(&example) {
-                        examples.push(example);
-                    }
-                }
-            }
-        }
-        h.examples = examples;
-    }
-
-    // 4. 按 count 降序排列
-    habitual.sort_by(|a, b| b.count.cmp(&a.count));
-
-    // 5. top_corrections：同一 (from, to) 对出现 ≥ 2 次，取 top 5
-    let mut top_corrections: Vec<TopCorrection> = correction_pairs
-        .into_iter()
-        .filter(|(_, count)| *count >= 2)
-        .map(|((from, to), count)| TopCorrection { from, to, count })
-        .collect();
-    top_corrections.sort_by(|a, b| b.count.cmp(&a.count));
-    top_corrections.truncate(5);
-
-    Ok(Json(SessionAnalysis {
-        session_id: id,
-        total_errors: total,
-        type_distribution: type_counts,
-        habitual,
-        top_corrections,
-    }))
+    Ok(Json(build_error_profile(
+        &id,
+        BASIS_DETECTED,
+        &observations,
+        None,
+    )))
 }

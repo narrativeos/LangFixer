@@ -871,8 +871,12 @@ export const api = {
     return http.delete<{ deleted: boolean; session_id: string }>(`/gec/sessions/${id}`).then((r) => r.data)
   },
 
-  /** GET /gec/sessions/:id/analysis — 会话习惯性错误分析 */
+  /** GET /gec/sessions/:id/analysis — 会话统一错误画像（错题本 + 习惯性错误同一投影） */
   getSessionAnalysis(id: string): Promise<SessionAnalysis> {
+    if (inTauri)
+      return tauri!.invoke('session_analysis', { sessionId: id }).then(
+        (r) => r as SessionAnalysis,
+      )
     return http.get<SessionAnalysis>(`/gec/sessions/${id}/analysis`).then((r) => r.data)
   },
 

@@ -4880,6 +4880,53 @@ pub fn review_mistake(
     Ok(core.sessions.record_review(&session_id, mistake_id, passed))
 }
 
+/// 统一错误画像（桌面端；错题本与习惯性错误分析同一投影：
+/// 错题本非空 → confirmed 基准；否则回退 detect_history 的 detected 基准）
+#[tauri::command]
+pub fn session_analysis(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+) -> Result<shared_model::profile::ErrorProfile, String> {
+    use shared_model::profile::{
+        BASIS_CONFIRMED, BASIS_DETECTED, ErrorObservation, build_error_profile,
+        mastery_summary_from_mistakes, observations_from_mistakes,
+    };
+    let mistakes = core.sessions.list_mistakes(&session_id);
+    if !mistakes.is_empty() {
+        let observations = observations_from_mistakes(&mistakes);
+        let summary = mastery_summary_from_mistakes(&mistakes);
+        return Ok(build_error_profile(
+            &session_id,
+            BASIS_CONFIRMED,
+            &observations,
+            Some(summary),
+        ));
+    }
+    let records = core
+        .detect_history
+        .list_page(Some(&session_id), None, None, 200, 0)
+        .map_err(|e| e.to_string())?;
+    let mut observations: Vec<ErrorObservation> = Vec::new();
+    for record in &records {
+        let errors: Vec<shared_model::Error> =
+            serde_json::from_str(&record.errors_json).unwrap_or_default();
+        for err in errors {
+            observations.push(ErrorObservation {
+                error_type: err.error_type,
+                original: err.original,
+                correction: err.correction,
+                weight: 1,
+            });
+        }
+    }
+    Ok(build_error_profile(
+        &session_id,
+        BASIS_DETECTED,
+        &observations,
+        None,
+    ))
+}
+
 async fn error_feedback_body(
     core: tauri::State<'_, Arc<Core>>,
     lang: String,

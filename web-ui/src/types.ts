@@ -607,12 +607,23 @@ export interface Mistake {
 }
 
 /** 会话习惯性错误分析结果 */
+/** 统一错误画像（Phase 3）：错题本与习惯性错误分析是同一投影的两个视图。
+ *  basis = confirmed（确认错误为准）/ detected（旧会话回退检测记录） */
 export interface SessionAnalysis {
   session_id: string
+  basis: string
   total_errors: number
   type_distribution: Record<string, number>
   habitual: HabitualErrorType[]
   top_corrections: TopCorrection[]
+  mastery_summary?: MasterySummary | null
+}
+
+export interface MasterySummary {
+  confirmed: number
+  new: number
+  reviewing: number
+  mastered: number
 }
 
 export interface HabitualErrorType {
