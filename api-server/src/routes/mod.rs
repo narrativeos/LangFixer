@@ -324,6 +324,22 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(session::analysis),
         )
         .route(
+            "/gec/mistakes",
+            axum::routing::get(session::global_mistakes),
+        )
+        .route(
+            "/gec/mistakes/:gid/review",
+            axum::routing::post(session::review_global_mistake),
+        )
+        .route(
+            "/gec/review",
+            axum::routing::get(session::global_review_queue),
+        )
+        .route(
+            "/gec/analysis",
+            axum::routing::get(session::global_analysis),
+        )
+        .route(
             "/gec/sessions/:id/archive",
             axum::routing::put(session::archive),
         )

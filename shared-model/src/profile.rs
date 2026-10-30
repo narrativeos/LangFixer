@@ -230,6 +230,7 @@ mod tests {
             count: 1,
             mastery_status: status.map(Into::into),
             next_review_at: None,
+            sessions_seen: None,
         }
     }
 

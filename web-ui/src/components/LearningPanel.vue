@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 练习与复习（学习扩展，Phase 2）
+ * 练习与复习（学习扩展，Phase 2 + 跨会话闭合）
  *
- * 闭环：检测中确认并采纳的错误 → 错题本（按类型聚合，带句级上下文）
- * → 间隔复习（句子挖空回忆修正，记住/没记住）→ 掌握度（FSRS 算法调度：
- * 按记忆状态个性化递增间隔，到期 ≥30 天 = 已掌握；没记住次日再练）。
+ * 闭环：检测中确认并采纳的错误 → **全局错题本**（跨会话按类型聚合，带句级上下文
+ * 与出现会话数）→ 间隔复习（句子挖空回忆修正，记住/没记住）→ 掌握度（FSRS 算法
+ * 调度：按记忆状态个性化递增间隔，到期 ≥30 天 = 已掌握；没记住次日再练）。
+ * 记忆状态挂在错题键上：换会话、删会话都不丢学习进度。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -77,20 +78,13 @@ function masteryTag(m: Mistake): { label: string; type: 'info' | 'warning' | 'su
 }
 
 async function load() {
-  if (!store.sessionId) {
-    mistakes.value = []
-    queue.value = []
-    profile.value = null
-    loaded.value = true
-    return
-  }
   loading.value = true
   errorMsg.value = ''
   try {
     const [ms, q, p] = await Promise.all([
-      api.listSessionMistakes(store.sessionId),
-      api.listReviewQueue(store.sessionId),
-      api.getSessionAnalysis(store.sessionId).catch(() => null),
+      api.listGlobalMistakes(),
+      api.listGlobalReviewQueue(),
+      api.getGlobalAnalysis().catch(() => null),
     ])
     mistakes.value = ms
     queue.value = q
@@ -106,15 +100,15 @@ async function load() {
 
 async function submitReview(passed: boolean) {
   const m = current.value
-  if (!m || !store.sessionId) return
+  if (!m) return
   submitting.value = true
   try {
-    await api.reviewMistake(store.sessionId, m.id, passed)
+    await api.reviewGlobalMistake(m.id, passed)
     queue.value = queue.value.filter((x) => x.id !== m.id)
     revealed.value = false
     // 列表掌握度同步刷新（非阻断）
     try {
-      mistakes.value = await api.listSessionMistakes(store.sessionId)
+      mistakes.value = await api.listGlobalMistakes()
     } catch {
       /* 列表刷新失败不影响复习流 */
     }
@@ -145,8 +139,8 @@ onMounted(load)
     </template>
 
     <p class="intro">
-      你在「检测」中<b>确认并采纳</b>的纠错会自动沉淀到这里，按错误类型聚合。
-      后续将开放同型错的改写练习与周期性复习。
+      你在「检测」中<b>确认并采纳</b>的纠错会自动沉淀到这里，<b>跨会话</b>按错误类型聚合——
+      换文稿、删会话都不丢；复习进度（FSRS 记忆状态）同样跨会话共享。
     </p>
 
     <el-alert v-if="errorMsg" :title="`错题本加载失败：${errorMsg}`" type="warning" :closable="false" class="err" />
@@ -216,6 +210,7 @@ onMounted(load)
             <span v-if="m.correction" class="arrow">→</span>
             <span v-if="m.correction" class="corr">{{ m.correction }}</span>
             <el-tag v-if="m.count > 1" size="small" type="warning" effect="plain">×{{ m.count }}</el-tag>
+            <el-tag v-if="m.sessions_seen && m.sessions_seen > 1" size="small" type="info" effect="plain">来自 {{ m.sessions_seen }} 个会话</el-tag>
             <el-tag size="small" :type="masteryTag(m).type" effect="plain">{{ masteryTag(m).label }}</el-tag>
             <span class="time">{{ m.created_at.slice(0, 10) }}</span>
           </div>

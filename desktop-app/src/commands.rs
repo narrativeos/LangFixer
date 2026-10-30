@@ -4928,6 +4928,52 @@ pub fn session_analysis(
     ))
 }
 
+/// 全局错题本列表（桌面端；跨会话聚合，`sessions_seen` = 出现会话数）
+#[tauri::command]
+pub fn global_mistakes(
+    core: tauri::State<'_, Arc<Core>>,
+) -> Result<Vec<shared_model::Mistake>, String> {
+    Ok(core.sessions.list_global_mistakes())
+}
+
+/// 全局到期复习队列（桌面端；跨会话，已掌握不进入）
+#[tauri::command]
+pub fn global_review_queue(
+    core: tauri::State<'_, Arc<Core>>,
+) -> Result<Vec<shared_model::Mistake>, String> {
+    Ok(core.sessions.list_global_review_queue())
+}
+
+/// 记录一次全局错题复习结果（桌面端；FSRS 记忆状态挂在错题键上，跨会话共享）
+#[tauri::command]
+pub fn review_global_mistake(
+    core: tauri::State<'_, Arc<Core>>,
+    gid: i64,
+    passed: bool,
+) -> Result<bool, String> {
+    Ok(core.sessions.record_global_review(gid, passed))
+}
+
+/// 全局统一错误画像（桌面端；确认错误基准，跨会话，含掌握度摘要）
+#[tauri::command]
+pub fn global_analysis(
+    core: tauri::State<'_, Arc<Core>>,
+) -> Result<shared_model::profile::ErrorProfile, String> {
+    use shared_model::profile::{
+        BASIS_CONFIRMED, build_error_profile, mastery_summary_from_mistakes,
+        observations_from_mistakes,
+    };
+    let mistakes = core.sessions.list_global_mistakes();
+    let observations = observations_from_mistakes(&mistakes);
+    let summary = mastery_summary_from_mistakes(&mistakes);
+    Ok(build_error_profile(
+        "global",
+        BASIS_CONFIRMED,
+        &observations,
+        Some(summary),
+    ))
+}
+
 async fn error_feedback_body(
     core: tauri::State<'_, Arc<Core>>,
     lang: String,

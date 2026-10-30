@@ -2790,3 +2790,121 @@ async fn analysis_falls_back_to_detected_basis() {
         "detected 基准不带掌握度摘要"
     );
 }
+
+#[tokio::test]
+async fn global_notebook_cross_session_and_review() {
+    // 全局错题本（跨会话）：同一错题在两个会话被采纳 → 全局聚合 1 条 count=2；
+    // 复习调度 / 队列 / 全局画像走 /gec/mistakes /gec/review /gec/analysis。
+    // 用唯一错题内容断言（测试共享 db，避免与其他测试的全局视图互相干扰）
+    let base = start_server().await;
+    let c = client();
+    let src = "这段文字包含全局测试混淆词鑫鑫一次。";
+    let start = src.find("鑫鑫").unwrap();
+    for sid in ["gnote_a", "gnote_b"] {
+        let body = serde_json::json!({
+            "lang": "zh",
+            "session_id": sid,
+            "src_text": src,
+            "error": {
+                "lang": "zh",
+                "error_type": "spelling",
+                "confidence": 0.9,
+                "span": [start, start + "鑫鑫".len()],
+                "original": "鑫鑫",
+                "correction": "鑫",
+                "message": "测试混淆",
+                "rule_id": "ZH_CONFUSABLE",
+                "source": "rule",
+            },
+            "action": "adopt",
+        });
+        let resp = c
+            .post(format!("{base}/gec/feedback"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+    }
+
+    // 全局错题本：跨会话聚合
+    let list: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list
+        .iter()
+        .find(|m| m["original"] == "鑫鑫")
+        .expect("全局错题本应包含该错题");
+    assert_eq!(row["count"], 2, "跨会话聚合出现次数");
+    assert_eq!(row["sessions_seen"], 2, "出现会话数");
+    let gid = row["id"].as_i64().unwrap();
+
+    // 到期队列：新错题应出现
+    let q: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/review"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(q.iter().any(|m| m["id"] == gid), "新错题应进入全局复习队列");
+
+    // 复习「记住」→ FSRS 排到未来，退出到期队列
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({ "passed": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let q2: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/review"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!q2.iter().any(|m| m["id"] == gid), "未到期不应在队列");
+    let list2: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row2 = list2.iter().find(|m| m["id"] == gid).unwrap();
+    assert_eq!(row2["mastery_status"], "reviewing");
+
+    // 全局画像：确认错误基准 + 掌握度摘要
+    let p: serde_json::Value = c
+        .get(format!("{base}/gec/analysis"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["basis"], "confirmed");
+    assert!(
+        p["total_errors"].as_u64().unwrap_or(0) >= 2,
+        "count 计入权重"
+    );
+    assert!(p["mastery_summary"]["confirmed"].as_u64().unwrap_or(0) >= 1);
+
+    // 未知 gid → 404
+    let resp = c
+        .post(format!("{base}/gec/mistakes/999999999/review"))
+        .json(&serde_json::json!({ "passed": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+}

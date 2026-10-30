@@ -880,6 +880,36 @@ export const api = {
     return http.get<SessionAnalysis>(`/gec/sessions/${id}/analysis`).then((r) => r.data)
   },
 
+  /** GET /gec/mistakes — 全局错题本（跨会话聚合；sessions_seen = 出现会话数）
+   *  桌面端：invoke('global_mistakes')（同构） */
+  listGlobalMistakes(): Promise<Mistake[]> {
+    if (inTauri) return tauri!.invoke('global_mistakes').then((r) => r as Mistake[])
+    return http.get<Mistake[]>('/gec/mistakes').then((r) => r.data)
+  },
+
+  /** GET /gec/review — 全局到期复习队列（跨会话；已掌握不进入）
+   *  桌面端：invoke('global_review_queue')（同构） */
+  listGlobalReviewQueue(): Promise<Mistake[]> {
+    if (inTauri) return tauri!.invoke('global_review_queue').then((r) => r as Mistake[])
+    return http.get<Mistake[]>('/gec/review').then((r) => r.data)
+  },
+
+  /** POST /gec/mistakes/:gid/review — 全局错题复习结果
+   *  （FSRS 记忆状态挂在错题键上：跨会话共享，删会话不丢，同一错误重现记忆复活）
+   *  桌面端：invoke('review_global_mistake')（同构） */
+  reviewGlobalMistake(gid: number, passed: boolean): Promise<{ ok: boolean }> {
+    if (inTauri)
+      return tauri!.invoke('review_global_mistake', { gid, passed }).then(() => ({ ok: true }))
+    return http.post<{ ok: boolean }>(`/gec/mistakes/${gid}/review`, { passed }).then((r) => r.data)
+  },
+
+  /** GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话，含掌握度摘要）
+   *  桌面端：invoke('global_analysis')（同构） */
+  getGlobalAnalysis(): Promise<SessionAnalysis> {
+    if (inTauri) return tauri!.invoke('global_analysis').then((r) => r as SessionAnalysis)
+    return http.get<SessionAnalysis>('/gec/analysis').then((r) => r.data)
+  },
+
   /** GET /gec/settings — 运行时设置（HanLP 地址 + 离线开关 + 目录配置 + LLM 参数 + LLM 请求模式）
    *  桌面端：invoke('get_settings')（设置文件 > 环境变量 > 内置默认，桌面端默认离线） */
   getSettings(): Promise<AppSettings> {

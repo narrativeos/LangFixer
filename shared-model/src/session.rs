@@ -123,6 +123,9 @@ pub struct Mistake {
     /// 下次复习时间（SQLite datetime 格式；已掌握为 None）
     #[serde(default)]
     pub next_review_at: Option<String>,
+    /// 出现该错题的会话数（仅全局错题本视图填充；会话级视图为 None 不序列化）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_seen: Option<u32>,
 }
 
 /// 从原文提取包含错误 span 的句子（按句末标点粗切；切出为空时回退 `fallback`）

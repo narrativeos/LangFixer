@@ -604,6 +604,8 @@ export interface Mistake {
   mastery_status?: string | null
   /** 下次复习时间（SQLite datetime；已掌握为 null） */
   next_review_at?: string | null
+  /** 出现该错题的会话数（仅全局错题本视图返回；会话级视图无此字段） */
+  sessions_seen?: number | null
 }
 
 /** 会话习惯性错误分析结果 */

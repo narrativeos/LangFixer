@@ -261,3 +261,52 @@ pub async fn analysis(
         None,
     )))
 }
+
+// ─── 全局错题本（跨会话，学习闭环功能闭合）─────────────────────────────────
+//
+// 错题本体仍是单一事实源（`mistakes` 表），全局视图 = 跨会话投影；记忆状态按
+// 错题键（语言+类型+原文+修正）挂 `global_mastery`，跨会话共享、删会话不丢。
+
+/// GET /gec/mistakes — 全局错题本（跨会话聚合；`sessions_seen` = 出现会话数）
+pub async fn global_mistakes(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<shared_model::Mistake>> {
+    Json(state.sessions.list_global_mistakes())
+}
+
+/// GET /gec/review — 全局到期复习队列（跨会话；已掌握不进入）
+pub async fn global_review_queue(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<shared_model::Mistake>> {
+    Json(state.sessions.list_global_review_queue())
+}
+
+/// POST /gec/mistakes/:gid/review — 全局错题复习结果（FSRS 调度挂在错题键上）
+pub async fn review_global_mistake(
+    State(state): State<Arc<AppState>>,
+    Path(gid): Path<i64>,
+    Json(req): Json<ReviewRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.sessions.record_global_review(gid, req.passed) {
+        return Err(ApiError::NotFound(format!(
+            "global mistake#{gid} 不存在或复习记录写入失败"
+        )));
+    }
+    Ok(Json(
+        serde_json::json!({ "ok": true, "passed": req.passed }),
+    ))
+}
+
+/// GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话；
+/// 不回退 detected——全局层面未采纳建议不应污染画像）
+pub async fn global_analysis(State(state): State<Arc<AppState>>) -> Json<ErrorProfile> {
+    let mistakes = state.sessions.list_global_mistakes();
+    let observations = observations_from_mistakes(&mistakes);
+    let summary = mastery_summary_from_mistakes(&mistakes);
+    Json(build_error_profile(
+        "global",
+        BASIS_CONFIRMED,
+        &observations,
+        Some(summary),
+    ))
+}
