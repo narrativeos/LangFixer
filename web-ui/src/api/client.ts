@@ -822,6 +822,27 @@ export const api = {
     return http.get<Mistake[]>(`/gec/sessions/${id}/mistakes`).then((r) => r.data)
   },
 
+  /** GET /gec/sessions/:id/review — 到期复习队列（Phase 2 间隔复习）
+   *  桌面端：invoke('session_review_queue')（同构） */
+  listReviewQueue(id: string): Promise<Mistake[]> {
+    if (inTauri)
+      return tauri!.invoke('session_review_queue', { sessionId: id }).then((r) => r as Mistake[])
+    return http.get<Mistake[]>(`/gec/sessions/${id}/review`).then((r) => r.data)
+  },
+
+  /** POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
+   *  （记住 → 间隔递增，连对 6 次已掌握；没记住 → 次日再练）
+   *  桌面端：invoke('review_mistake')（同构） */
+  reviewMistake(id: string, mistakeId: number, passed: boolean): Promise<{ ok: boolean }> {
+    if (inTauri)
+      return tauri!
+        .invoke('review_mistake', { sessionId: id, mistakeId, passed })
+        .then(() => ({ ok: true }))
+    return http
+      .post<{ ok: boolean }>(`/gec/sessions/${id}/mistakes/${mistakeId}/review`, { passed })
+      .then((r) => r.data)
+  },
+
   /** POST /gec/ops/unlock — 「平台运营」角色解锁验证（web 形态；配置了
    *  GEC_TABLES_UPDATE_TOKEN 时需匹配 token，否则 401）。桌面端本地单用户直接放行 */
   opsUnlock(token?: string): Promise<{ unlocked: boolean }> {

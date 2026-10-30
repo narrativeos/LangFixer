@@ -760,6 +760,83 @@ async fn adopt_records_mistake_in_session_notebook() {
 }
 
 #[tokio::test]
+async fn review_queue_and_mastery_flow() {
+    // Phase 2 间隔复习：采纳错题 → 复习队列 → 记住 → 掌握度更新、队列清空
+    let base = start_server().await;
+    let c = client();
+    let src = "第一句正常。他昨天去了去了商店。后面正常。";
+    let start = src.find("去了去了").unwrap();
+    let body = serde_json::json!({
+        "lang": "zh",
+        "session_id": "review_s1",
+        "src_text": src,
+        "error": {
+            "lang": "zh",
+            "error_type": "grammar",
+            "confidence": 0.8,
+            "span": [start, start + "去了去了".len()],
+            "original": "去了去了",
+            "correction": "去了",
+            "message": "动词重复",
+            "rule_id": "ZH_MISSING_SUBJECT",
+            "source": "rule",
+        },
+        "action": "adopt",
+    });
+    let resp = c
+        .post(format!("{base}/gec/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    // 新错题未复习过 → 立即进入复习队列
+    let queue: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/review_s1/review"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(queue.len(), 1, "新错题应立即可复习");
+    assert_eq!(queue[0]["mastery_status"], "new");
+    let mid = queue[0]["id"].as_i64().unwrap();
+
+    // 记住 → 200；队列清空（下次到期在未来）；列表带掌握度
+    let resp = c
+        .post(format!(
+            "{base}/gec/sessions/review_s1/mistakes/{mid}/review"
+        ))
+        .json(&serde_json::json!({ "passed": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let queue: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/review_s1/review"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(queue.is_empty(), "记住后到期时间应在未来");
+    let mistakes: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/review_s1/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mistakes[0]["mastery_status"], "reviewing");
+    assert!(!mistakes[0]["next_review_at"].is_null());
+}
+
+#[tokio::test]
 async fn ops_unlock_requires_token_when_configured() {
     // 「平台运营」角色解锁端点：配置 token 时必须携带匹配头（与决策表热更新同语义）
     let base = {

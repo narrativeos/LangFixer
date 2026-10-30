@@ -71,6 +71,8 @@ fn main() {
             commands::get_session,
             commands::update_session_profile,
             commands::session_mistakes,
+            commands::session_review_queue,
+            commands::review_mistake,
             commands::l3_collect,
             commands::l3_status,
             commands::l3_retrain,

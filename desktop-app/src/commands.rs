@@ -4860,6 +4860,26 @@ pub fn session_mistakes(
     Ok(core.sessions.list_mistakes(&session_id))
 }
 
+/// 到期复习队列（桌面端；Phase 2 间隔复习：未复习过或已到下次复习时间的错题）
+#[tauri::command]
+pub fn session_review_queue(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+) -> Result<Vec<shared_model::Mistake>, String> {
+    Ok(core.sessions.list_review_queue(&session_id))
+}
+
+/// 记录一次复习结果（桌面端；记住 → 间隔递增，连对 6 次已掌握；没记住 → 次日再练）
+#[tauri::command]
+pub fn review_mistake(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+    mistake_id: i64,
+    passed: bool,
+) -> Result<bool, String> {
+    Ok(core.sessions.record_review(&session_id, mistake_id, passed))
+}
+
 async fn error_feedback_body(
     core: tauri::State<'_, Arc<Core>>,
     lang: String,

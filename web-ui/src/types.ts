@@ -600,6 +600,10 @@ export interface Mistake {
   created_at: string
   /** 出现次数（聚合） */
   count: number
+  /** 掌握度状态：new（未复习过）/ reviewing（复习中）/ mastered（已掌握） */
+  mastery_status?: string | null
+  /** 下次复习时间（SQLite datetime；已掌握为 null） */
+  next_review_at?: string | null
 }
 
 /** 会话习惯性错误分析结果 */

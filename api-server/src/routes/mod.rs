@@ -312,6 +312,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(session::mistakes),
         )
         .route(
+            "/gec/sessions/:id/review",
+            axum::routing::get(session::review_queue),
+        )
+        .route(
+            "/gec/sessions/:id/mistakes/:mid/review",
+            axum::routing::post(session::review_mistake),
+        )
+        .route(
             "/gec/sessions/:id/analysis",
             axum::routing::get(session::analysis),
         )

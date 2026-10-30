@@ -117,6 +117,12 @@ pub struct Mistake {
     pub created_at: String,
     /// 出现次数（聚合）
     pub count: u32,
+    /// 掌握度状态：`new`（未复习过）/ `reviewing`（复习中）/ `mastered`（已掌握）
+    #[serde(default)]
+    pub mastery_status: Option<String>,
+    /// 下次复习时间（SQLite datetime 格式；已掌握为 None）
+    #[serde(default)]
+    pub next_review_at: Option<String>,
 }
 
 /// 从原文提取包含错误 span 的句子（按句末标点粗切；切出为空时回退 `fallback`）

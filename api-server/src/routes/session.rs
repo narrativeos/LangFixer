@@ -61,6 +61,39 @@ pub async fn mistakes(
     Json(state.sessions.list_mistakes(&id))
 }
 
+/// GET /gec/sessions/:id/review — 到期复习队列（Phase 2 间隔复习；
+/// 未复习过或已到下次复习时间的错题，已掌握不进入）
+pub async fn review_queue(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<Vec<shared_model::Mistake>> {
+    Json(state.sessions.list_review_queue(&id))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReviewRequest {
+    /// 本次复习是否记住
+    pub passed: bool,
+}
+
+/// POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
+/// （间隔重复调度：记住 → 1/3/7/14/30 天递增，连对 6 次已掌握；没记住 → 次日再练）
+pub async fn review_mistake(
+    State(state): State<Arc<AppState>>,
+    Path((id, mid)): Path<(String, i64)>,
+    Json(req): Json<ReviewRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ok = state.sessions.record_review(&id, mid, req.passed);
+    if !ok {
+        return Err(ApiError::NotFound(format!(
+            "mistake#{mid}（session#{id}）复习记录写入失败"
+        )));
+    }
+    Ok(Json(
+        serde_json::json!({ "ok": true, "passed": req.passed }),
+    ))
+}
+
 /// PUT /gec/sessions/:id/archive — 归档
 pub async fn archive(
     State(state): State<Arc<AppState>>,
