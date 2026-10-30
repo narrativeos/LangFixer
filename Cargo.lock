@@ -1944,6 +1944,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gec-eval"
+version = "0.1.0"
+dependencies = [
+ "gec-en",
+ "gec-zh",
+ "serde",
+ "serde_json",
+ "shared-model",
+]
+
+[[package]]
 name = "gec-ja"
 version = "0.1.0"
 dependencies = [

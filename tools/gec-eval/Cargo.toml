@@ -1,0 +1,13 @@
+[package]
+name = "gec-eval"
+description = "规则层离线评测 harness：金集 precision/recall/F0.5 + 延迟，CI 回归门"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shared-model = { workspace = true }
+gec-zh = { path = "../../gec-zh" }
+gec-en = { path = "../../gec-en" }
+serde = { workspace = true }
+serde_json = { workspace = true }

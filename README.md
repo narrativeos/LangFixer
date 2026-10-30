@@ -312,6 +312,47 @@ POST /gec/knowledge/dataset/:id/clean    删除资源包（?keep_orphan_points=1
   训练侧用 `feature-model/prepare_adopted.py` 做治理（去 weak / 去基准污染 / md5 稳定
   holdout 切分）。开关 `GEC_L3_ADOPT_COLLECT`（**api-server 形态默认关**，`=1` 开启；桌面端默认开，`=0` 关闭）。
 
+## 质量评测（公开基准）
+
+评测 harness 在 `tools/gec-eval`：对四份金集逐句跑**规则层**（`detect_local`，
+离线、确定性、无 LLM），统计 precision / recall / **F0.5**（GEC 评测惯例，β=0.5，
+精确率权重是召回的 2 倍——纠错产品误报比漏报更伤信任）与每千字符延迟中位数
+（release 构建）。命中判定与各语言 `tests/*_eval.rs` 一致：预测 span 与 gold
+编辑 span 重叠（零宽 gold span 计入分母）。
+
+```bash
+# 打印 markdown 报告；--json 另存机器可读报告
+cargo run --release -p gec-eval
+# CI 回归门：与基线对比，任一数据集 P/R/F0.5 下降超过容差（默认 0.02）即失败
+cargo run --release -p gec-eval -- --check datasets/eval_reports/baseline_rules.json
+```
+
+实测（2026-10，M 系列 Mac，release；延迟与机器相关，回归门只约束 P/R/F0.5）：
+
+| 数据集 | 语言 | 句子 | gold 编辑 | 精确率 | 召回率 | F0.5 | 延迟 ms/千字符 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CSCD + SIGHAN-2015 / EC-Med / EC-LAW | zh | 2600 | 1792 | 0.3% | 0.1% | 0.002 | 59.7 |
+| MuCGEC (dev) | zh | 1137 | 7258 | 84.4% | 0.5% | 0.024 | 52.7 |
+| NaCGEC | zh | 6369 | 9460 | 0.0% | 0.0% | 0.000 | 31.8 |
+| JFLEG | en | 1501 | 15775 | 93.1% | 1.2% | 0.058 | 14.4 |
+
+**如何解读**：规则层刻意只做高置信词级错误（混淆字 / 拼写混淆），对通用语法金集
+（MuCGEC / NaCGEC / JFLEG 的 gold 编辑以语法、语序编辑为主）召回低是设计内的
+边界，不是缺陷——语法与语义纠错的召回由 L3 LLM 层承担（在线路径，用
+`datasets/score_f05.py` 单独评测，不进 CI 门）。这张表的作用是**守住规则层现有
+能力**：任何词表 / 规则改动导致误报上升或命中下降，CI 直接红。
+
+**定位对照**（定性——各家评测口径不同且不可独立复核，不做跨产品定量对比）：
+
+| 维度 | LangFixer | Harper | LanguageTool |
+|---|---|---|---|
+| 中文 GEC / 编校 | ✅ 核心场景（CEC 词表 + 中文金集） | ❌ 仅英文 | ⚠️ 中文为社区维护 |
+| 完全本地 / 离线 | ✅ 规则层全离线，LLM 可选外接 | ✅ | ⚠️ 部分能力需云端账户 |
+| 错误归因（为什么错） | ✅ 知识库归因 + 决策表 | ⚠️ 规则描述 | ⚠️ 规则描述 |
+| 学习闭环（错题本 + FSRS 复习） | ✅ | ❌ | ❌ |
+
+金集仅用于本地评测（许可见 `datasets/README.md`），产品发行物不含数据集。
+
 ## 测试
 
 ```bash

@@ -33,6 +33,8 @@ jobs:
         run: cargo test --workspace
       - name: 测试（feature-gated：SQLite 会话存储）
         run: cargo test -p shared-model --features sqlite
+      - name: 评测回归门（规则层金集，离线确定性；基线见 datasets/eval_reports/baseline_rules.json）
+        run: cargo run --release -p gec-eval -- --check datasets/eval_reports/baseline_rules.json
 
   web-ui:
     name: Web UI（typecheck / test / build）

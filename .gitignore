@@ -32,8 +32,9 @@ datasets/nlpcc2018/
 # 本地模型权重（CEC 4B GGUF 等；下载脚本 models/download.sh 可入库）
 models/*.gguf
 
-# 测评中心报告（进化中心 P0；按需生成，体积大）
-datasets/eval_reports/
+# 测评中心报告（进化中心 P0；按需生成，体积大）；基线文件除外（CI 回归门依赖）
+datasets/eval_reports/*
+!datasets/eval_reports/baseline_rules.json
 
 # Python
 __pycache__/

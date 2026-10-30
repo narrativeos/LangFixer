@@ -14,6 +14,7 @@ members = [
     "document-parse",
     "media-core",
     "media-flow",
+    "tools/gec-eval",
 ]
 
 [workspace.package]

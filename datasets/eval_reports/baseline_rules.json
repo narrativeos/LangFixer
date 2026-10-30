@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "engine": "rules-offline",
+  "datasets": [
+    {
+      "name": "cscd",
+      "lang": "zh",
+      "sentences": 2600,
+      "gold_edits": 1792,
+      "predictions": 312,
+      "hits": 1,
+      "false_positives": 311,
+      "precision": 0.003205128205128205,
+      "recall": 0.0005580357142857143,
+      "f05": 0.001644736842105263,
+      "latency_ms_per_1k_chars": 59.74
+    },
+    {
+      "name": "mucgec",
+      "lang": "zh",
+      "sentences": 1137,
+      "gold_edits": 7258,
+      "predictions": 32,
+      "hits": 35,
+      "false_positives": 5,
+      "precision": 0.84375,
+      "recall": 0.0048222650868007715,
+      "f05": 0.02357243347335442,
+      "latency_ms_per_1k_chars": 52.71
+    },
+    {
+      "name": "nacgec",
+      "lang": "zh",
+      "sentences": 6369,
+      "gold_edits": 9460,
+      "predictions": 90,
+      "hits": 0,
+      "false_positives": 90,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f05": 0.0,
+      "latency_ms_per_1k_chars": 31.75
+    },
+    {
+      "name": "jfleg",
+      "lang": "en",
+      "sentences": 1501,
+      "gold_edits": 15775,
+      "predictions": 130,
+      "hits": 194,
+      "false_positives": 9,
+      "precision": 0.9307692307692308,
+      "recall": 0.012297939778129952,
+      "f05": 0.05840305923155965,
+      "latency_ms_per_1k_chars": 14.41
+    }
+  ]
+}
