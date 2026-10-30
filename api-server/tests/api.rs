@@ -837,6 +837,100 @@ async fn review_queue_and_mastery_flow() {
 }
 
 #[tokio::test]
+async fn learning_stats_and_adopt_count_flow() {
+    // D1/D2：采纳计数（adopt_count）+ 学习统计端点（GET /gec/stats）
+    let base = start_server().await;
+    let c = client();
+    let src = "第一句正常。他昨天去了去了商店。后面正常。";
+    let start = src.find("去了去了").unwrap();
+    let body = serde_json::json!({
+        "lang": "zh",
+        "session_id": "stats_s1",
+        "src_text": src,
+        "error": {
+            "lang": "zh",
+            "error_type": "grammar",
+            "confidence": 0.8,
+            "span": [start, start + "去了去了".len()],
+            "original": "去了去了",
+            "correction": "去了",
+            "message": "动词重复",
+            "rule_id": "ZH_MISSING_SUBJECT",
+            "source": "rule",
+        },
+        "action": "adopt",
+    });
+    let first: serde_json::Value = c
+        .post(format!("{base}/gec/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["adopt_count"], 1, "首次采纳计数 = 1");
+    // 跨会话再采纳同一错题 → 计数递增（「第 N 次采纳此类错误」）
+    let body2 = {
+        let mut b = body.clone();
+        b["session_id"] = serde_json::json!("stats_s2");
+        b
+    };
+    let second: serde_json::Value = c
+        .post(format!("{base}/gec/feedback"))
+        .json(&body2)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["adopt_count"], 2, "同类错误第二次采纳计数 = 2");
+
+    // 全局复习一次（good）
+    let glist: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(glist.len(), 1, "跨会话聚合为一条全局错题");
+    let gid = glist[0]["id"].as_i64().unwrap();
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({ "rating": "good" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    // 统计端点：逐日序列 + 评分分布 + 累计
+    let stats: serde_json::Value = c
+        .get(format!("{base}/gec/stats?days=30"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stats["days"].as_array().unwrap().len(), 30);
+    assert_eq!(stats["total_adopted"], 2);
+    assert_eq!(stats["total_reviewed"], 1);
+    let today = stats["days"].as_array().unwrap().last().unwrap();
+    assert_eq!(today["adopted"], 2);
+    assert_eq!(today["reviewed"], 1);
+    let ratings = stats["rating_counts"].as_array().unwrap();
+    assert!(
+        ratings
+            .iter()
+            .any(|r| r["rating"] == "good" && r["count"] == 1),
+        "评分分布应含 good=1: {ratings:?}"
+    );
+}
+
+#[tokio::test]
 async fn ops_unlock_requires_token_when_configured() {
     // 「平台运营」角色解锁端点：配置 token 时必须携带匹配头（与决策表热更新同语义）
     let base = {

@@ -127,7 +127,13 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       // 闭环可见：采纳即入全局错题本（toast 说明去向；批量采纳走 silent 汇总提示）；
       // 顺带保鲜导航「练习与复习」徽章
       const toastAdopted = () => {
-        if (!silent) ElMessage.success(`${res.message} · 已进入错题本`)
+        if (silent) return
+        // D2 闭环价值感：同类错误再次被确认时，让「重复错误」被看见
+        const repeat =
+          res.adopt_count && res.adopt_count > 1
+            ? ` · 第 ${res.adopt_count} 次采纳此类错误`
+            : ''
+        ElMessage.success(`${res.message} · 已进入错题本${repeat}`)
       }
       if (store.caps.learning) void store.refreshReviewDue()
       if (res.via === 'rule' || res.via === 'knowledge' || res.via === 'anomaly') {

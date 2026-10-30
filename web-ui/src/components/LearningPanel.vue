@@ -12,7 +12,7 @@ import { ElMessage } from 'element-plus'
 import { useGecStore } from '../stores/gec'
 import { api } from '../api/client'
 import { errorTypeLabel } from '../lib/labels'
-import type { Mistake, ReviewRating, SessionAnalysis } from '../types'
+import type { LearningStats, Mistake, ReviewRating, SessionAnalysis } from '../types'
 
 const store = useGecStore()
 
@@ -20,6 +20,10 @@ const mistakes = ref<Mistake[]>([])
 const queue = ref<Mistake[]>([])
 /** 统一错误画像（与审校侧习惯性错误分析同一投影，GET analysis） */
 const profile = ref<SessionAnalysis | null>(null)
+/** 学习统计（D1）：近 30 天采纳/复习事件流水聚合（GET stats） */
+const stats = ref<LearningStats | null>(null)
+/** 学习者 CEFR 自评（会话档案）：复习提示文案按水平适配（D3）；未填 = 通用文案 */
+const learnerCefr = ref('')
 const loading = ref(false)
 const loaded = ref(false)
 const errorMsg = ref('')
@@ -141,21 +145,63 @@ async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    const [ms, q, p] = await Promise.all([
+    const [ms, q, p, st] = await Promise.all([
       api.listGlobalMistakes(),
       api.listGlobalReviewQueue(),
       api.getGlobalAnalysis().catch(() => null),
+      api.getLearningStats().catch(() => null),
     ])
     mistakes.value = ms
     queue.value = q
     profile.value = p
+    stats.value = st
     revealed.value = false
+    // D3：复习提示按学习者 CEFR 适配（会话档案；缺档案不影响主流程）
+    try {
+      const rec = await api.getSession(store.ensureSessionId())
+      learnerCefr.value = (rec.meta.cefr ?? '').toUpperCase()
+    } catch {
+      /* 档案不可用：通用提示文案 */
+    }
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
     loaded.value = true
   }
+}
+
+/** 统计图柱高（按窗口内峰值归一，0 事件不留占位） */
+const statsMax = computed(() => {
+  const ds = stats.value?.days ?? []
+  return Math.max(1, ...ds.map((d) => Math.max(d.adopted, d.reviewed)))
+})
+function barH(n: number): number {
+  return n > 0 ? Math.max(2, Math.round((n / statsMax.value) * 26)) : 0
+}
+const statsVisible = computed(
+  () => !!stats.value && (stats.value.total_adopted > 0 || stats.value.total_reviewed > 0),
+)
+const RATING_LABELS: Record<string, string> = {
+  again: '忘了',
+  hard: '有点难',
+  good: '记住了',
+  easy: '很轻松',
+}
+/** D3：CEFR 适配的复习提示（A 段给更具体的抓手，C 段只留最小引导） */
+const reviewHint = computed(() => {
+  const c = learnerCefr.value
+  if (c.startsWith('A')) return '提示：先看错误类型，再逐词找——句子里哪个词和它不一致？'
+  if (c.startsWith('B')) return '先回忆：句子里错在哪、应改成什么，再揭晓对照。'
+  if (c.startsWith('C')) return '直接回忆改错对，再揭晓对照。'
+  return ''
+})
+/** 统计保鲜（非阻断）：复习/撤销后刷新事件流水视图 */
+function refreshStats() {
+  void api
+    .getLearningStats()
+    .then((s) => (stats.value = s))
+    .catch(() => {})
 }
 
 async function submitReview(rating: ReviewRating) {
@@ -175,6 +221,8 @@ async function submitReview(rating: ReviewRating) {
     revealed.value = false
     // 导航徽章保鲜（非阻断）
     void store.refreshReviewDue()
+    // 统计流水保鲜（非阻断）
+    refreshStats()
     // 列表掌握度同步刷新（非阻断）
     try {
       mistakes.value = await api.listGlobalMistakes()
@@ -198,6 +246,7 @@ async function undoReview() {
     await api.undoGlobalReview(m.id)
     bumpDone(-1)
     void store.refreshReviewDue()
+    refreshStats()
     const [ms, q] = await Promise.all([api.listGlobalMistakes(), api.listGlobalReviewQueue()])
     mistakes.value = ms
     queue.value = q
@@ -253,6 +302,7 @@ onMounted(load)
       </div>
       <div class="review-card">
         <div class="review-type">{{ errorTypeLabel(current.error_type) }}</div>
+        <div v-if="reviewHint" class="review-hint">{{ reviewHint }}</div>
         <div class="sentence">
           {{ clozeSentence || '（该错题没有可挖空的上下文——请先回忆，再看下方改错）' }}
         </div>
@@ -357,6 +407,32 @@ onMounted(load)
         </template>
       </div>
     </template>
+
+    <!-- 学习统计（D1）：近 30 天逐日采纳/复习事件 + 窗口内评分分布（事件流水不随删会话清除） -->
+    <div v-if="statsVisible && stats" class="stats">
+      <div class="stats-head">
+        <span class="stats-title">学习统计 · 近 30 天</span>
+        <span class="pace">累计采纳 {{ stats.total_adopted }} · 复习 {{ stats.total_reviewed }}</span>
+      </div>
+      <div class="stats-bars">
+        <div
+          v-for="d in stats.days"
+          :key="d.date"
+          class="bar-col"
+          :title="`${d.date} · 采纳 ${d.adopted} · 复习 ${d.reviewed}`"
+        >
+          <div class="bar-review" :style="{ height: barH(d.reviewed) + 'px' }"></div>
+          <div class="bar-adopt" :style="{ height: barH(d.adopted) + 'px' }"></div>
+        </div>
+      </div>
+      <div class="stats-legend">
+        <span><i class="dot dot-adopt"></i>采纳</span>
+        <span><i class="dot dot-review"></i>复习</span>
+        <span v-for="rc in stats.rating_counts" :key="rc.rating" class="rating-chip">
+          {{ RATING_LABELS[rc.rating] ?? rc.rating }} {{ rc.count }}
+        </span>
+      </div>
+    </div>
   </el-card>
 </template>
 
@@ -390,4 +466,17 @@ onMounted(load)
 .corr { color: var(--el-color-success); font-weight: 600; }
 .arrow { color: var(--el-text-color-secondary); }
 .time { margin-left: auto; color: var(--el-text-color-secondary); font-size: 12px; }
+.review-hint { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px; }
+.stats { margin-top: 18px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 12px; }
+.stats-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.stats-title { font-weight: 600; font-size: 13px; }
+.stats-bars { display: flex; align-items: flex-end; gap: 2px; height: 32px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; min-width: 0; }
+.bar-adopt { background: var(--el-color-primary-light-5); border-radius: 2px; }
+.bar-review { background: var(--el-color-primary); border-radius: 2px; }
+.stats-legend { display: flex; gap: 12px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.dot-adopt { background: var(--el-color-primary-light-5); }
+.dot-review { background: var(--el-color-primary); }
+.rating-chip { padding: 1px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; }
 </style>

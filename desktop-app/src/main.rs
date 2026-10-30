@@ -79,6 +79,7 @@ fn main() {
             commands::global_review_queue,
             commands::review_global_mistake,
             commands::undo_global_review,
+            commands::global_stats,
             commands::global_analysis,
             commands::l3_collect,
             commands::l3_status,

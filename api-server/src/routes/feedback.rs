@@ -89,6 +89,9 @@ pub struct FeedbackResponse {
     /// reject：自进化 agent 结果（LLM 已配置时；自主动作已执行 + 高风险提案待确认）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<gec_core::AgentRunResult>,
+    /// adopt：此类错误累计被采纳次数（含本次；>1 = 同一错误再次确认，D2 闭环价值感）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adopt_count: Option<i64>,
 }
 
 /// POST /gec/feedback — 检测结果统一采纳 / 放弃（全部来源层）
@@ -98,9 +101,9 @@ pub async fn feedback(
 ) -> Result<Json<FeedbackResponse>, ApiError> {
     match req.action.as_str() {
         "adopt" => {
-            let resp = adopt(&state, &req).await?;
+            let mut resp = adopt(&state, &req).await?;
             collect_feedback_assets(&req, "adopt");
-            record_mistake(&state, &req);
+            resp.adopt_count = record_mistake(&state, &req);
             Ok(Json(resp))
         }
         "reject" => {
@@ -177,6 +180,7 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
                     reflection: None,
                     llm_reflect_ready,
                     agent: None,
+                    adopt_count: None,
                 });
             }
             let r = crate::routes::llm_feedback::adopt_as_rule(state, &req.lang, &req.error, "LLM")
@@ -196,6 +200,7 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
                 reflection: None,
                 llm_reflect_ready,
                 agent: None,
+                adopt_count: None,
             })
         }
         // 规则层：anomaly → 模式蒸馏；其余 → 确认规则正确（留痕 + 示例补强）
@@ -216,6 +221,7 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
                     reflection: None,
                     llm_reflect_ready,
                     agent: None,
+                    adopt_count: None,
                 });
             }
             confirm_rule_adopt(state, req)
@@ -239,6 +245,7 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
                 reflection: None,
                 llm_reflect_ready,
                 agent: None,
+                adopt_count: None,
             })
         }
         // 知识层：确认知识条目正确（留痕）
@@ -258,6 +265,7 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
                 reflection: None,
                 llm_reflect_ready,
                 agent: None,
+                adopt_count: None,
             })
         }
         _ => Err(ApiError::BadRequest(format!("未知来源层: {source}"))),
@@ -325,6 +333,7 @@ async fn reject(
         reflection: Some(report),
         llm_reflect_ready: state.is_llm_available(),
         agent: agent_result,
+        adopt_count: None,
     })
 }
 
@@ -395,27 +404,27 @@ fn confirm_rule_adopt(
         reflection: None,
         llm_reflect_ready: state.is_llm_available(),
         agent: None,
+        adopt_count: None,
     })
 }
 
 /// 错题本写入（非阻断）：采纳成功且带会话时，把用户确认的错误写入该会话错题本
-/// （Phase 2 学习扩展数据基础；上下文从原文按错误 span 提取句段）
-fn record_mistake(state: &AppState, req: &FeedbackRequest) {
-    let Some(sid) = req.session_id.as_deref() else {
-        return;
-    };
+/// （Phase 2 学习扩展数据基础；上下文从原文按错误 span 提取句段）。
+/// 返回此类错误累计采纳次数（含本次），供前端展示「第 N 次采纳此类错误」
+fn record_mistake(state: &AppState, req: &FeedbackRequest) -> Option<i64> {
+    let sid = req.session_id.as_deref()?;
     let sentence = match req.src_text.as_deref() {
         Some(src) => shared_model::sentence_around(src, req.error.span, &req.error.original),
         None => req.error.original.clone(),
     };
-    state.sessions.add_mistake(
+    Some(state.sessions.add_mistake(
         sid,
         &req.lang,
         &req.error.error_type,
         &req.error.original,
         req.error.correction.as_deref(),
         &sentence,
-    );
+    ))
 }
 
 /// 写入反馈日志（失败仅告警，不阻断反馈主流程）

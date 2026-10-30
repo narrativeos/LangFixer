@@ -339,6 +339,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/gec/mistakes/:gid/review/undo",
             axum::routing::post(session::undo_global_review),
         )
+        .route("/gec/stats", axum::routing::get(session::learning_stats))
         .route(
             "/gec/review",
             axum::routing::get(session::global_review_queue),

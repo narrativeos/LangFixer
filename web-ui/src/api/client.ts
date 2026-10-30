@@ -36,6 +36,7 @@ import type {
   L3RetrainResult,
   LanguageInfo,
   LearnedKnowledge,
+  LearningStats,
   ListWordsResponse,
   LlmExplainStreamHandlers,
   PutTogglesResponse,
@@ -922,6 +923,13 @@ export const api = {
   undoGlobalReview(gid: number): Promise<{ ok: boolean }> {
     if (inTauri) return tauri!.invoke('undo_global_review', { gid }).then(() => ({ ok: true }))
     return http.post<{ ok: boolean }>(`/gec/mistakes/${gid}/review/undo`).then((r) => r.data)
+  },
+
+  /** GET /gec/stats — 学习统计（D1）：近 N 天逐日采纳/复习计数 + 评分分布 + 全时累计
+   *  桌面端：invoke('global_stats')（同构） */
+  getLearningStats(days = 30): Promise<LearningStats> {
+    if (inTauri) return tauri!.invoke('global_stats', { days }).then((r) => r as LearningStats)
+    return http.get<LearningStats>(`/gec/stats?days=${days}`).then((r) => r.data)
   },
 
   /** GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话，含掌握度摘要）

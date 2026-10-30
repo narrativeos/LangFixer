@@ -305,6 +305,19 @@ pub async fn global_mistakes(
     Json(state.sessions.list_global_mistakes())
 }
 
+/// GET /gec/stats — 学习统计（D1）：近 N 天逐日采纳/复习计数 + 窗口内评分分布 + 全时累计
+#[derive(serde::Deserialize)]
+pub struct StatsQuery {
+    pub days: Option<i64>,
+}
+
+pub async fn learning_stats(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<StatsQuery>,
+) -> Json<shared_model::session_store::LearningStats> {
+    Json(state.sessions.learning_stats(q.days.unwrap_or(30)))
+}
+
 /// GET /gec/review — 全局到期复习队列（跨会话；已掌握不进入）
 pub async fn global_review_queue(
     State(state): State<Arc<AppState>>,

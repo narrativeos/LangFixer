@@ -1058,6 +1058,18 @@ export interface FeedbackResponse {
   reflection?: ReflectionReport
   /** LLM 深度反思是否可用（可进一步调 /gec/feedback/reflect-llm） */
   llm_reflect_ready?: boolean
+  /** adopt：此类错误累计被采纳次数（含本次；>1 = 同一错误再次确认） */
+  adopt_count?: number
+}
+
+/** 学习统计（D1）：近 N 天逐日采纳/复习事件 + 窗口内评分分布 + 全时累计 */
+export interface LearningStats {
+  /** 逐日序列（旧 → 新，缺失日补 0） */
+  days: { date: string; adopted: number; reviewed: number }[]
+  /** 窗口内复习评分分布（again / hard / good / easy） */
+  rating_counts: { rating: string; count: number }[]
+  total_adopted: number
+  total_reviewed: number
 }
 
 /** 反馈统计（按来源层 / 规则聚合；反馈历史面板用） */

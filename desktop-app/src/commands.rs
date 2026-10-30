@@ -4819,7 +4819,7 @@ pub async fn error_feedback(
     ctx: Option<serde_json::Value>,
     session_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let res = error_feedback_body(
+    let mut res = error_feedback_body(
         core.clone(),
         lang.clone(),
         error.clone(),
@@ -4827,7 +4827,8 @@ pub async fn error_feedback(
         reason.clone(),
     )
     .await?;
-    // 错题本（非阻断）：采纳成功且带会话时写入该会话错题本（Phase 2 学习扩展）
+    // 错题本（非阻断）：采纳成功且带会话时写入该会话错题本（Phase 2 学习扩展）；
+    // adopt_count = 此类错误累计采纳次数（含本次，D2 闭环价值感）
     if action == "adopt" {
         if let Some(sid) = session_id.as_deref() {
             let sentence = ctx
@@ -4836,7 +4837,7 @@ pub async fn error_feedback(
                 .and_then(|v| v.as_str())
                 .map(|src| shared_model::sentence_around(src, error.span, &error.original))
                 .unwrap_or_else(|| error.original.clone());
-            core.sessions.add_mistake(
+            let adopt_count = core.sessions.add_mistake(
                 sid,
                 &lang,
                 &error.error_type,
@@ -4844,6 +4845,9 @@ pub async fn error_feedback(
                 error.correction.as_deref(),
                 &sentence,
             );
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert("adopt_count".to_string(), serde_json::json!(adopt_count));
+            }
         }
     }
     // 资产沉淀（非阻断）：adopt → adopted.jsonl 句对；reject → rejected.jsonl 负偏好
@@ -4987,6 +4991,15 @@ pub fn review_global_mistake(
 #[tauri::command]
 pub fn undo_global_review(core: tauri::State<'_, Arc<Core>>, gid: i64) -> Result<bool, String> {
     Ok(core.sessions.undo_global_review(gid))
+}
+
+/// 学习统计（D1；桌面端）：近 N 天逐日采纳/复习计数 + 窗口内评分分布 + 全时累计
+#[tauri::command]
+pub fn global_stats(
+    core: tauri::State<'_, Arc<Core>>,
+    days: Option<i64>,
+) -> Result<shared_model::session_store::LearningStats, String> {
+    Ok(core.sessions.learning_stats(days.unwrap_or(30)))
 }
 
 /// 全局统一错误画像（桌面端；确认错误基准，跨会话，含掌握度摘要）

@@ -31,6 +31,11 @@ const MKEY_SQL: &str =
 const MKEY_SQL_LATEST: &str = "latest.lang || char(1) || latest.error_type || char(1) \
                                || latest.original || char(1) || COALESCE(latest.correction, '')";
 
+/// Rust 侧错题键（与 MKEY_SQL 表达式一致：\x01 分隔防拼接歧义）
+fn mkey_of(lang: &str, error_type: &str, original: &str, correction: Option<&str>) -> String {
+    [lang, error_type, original, correction.unwrap_or("")].join("\u{1}")
+}
+
 /// 记忆状态行：(review_count, last_review_at, stability, difficulty)；None = 新卡
 type MasteryRow = (i64, Option<String>, Option<f64>, Option<f64>);
 /// 记忆状态全行（撤销快照用）：(review_count, last_review_at, stability, difficulty, status, next_review_at)
@@ -66,6 +71,15 @@ impl ReviewRating {
     /// 旧二键契约（记住 / 没记住）→ FSRS 四键映射
     pub fn from_passed(passed: bool) -> Self {
         if passed { Self::Good } else { Self::Again }
+    }
+    /// 稳定字符串（learning_events.rating）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Again => "again",
+            Self::Hard => "hard",
+            Self::Good => "good",
+            Self::Easy => "easy",
+        }
     }
 }
 
@@ -193,6 +207,46 @@ fn take_undo(conn: &Connection, scope: &str, skey: &str) -> Option<UndoSnap> {
     Some(snap)
 }
 
+/// 记一条学习事件（D1 统计流水：adopt / review；只增不改，失败静默不阻断主流程）
+fn log_event(
+    conn: &Connection,
+    kind: &str,
+    mkey: &str,
+    lang: &str,
+    error_type: &str,
+    rating: Option<&str>,
+) {
+    let _ = conn.execute(
+        "INSERT INTO learning_events (kind, mkey, lang, error_type, rating)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![kind, mkey, lang, error_type, rating],
+    );
+}
+
+/// 学习统计（D1）：近 N 天逐日 adopt/review 计数 + 窗口内评分分布 + 全时累计
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LearningStats {
+    /// 逐日序列（旧 → 新，缺失日补 0）
+    pub days: Vec<DayStat>,
+    /// 窗口内复习评分分布（again / hard / good / easy）
+    pub rating_counts: Vec<RatingCount>,
+    pub total_adopted: i64,
+    pub total_reviewed: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DayStat {
+    pub date: String,
+    pub adopted: i64,
+    pub reviewed: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RatingCount {
+    pub rating: String,
+    pub count: i64,
+}
+
 /// 会话存储（SQLite 持久化；`Mutex<Connection>` 与 detect_history 等存储同构）
 pub struct SqliteSessionStore {
     conn: Mutex<Connection>,
@@ -266,7 +320,20 @@ impl SqliteSessionStore {
                 difficulty REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (scope, skey)
-            );",
+            );
+            -- 学习事件流水（D1 学习统计）：adopt = 采纳入错题本，review = 复习评分。
+            -- 只增不改的时序事实；删除会话不清除（学习历史属于全局记忆）
+            CREATE TABLE IF NOT EXISTS learning_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                mkey TEXT NOT NULL,
+                lang TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                rating TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_learning_events_created
+                ON learning_events(created_at);",
         )?;
         // 旧库迁移：mistake_mastery 增列 FSRS 记忆状态（stability / difficulty）；
         // 旧数据（无记忆状态）在下次复习时经 SM-2 近似自动迁移（见 record_review）
@@ -399,7 +466,8 @@ impl SqliteSessionStore {
         self.get_or_create(session_id, lang)
     }
 
-    /// 记一条错题（用户采纳确认的错误；Phase 2 学习扩展数据基础）
+    /// 记一条错题（用户采纳确认的错误；Phase 2 学习扩展数据基础）。
+    /// 返回该错题（mkey 维度）**累计被采纳次数（含本次）**——D2 闭环价值感
     pub fn add_mistake(
         &self,
         session_id: &str,
@@ -408,7 +476,7 @@ impl SqliteSessionStore {
         original: &str,
         correction: Option<&str>,
         sentence: &str,
-    ) {
+    ) -> i64 {
         self.ensure_row(session_id, lang);
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
@@ -416,6 +484,14 @@ impl SqliteSessionStore {
              VALUES (?, ?, ?, ?, ?, ?)",
             params![session_id, lang, error_type, original, correction, sentence],
         );
+        let mk = mkey_of(lang, error_type, original, correction);
+        log_event(&conn, "adopt", &mk, lang, error_type, None);
+        conn.query_row(
+            "SELECT COUNT(*) FROM learning_events WHERE kind = 'adopt' AND mkey = ?1",
+            params![mk],
+            |r| r.get(0),
+        )
+        .unwrap_or(1)
     }
 
     /// 错题本列表：同类型 + 同原文 + 同修正聚合为一条，按最近一次出现倒序；
@@ -535,6 +611,30 @@ impl SqliteSessionStore {
             &format!("{session_id}|{mistake_id}"),
             prev_full.as_ref(),
         );
+        // D1 学习事件流水：复习评分挂 mkey（跨会话统计口径与错题本一致）
+        let meta = conn
+            .query_row(
+                &format!("SELECT lang, error_type, {MKEY_SQL} FROM mistakes WHERE id = ?1"),
+                params![mistake_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .ok();
+        if let Some((lang, error_type, mk)) = meta {
+            log_event(
+                &conn,
+                "review",
+                &mk,
+                &lang,
+                &error_type,
+                Some(rating.as_str()),
+            );
+        }
 
         conn.execute(
             "INSERT INTO mistake_mastery
@@ -647,13 +747,19 @@ impl SqliteSessionStore {
     /// 记忆状态挂在错题键 mkey 上（跨会话共享），FSRS 调度与会话级同一核心
     pub fn record_global_review(&self, gid: i64, rating: ReviewRating) -> bool {
         let conn = self.conn.lock().unwrap();
-        // gid → 全局错题键（组代表行）
+        // gid → 全局错题键（组代表行）+ 语言/类型（学习事件用）
         let sql = format!(
-            "SELECT {MKEY_SQL} FROM mistakes
+            "SELECT MIN(lang), MIN(error_type), {MKEY_SQL} FROM mistakes
              GROUP BY lang, error_type, original, correction HAVING MIN(id) = ?"
         );
-        let mkey: String = match conn.query_row(&sql, params![gid], |r| r.get(0)) {
-            Ok(k) => k,
+        let (lang, error_type, mkey) = match conn.query_row(&sql, params![gid], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) {
+            Ok(t) => t,
             Err(_) => return false,
         };
         let prev_full: Option<MasteryFullRow> = conn
@@ -680,6 +786,15 @@ impl SqliteSessionStore {
         };
         let next_modifier = format!("+{} days", out.interval_days);
         write_undo(&conn, "global", &mkey, prev_full.as_ref());
+        // D1 学习事件流水：复习评分（全局错题本路径）
+        log_event(
+            &conn,
+            "review",
+            &mkey,
+            &lang,
+            &error_type,
+            Some(rating.as_str()),
+        );
 
         conn.execute(
             "INSERT INTO global_mastery
@@ -783,6 +898,86 @@ impl SqliteSessionStore {
         res.map(|_| true).unwrap_or(false)
     }
 
+    /// 学习统计（D1）：近 `days` 天逐日 adopt/review 计数 + 窗口内评分分布 + 全时累计。
+    /// 事件流水不随删除会话清除——学习历史属于全局记忆
+    pub fn learning_stats(&self, days: i64) -> LearningStats {
+        let days = days.clamp(7, 180);
+        let conn = self.conn.lock().unwrap();
+        let window = format!("-{days} days");
+        // 逐日计数
+        let mut day_map: std::collections::BTreeMap<String, (i64, i64)> =
+            std::collections::BTreeMap::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT date(created_at), kind, COUNT(*) FROM learning_events
+             WHERE created_at >= datetime('now', ?1) GROUP BY date(created_at), kind",
+        ) && let Ok(rows) = stmt.query_map(params![window], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let e = day_map.entry(row.0).or_insert((0, 0));
+                match row.1.as_str() {
+                    "adopt" => e.0 += row.2,
+                    "review" => e.1 += row.2,
+                    _ => {}
+                }
+            }
+        }
+        // 缺失日补 0（旧 → 新）
+        let today = chrono::Utc::now().date_naive();
+        let day_stats = (0..days)
+            .rev()
+            .map(|back| {
+                let d = (today - chrono::TimeDelta::days(back))
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let (adopted, reviewed) = day_map.get(&d).copied().unwrap_or((0, 0));
+                DayStat {
+                    date: d,
+                    adopted,
+                    reviewed,
+                }
+            })
+            .collect();
+        // 窗口内评分分布
+        let mut rating_counts = Vec::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT rating, COUNT(*) FROM learning_events
+             WHERE kind = 'review' AND rating IS NOT NULL AND created_at >= datetime('now', ?1)
+             GROUP BY rating",
+        ) && let Ok(rows) = stmt.query_map(params![window], |r| {
+            Ok(RatingCount {
+                rating: r.get(0)?,
+                count: r.get(1)?,
+            })
+        }) {
+            rating_counts = rows.flatten().collect();
+        }
+        let total_adopted = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learning_events WHERE kind = 'adopt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let total_reviewed = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learning_events WHERE kind = 'review'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        LearningStats {
+            days: day_stats,
+            rating_counts,
+            total_adopted,
+            total_reviewed,
+        }
+    }
+
     fn set_status(&self, session_id: &str, status: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -842,6 +1037,7 @@ impl SqliteSessionStore {
         let _ = conn.execute("DELETE FROM mistakes", []);
         let _ = conn.execute("DELETE FROM mistake_mastery", []);
         let _ = conn.execute("DELETE FROM review_undo", []);
+        let _ = conn.execute("DELETE FROM learning_events", []);
         let _ = conn.execute("DELETE FROM global_mastery", []);
         let _ = conn.execute("DELETE FROM sessions", []);
         n.max(0) as usize
@@ -1361,6 +1557,60 @@ mod tests {
             store.list_mistakes("s_u")[0].mastery_status.as_deref(),
             Some("new")
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn learning_events_stats_and_adopt_count() {
+        // D1/D2：adopt/review 事件流水 + 逐日统计 + 采纳计数反馈
+        let (store, path) = tmp_store("stats");
+        // 同一错题跨会话采纳两次 → adopt_count 递增（D2「第 N 次采纳」）
+        assert_eq!(
+            store.add_mistake("s_st", "zh", "spelling", "错吴", Some("错误"), "句一错吴。"),
+            1
+        );
+        assert_eq!(
+            store.add_mistake(
+                "s_st2",
+                "zh",
+                "spelling",
+                "错吴",
+                Some("错误"),
+                "句二错吴。"
+            ),
+            2
+        );
+        store.add_mistake("s_st", "zh", "grammar", "的得", Some("的"), "我的得。");
+        let gid = store.list_global_mistakes()[0].id;
+        assert!(store.record_global_review(gid, ReviewRating::Good));
+        // 会话级复习也记事件
+        let mid = store.list_mistakes("s_st")[0].id;
+        assert!(store.record_review("s_st", mid, ReviewRating::Again));
+
+        let st = store.learning_stats(30);
+        assert_eq!(st.days.len(), 30, "缺失日补 0，序列长度 = 窗口");
+        let today = st.days.last().unwrap();
+        assert_eq!(today.adopted, 3, "今日采纳 3 次");
+        assert_eq!(today.reviewed, 2, "今日复习 2 次");
+        assert_eq!(st.total_adopted, 3);
+        assert_eq!(st.total_reviewed, 2);
+        let rc = |r: &str| {
+            st.rating_counts
+                .iter()
+                .find(|c| c.rating == r)
+                .map(|c| c.count)
+                .unwrap_or(0)
+        };
+        assert_eq!(rc("good"), 1);
+        assert_eq!(rc("again"), 1);
+
+        // 窗口下限：days < 7 钳到 7
+        assert_eq!(store.learning_stats(1).days.len(), 7);
+        // 删除会话不清除学习历史（全局记忆）；clear 才清除
+        store.remove("s_st");
+        assert_eq!(store.learning_stats(30).total_adopted, 3);
+        assert_eq!(store.clear(), 1);
+        assert_eq!(store.learning_stats(30).total_adopted, 0);
         let _ = std::fs::remove_file(&path);
     }
 }
