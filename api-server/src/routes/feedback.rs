@@ -55,6 +55,9 @@ pub struct FeedbackRequest {
     /// adopt 时与 `src_text` 一起切句沉淀 `adopted.jsonl`）
     #[serde(default)]
     pub corrected_text: Option<String>,
+    /// 所属检测会话（可选；adopt 时同步写入该会话错题本——Phase 2 学习扩展）
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// 统一反馈响应
@@ -97,6 +100,7 @@ pub async fn feedback(
         "adopt" => {
             let resp = adopt(&state, &req).await?;
             collect_feedback_assets(&req, "adopt");
+            record_mistake(&state, &req);
             Ok(Json(resp))
         }
         "reject" => {
@@ -392,6 +396,26 @@ fn confirm_rule_adopt(
         llm_reflect_ready: state.is_llm_available(),
         agent: None,
     })
+}
+
+/// 错题本写入（非阻断）：采纳成功且带会话时，把用户确认的错误写入该会话错题本
+/// （Phase 2 学习扩展数据基础；上下文从原文按错误 span 提取句段）
+fn record_mistake(state: &AppState, req: &FeedbackRequest) {
+    let Some(sid) = req.session_id.as_deref() else {
+        return;
+    };
+    let sentence = match req.src_text.as_deref() {
+        Some(src) => shared_model::sentence_around(src, req.error.span, &req.error.original),
+        None => req.error.original.clone(),
+    };
+    state.sessions.add_mistake(
+        sid,
+        &req.lang,
+        &req.error.error_type,
+        &req.error.original,
+        req.error.correction.as_deref(),
+        &sentence,
+    );
 }
 
 /// 写入反馈日志（失败仅告警，不阻断反馈主流程）

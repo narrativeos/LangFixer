@@ -99,6 +99,60 @@ impl SessionRecord {
     }
 }
 
+/// 错题本条目（Phase 2 学习扩展：用户确认「采纳」的错误）
+///
+/// 同 `error_type` + `original` + `correction` 聚合为一条，`count` 为出现次数，
+/// `sentence` / `created_at` 取最近一次。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mistake {
+    pub id: i64,
+    pub session_id: String,
+    pub lang: String,
+    pub error_type: String,
+    pub original: String,
+    pub correction: Option<String>,
+    /// 句级上下文（从原文按错误 span 提取；无原文时回退错误片段）
+    pub sentence: String,
+    /// 最近一次发生时间
+    pub created_at: String,
+    /// 出现次数（聚合）
+    pub count: u32,
+}
+
+/// 从原文提取包含错误 span 的句子（按句末标点粗切；切出为空时回退 `fallback`）
+///
+/// `span` 为字节偏移（与 [`crate::error::Error::span`] 一致，非字符边界时自动吸附）。
+pub fn sentence_around(src: &str, span: [usize; 2], fallback: &str) -> String {
+    const TERMS: [char; 7] = ['。', '！', '？', '；', '\n', '.', '?'];
+    let s = span[0].min(src.len());
+    let mut e = span[1].min(src.len());
+    while e < src.len() && !src.is_char_boundary(e) {
+        e += 1;
+    }
+    let mut ls = 0usize;
+    for (i, ch) in src.char_indices() {
+        if i >= s {
+            break;
+        }
+        if TERMS.contains(&ch) {
+            ls = i + ch.len_utf8();
+        }
+    }
+    let mut le = src.len();
+    for (i, ch) in src[e..].char_indices() {
+        if TERMS.contains(&ch) {
+            le = e + i + ch.len_utf8();
+            break;
+        }
+    }
+    let sent = src[ls..le].trim();
+    if sent.is_empty() {
+        fallback.to_string()
+    } else {
+        sent.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +174,23 @@ mod tests {
         let meta = SessionMeta::new("s_1", "zh");
         assert_eq!(meta.native_language, None);
         assert_eq!(meta.cefr, None);
+    }
+
+    #[test]
+    fn sentence_around_zh_and_en() {
+        let src = "第一句没有问题。这里有个错吴需要修正。后面也正常。";
+        // 「错吴」的字节偏移
+        let start = src.find("错吴").unwrap();
+        let end = start + "错吴".len();
+        let sent = sentence_around(src, [start, end], "错吴");
+        assert_eq!(sent, "这里有个错吴需要修正。");
+
+        let en = "This is fine. This on is wrong. End.";
+        let start = en.find("on").unwrap();
+        let sent = sentence_around(en, [start, start + 2], "on");
+        assert_eq!(sent, "This on is wrong.");
+
+        // 空原文 → 回退 fallback
+        assert_eq!(sentence_around("", [0, 0], "frag"), "frag");
     }
 }

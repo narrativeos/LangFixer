@@ -38,7 +38,18 @@ impl SqliteSessionStore {
                 error_type TEXT NOT NULL,
                 occurred_at TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history(session_id);",
+            CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history(session_id);
+            CREATE TABLE IF NOT EXISTS mistakes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                lang TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                original TEXT NOT NULL,
+                correction TEXT,
+                sentence TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_mistakes_session ON mistakes(session_id);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -161,6 +172,60 @@ impl SqliteSessionStore {
         self.get_or_create(session_id, lang)
     }
 
+    /// 记一条错题（用户采纳确认的错误；Phase 2 学习扩展数据基础）
+    pub fn add_mistake(
+        &self,
+        session_id: &str,
+        lang: &str,
+        error_type: &str,
+        original: &str,
+        correction: Option<&str>,
+        sentence: &str,
+    ) {
+        self.ensure_row(session_id, lang);
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO mistakes (session_id, lang, error_type, original, correction, sentence)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![session_id, lang, error_type, original, correction, sentence],
+        );
+    }
+
+    /// 错题本列表：同类型 + 同原文 + 同修正聚合为一条，按最近一次出现倒序
+    pub fn list_mistakes(&self, session_id: &str) -> Vec<crate::session::Mistake> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT g.min_id, g.lang, g.error_type, g.original, g.correction,
+                    latest.sentence, latest.created_at, g.cnt
+             FROM (
+                 SELECT MIN(id) AS min_id, MAX(lang) AS lang, error_type, original, correction,
+                        COUNT(*) AS cnt, MAX(id) AS last_id
+                 FROM mistakes WHERE session_id = ?
+                 GROUP BY error_type, original, correction
+             ) g
+             JOIN mistakes latest ON latest.id = g.last_id
+             ORDER BY g.last_id DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![session_id], |r| {
+            Ok(crate::session::Mistake {
+                id: r.get(0)?,
+                session_id: session_id.to_string(),
+                lang: r.get(1)?,
+                error_type: r.get(2)?,
+                original: r.get(3)?,
+                correction: r.get(4)?,
+                sentence: r.get(5)?,
+                created_at: r.get(6)?,
+                count: r.get::<_, i64>(7)?.max(0) as u32,
+            })
+        })
+        .map(|rows| rows.filter_map(|row| row.ok()).collect())
+        .unwrap_or_default()
+    }
+
     fn set_status(&self, session_id: &str, status: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -195,6 +260,10 @@ impl SqliteSessionStore {
             "DELETE FROM session_history WHERE session_id = ?",
             params![session_id],
         );
+        let _ = conn.execute(
+            "DELETE FROM mistakes WHERE session_id = ?",
+            params![session_id],
+        );
         ok
     }
 
@@ -205,6 +274,7 @@ impl SqliteSessionStore {
             .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
             .unwrap_or(0);
         let _ = conn.execute("DELETE FROM session_history", []);
+        let _ = conn.execute("DELETE FROM mistakes", []);
         let _ = conn.execute("DELETE FROM sessions", []);
         n.max(0) as usize
     }
@@ -253,6 +323,37 @@ mod tests {
         let _ = store.get_or_create("s_c", "en");
         assert_eq!(store.clear(), 1);
         assert!(store.get("s_c").is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mistakes_aggregate_and_cascade() {
+        let (store, path) = tmp_store("mistakes");
+        store.add_mistake(
+            "s_m",
+            "zh",
+            "spelling",
+            "错吴",
+            Some("错误"),
+            "这里有个错吴。",
+        );
+        store.add_mistake(
+            "s_m",
+            "zh",
+            "spelling",
+            "错吴",
+            Some("错误"),
+            "又一处错吴。",
+        );
+        store.add_mistake("s_m", "zh", "grammar", "的的", Some("的"), "测试的的句子。");
+        let list = store.list_mistakes("s_m");
+        assert_eq!(list.len(), 2, "同类型同原文同修正应聚合");
+        let dup = list.iter().find(|m| m.original == "错吴").unwrap();
+        assert_eq!(dup.count, 2);
+        assert_eq!(dup.sentence, "又一处错吴。", "上下文取最近一次");
+        // 删除会话级联清错题
+        assert!(store.remove("s_m"));
+        assert!(store.list_mistakes("s_m").is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }

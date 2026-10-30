@@ -52,6 +52,15 @@ pub async fn get(
     Ok(Json(record))
 }
 
+/// GET /gec/sessions/:id/mistakes — 错题本列表（Phase 2 学习扩展；
+/// 用户采纳确认的错误，同类型 + 同原文 + 同修正聚合，按最近出现倒序）
+pub async fn mistakes(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<Vec<shared_model::Mistake>> {
+    Json(state.sessions.list_mistakes(&id))
+}
+
 /// PUT /gec/sessions/:id/archive — 归档
 pub async fn archive(
     State(state): State<Arc<AppState>>,

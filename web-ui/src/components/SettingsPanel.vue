@@ -84,10 +84,7 @@ const profileError = ref('')
 
 /** 画像挂在会话上：无会话 ID 时本地生成（PUT profile / get_session 两端都会自动建档） */
 function ensureSessionId(): string {
-  if (store.sessionId) return store.sessionId
-  const id = `s_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-  store.sessionId = id
-  return id
+  return store.ensureSessionId()
 }
 
 async function loadProfile() {

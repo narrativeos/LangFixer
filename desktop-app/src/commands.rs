@@ -4817,6 +4817,7 @@ pub async fn error_feedback(
     action: String,
     reason: Option<String>,
     ctx: Option<serde_json::Value>,
+    session_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let res = error_feedback_body(
         core.clone(),
@@ -4826,9 +4827,37 @@ pub async fn error_feedback(
         reason.clone(),
     )
     .await?;
+    // 错题本（非阻断）：采纳成功且带会话时写入该会话错题本（Phase 2 学习扩展）
+    if action == "adopt" {
+        if let Some(sid) = session_id.as_deref() {
+            let sentence = ctx
+                .as_ref()
+                .and_then(|v| v.get("src_text"))
+                .and_then(|v| v.as_str())
+                .map(|src| shared_model::sentence_around(src, error.span, &error.original))
+                .unwrap_or_else(|| error.original.clone());
+            core.sessions.add_mistake(
+                sid,
+                &lang,
+                &error.error_type,
+                &error.original,
+                error.correction.as_deref(),
+                &sentence,
+            );
+        }
+    }
     // 资产沉淀（非阻断）：adopt → adopted.jsonl 句对；reject → rejected.jsonl 负偏好
     collect_feedback_assets_cmd(core.inner(), &lang, &error, &action, &reason, ctx.as_ref());
     Ok(res)
+}
+
+/// 错题本列表（桌面端；Phase 2 学习扩展：用户采纳确认的错误，按聚合 + 最近出现倒序）
+#[tauri::command]
+pub fn session_mistakes(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+) -> Result<Vec<shared_model::Mistake>, String> {
+    Ok(core.sessions.list_mistakes(&session_id))
 }
 
 async fn error_feedback_body(

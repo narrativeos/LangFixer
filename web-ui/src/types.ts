@@ -586,6 +586,22 @@ export interface SessionRecord {
   error_type_counts: Record<string, number>
 }
 
+/** 错题本条目（Phase 2 学习扩展：用户采纳确认的错误；同型同原文同修正聚合） */
+export interface Mistake {
+  id: number
+  session_id: string
+  lang: string
+  error_type: string
+  original: string
+  correction: string | null
+  /** 句级上下文（服务端从原文按错误 span 提取） */
+  sentence: string
+  /** 最近一次发生时间 */
+  created_at: string
+  /** 出现次数（聚合） */
+  count: number
+}
+
 /** 会话习惯性错误分析结果 */
 export interface SessionAnalysis {
   session_id: string

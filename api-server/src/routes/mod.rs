@@ -308,6 +308,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::put(session::update_profile),
         )
         .route(
+            "/gec/sessions/:id/mistakes",
+            axum::routing::get(session::mistakes),
+        )
+        .route(
             "/gec/sessions/:id/analysis",
             axum::routing::get(session::analysis),
         )

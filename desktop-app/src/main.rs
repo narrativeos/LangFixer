@@ -70,6 +70,7 @@ fn main() {
             commands::test_knowledge_recall,
             commands::get_session,
             commands::update_session_profile,
+            commands::session_mistakes,
             commands::l3_collect,
             commands::l3_status,
             commands::l3_retrain,

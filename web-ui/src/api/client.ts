@@ -49,6 +49,7 @@ import type {
   SessionAnalysis,
   SessionMeta,
   SessionRecord,
+  Mistake,
   TableVersion,
   ToggleResponse,
   UpdateSettingsBody,
@@ -813,6 +814,14 @@ export const api = {
     return http.put<SessionRecord>(`/gec/sessions/${id}/profile`, body).then((r) => r.data)
   },
 
+  /** GET /gec/sessions/:id/mistakes — 错题本列表（Phase 2 学习扩展）
+   *  桌面端：invoke('session_mistakes')（同构） */
+  listSessionMistakes(id: string): Promise<Mistake[]> {
+    if (inTauri)
+      return tauri!.invoke('session_mistakes', { sessionId: id }).then((r) => r as Mistake[])
+    return http.get<Mistake[]>(`/gec/sessions/${id}/mistakes`).then((r) => r.data)
+  },
+
   /** POST /gec/ops/unlock — 「平台运营」角色解锁验证（web 形态；配置了
    *  GEC_TABLES_UPDATE_TOKEN 时需匹配 token，否则 401）。桌面端本地单用户直接放行 */
   opsUnlock(token?: string): Promise<{ unlocked: boolean }> {
@@ -1040,6 +1049,7 @@ export const api = {
     action: 'adopt' | 'reject',
     reason?: string,
     ctx?: { src_text: string; corrected_text: string },
+    sessionId?: string,
   ): Promise<FeedbackResponse> {
     if (inTauri)
       return tauri!
@@ -1049,6 +1059,7 @@ export const api = {
           action,
           reason: reason ?? null,
           ctx: ctx ?? null,
+          sessionId: sessionId ?? null,
         })
         .then((r) => r as FeedbackResponse)
     return http
@@ -1057,6 +1068,7 @@ export const api = {
         error,
         action,
         reason: reason ?? null,
+        session_id: sessionId ?? null,
         ...(ctx ?? {}),
       })
       .then((r) => r.data)

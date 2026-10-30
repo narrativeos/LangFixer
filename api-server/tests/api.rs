@@ -707,6 +707,59 @@ async fn session_profile_survives_restart() {
 }
 
 #[tokio::test]
+async fn adopt_records_mistake_in_session_notebook() {
+    // Phase 2 错题本：采纳（adopt）带 session_id 的规则层错误 → 写入该会话错题本
+    let base = start_server().await;
+    let c = client();
+    let src = "第一句正常。他昨天去了去了商店。后面正常。";
+    let start = src.find("去了去了").unwrap();
+    let body = serde_json::json!({
+        "lang": "zh",
+        "session_id": "mistakes_s1",
+        "src_text": src,
+        "error": {
+            "lang": "zh",
+            "error_type": "grammar",
+            "confidence": 0.8,
+            "span": [start, start + "去了去了".len()],
+            "original": "去了去了",
+            "correction": "去了",
+            "message": "动词重复",
+            "rule_id": "ZH_MISSING_SUBJECT",
+            "source": "rule",
+        },
+        "action": "adopt",
+    });
+    let resp = c
+        .post(format!("{base}/gec/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let list: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/mistakes_s1/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 1, "采纳的错误应进入错题本");
+    assert_eq!(list[0]["original"], "去了去了");
+    assert_eq!(list[0]["count"], 1);
+    assert!(
+        list[0]["sentence"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("去了去了"),
+        "错题本应带句级上下文: {}",
+        list[0]["sentence"]
+    );
+}
+
+#[tokio::test]
 async fn ops_unlock_requires_token_when_configured() {
     // 「平台运营」角色解锁端点：配置 token 时必须携带匹配头（与决策表热更新同语义）
     let base = {

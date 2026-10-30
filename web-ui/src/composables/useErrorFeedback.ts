@@ -114,6 +114,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
         'adopt',
         reasonInput[index] || undefined,
         adoptCtx(index),
+        store.ensureSessionId(),
       )
       // 成功返回 → 该错误的反馈动作已落定，采纳/放弃按钮均禁用
       feedbackDone[index] = true

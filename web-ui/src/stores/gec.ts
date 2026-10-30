@@ -292,6 +292,14 @@ export const useGecStore = defineStore('gec', {
         this.finishDetect()
       }
     },
+    /** 画像 / 错题本挂在会话上：无会话 ID 时本地生成
+     *  （PUT profile / GET session / POST feedback 各端点都会自动建档） */
+    ensureSessionId(): string {
+      if (!this.sessionId) {
+        this.sessionId = `s_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+      }
+      return this.sessionId
+    },
     async analyze(sessionId?: string) {
       this.beginDetect('analyze')
       try {
