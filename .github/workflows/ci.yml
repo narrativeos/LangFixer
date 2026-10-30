@@ -31,6 +31,8 @@ jobs:
         run: cargo clippy --workspace --all-targets
       - name: 测试
         run: cargo test --workspace
+      - name: 测试（feature-gated：SQLite 会话存储）
+        run: cargo test -p shared-model --features sqlite
 
   web-ui:
     name: Web UI（typecheck / test / build）

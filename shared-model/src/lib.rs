@@ -9,6 +9,8 @@ pub mod detect_params;
 pub mod error;
 pub mod knowledge;
 pub mod session;
+#[cfg(feature = "sqlite")]
+pub mod session_store;
 pub mod table;
 
 pub use attribution::*;

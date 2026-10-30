@@ -338,7 +338,8 @@ cd web-ui && npm run typecheck && npm run build
    `GEC_DEC_ABSTAIN_THRESHOLD`）放行，服务不可用自动回退纯规则。Python 侧 `decision-model/`
    提供 FastAPI 服务（`VEGAML_MOCK=1` 离线 mock）+ 微调工作流（extract/train/eval，
    复用 `datasets/` 的 JFLEG / MuCGEC gold 数据）。
-4. **持久化**：`StudentStore` 从内存实现迁移到 SQLite（api-server 与桌面端共用）。
+4. **持久化**（✅ 已就位）：会话与学习者画像（母语 / 自评 CEFR）已迁移到 SQLite（`SqliteSessionStore`，
+   api-server 与桌面端共用同一 db 文件），与检测历史 / 自定义词 / 词表 / 决策表版本历史同库。
 5. **游戏化层**（后续加强）：区域进阶、考试副本、成长系统，依赖 LLM 出题 + CEFR 难度分级 +
    用户进度持久化就位后启动。
 6. **ChineseErrorCorrector 吸收**（规划中）：CEC（ACL 2026）六项设计的落地方案

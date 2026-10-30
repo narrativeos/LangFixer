@@ -2,9 +2,10 @@
 //!
 //! 一次检测会话 = 一份卷子 / 一份书稿的完整检测周期。
 //! 所有错误归因、习惯性分析、风格统计都围绕 Session 进行。
+//!
+//! 存储实现见 [`crate::session_store::SqliteSessionStore`]（api-server / desktop-app 共用）。
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -98,139 +99,26 @@ impl SessionRecord {
     }
 }
 
-/// 会话存储（内存实现；后续可替换为持久化）
-#[derive(Debug, Default)]
-pub struct SessionStore {
-    records: RwLock<HashMap<String, SessionRecord>>,
-}
-
-impl SessionStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get(&self, session_id: &str) -> Option<SessionRecord> {
-        self.records.read().unwrap().get(session_id).cloned()
-    }
-
-    /// 获取或创建会话
-    pub fn get_or_create(&self, session_id: &str, lang: &str) -> SessionRecord {
-        let mut map = self.records.write().unwrap();
-        map.entry(session_id.to_string())
-            .or_insert_with(|| SessionRecord::new(SessionMeta::new(session_id, lang)))
-            .clone()
-    }
-
-    /// 记录一次犯错，返回最新档案
-    pub fn record_error(
-        &self,
-        session_id: &str,
-        lang: &str,
-        error_type: &str,
-        occurred_at: &str,
-    ) -> SessionRecord {
-        let mut map = self.records.write().unwrap();
-        let record = map
-            .entry(session_id.to_string())
-            .or_insert_with(|| SessionRecord::new(SessionMeta::new(session_id, lang)));
-        record.record(lang, error_type, occurred_at);
-        record.clone()
-    }
-
-    /// 更新学习者画像（母语 / 自评 CEFR）；None 字段保持原值（部分更新），
-    /// 返回更新后的档案（会话不存在时按 lang 创建）
-    pub fn set_profile(
-        &self,
-        session_id: &str,
-        lang: &str,
-        native_language: Option<String>,
-        cefr: Option<String>,
-    ) -> SessionRecord {
-        let mut map = self.records.write().unwrap();
-        let record = map
-            .entry(session_id.to_string())
-            .or_insert_with(|| SessionRecord::new(SessionMeta::new(session_id, lang)));
-        if let Some(n) = native_language.filter(|s| !s.trim().is_empty()) {
-            record.meta.native_language = Some(n);
-        }
-        if let Some(c) = cefr.filter(|s| !s.trim().is_empty()) {
-            record.meta.cefr = Some(c);
-        }
-        record.clone()
-    }
-
-    /// 归档会话
-    pub fn archive(&self, session_id: &str) -> bool {
-        let mut map = self.records.write().unwrap();
-        if let Some(record) = map.get_mut(session_id) {
-            record.meta.status = "archived".into();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 恢复会话
-    pub fn restore(&self, session_id: &str) -> bool {
-        let mut map = self.records.write().unwrap();
-        if let Some(record) = map.get_mut(session_id) {
-            record.meta.status = "active".into();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 删除会话
-    pub fn remove(&self, session_id: &str) -> bool {
-        self.records.write().unwrap().remove(session_id).is_some()
-    }
-
-    /// 清空全部会话，返回删除数量
-    pub fn clear(&self) -> usize {
-        self.records.write().unwrap().len()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn store_records_and_counts() {
-        let store = SessionStore::new();
-        let record = store.record_error("s_alice", "zh", "spelling", "2026-10-09T00:00:00Z");
+    fn record_counts_and_novice() {
+        let mut record = SessionRecord::new(SessionMeta::new("s_alice", "zh"));
+        record.record("zh", "spelling", "2026-10-09T00:00:00Z");
         assert_eq!(record.total_errors(), 1);
         assert!(record.is_novice());
         assert_eq!(record.error_type_counts.get("spelling"), Some(&1));
-
-        let record = store.record_error("s_alice", "zh", "spelling", "2026-10-10T00:00:00Z");
+        record.record("zh", "spelling", "2026-10-10T00:00:00Z");
         assert_eq!(record.total_errors(), 2);
         assert!(!record.is_novice());
     }
 
     #[test]
-    fn archive_and_restore() {
-        let store = SessionStore::new();
-        let _ = store.get_or_create("s_1", "zh");
-        assert!(store.archive("s_1"));
-        let r = store.get("s_1").unwrap();
-        assert_eq!(r.meta.status, "archived");
-        assert!(store.restore("s_1"));
-        let r = store.get("s_1").unwrap();
-        assert_eq!(r.meta.status, "active");
-    }
-
-    #[test]
-    fn set_profile_partial_update() {
-        let store = SessionStore::new();
-        // 不存在时建档；空串视为未提供
-        let r = store.set_profile("s_p", "en", Some("中文".into()), Some("".into()));
-        assert_eq!(r.meta.native_language.as_deref(), Some("中文"));
-        assert_eq!(r.meta.cefr.as_deref(), None);
-        // 部分更新：只改 cefr，母语保持
-        let r = store.set_profile("s_p", "en", None, Some("B1".into()));
-        assert_eq!(r.meta.native_language.as_deref(), Some("中文"));
-        assert_eq!(r.meta.cefr.as_deref(), Some("B1"));
+    fn meta_profile_fields_default_none() {
+        let meta = SessionMeta::new("s_1", "zh");
+        assert_eq!(meta.native_language, None);
+        assert_eq!(meta.cefr, None);
     }
 }

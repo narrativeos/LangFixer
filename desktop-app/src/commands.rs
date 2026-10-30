@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use crate::settings::AppSettings;
 use shared_model::{
     AnalyzedError, AttributionContext, DecisionTableMeta, Error, KnowledgePoint, KnowledgeSource,
-    SessionRecord, SessionStore, derive_issue_type, error_types,
+    SessionRecord, derive_issue_type, error_types, session_store::SqliteSessionStore,
 };
 
 /// 程序版本号（crate 版本；写入检测历史，便于跨版本对比改进 / 按版本筛选训练数据）
@@ -482,7 +482,8 @@ pub struct Core {
     pub ingest_dir: PathBuf,
     /// 知识库目录（`GEC_KNOWLEDGE_DIR`；发布/热更新写回此目录，跨重启存活）
     pub knowledge_dir: PathBuf,
-    pub sessions: SessionStore,
+    /// 会话 + 学习者画像存储（SQLite 持久化：母语 / 自评 CEFR 跨重启存活，与 api-server 同构）
+    pub sessions: SqliteSessionStore,
     /// 运行时设置（设置界面可改；持久化到 `GEC_SETTINGS_FILE`，默认 `langfixer-settings.json`）
     pub settings: RwLock<AppSettings>,
     /// 设置持久化文件路径（构建时捕获，避免并行进程间环境变量互相干扰）
@@ -637,6 +638,19 @@ impl Core {
                 tracing::error!(error = %e, "检测历史存储初始化失败，将使用内存模式");
                 let tmp = std::env::temp_dir().join("langfixer_desktop_history.db");
                 DetectHistoryStore::open(&tmp).expect("无法打开临时 SQLite")
+            }
+        };
+
+        // 会话 + 学习者画像存储（SQLite，与上面共用同一个 db 文件；与 api-server 同构）
+        let sessions = match SqliteSessionStore::open(&db_path) {
+            Ok(store) => {
+                tracing::info!(?db_path, "会话存储已初始化");
+                store
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "会话存储初始化失败，将使用临时 SQLite");
+                let tmp = std::env::temp_dir().join("langfixer_desktop_sessions.db");
+                SqliteSessionStore::open(&tmp).expect("无法打开临时 SQLite")
             }
         };
 
@@ -795,7 +809,7 @@ impl Core {
             ingest,
             ingest_dir,
             knowledge_dir: kb_dir,
-            sessions: SessionStore::new(),
+            sessions,
             settings: RwLock::new(settings),
             settings_path,
             llm: RwLock::new(llm),

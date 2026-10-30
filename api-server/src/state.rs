@@ -14,7 +14,7 @@ use lexicon_store::{
     FeedbackLogStore, KnowledgeStore as LearnedKnowledgeStore, LexiconStore,
     OptimizationRoundStore, ReflectionCenterStore, TrainingCenterStore,
 };
-use shared_model::SessionStore;
+use shared_model::session_store::SqliteSessionStore;
 
 use crate::cache::LruCache;
 use crate::custom_words::CustomWordStore;
@@ -36,7 +36,8 @@ pub struct AppState {
     pub ingest_dir: std::path::PathBuf,
     /// 知识库目录（`GEC_KNOWLEDGE_DIR`；发布/热更新写回此目录，跨重启存活）
     pub knowledge_dir: std::path::PathBuf,
-    pub sessions: SessionStore,
+    /// 会话 + 学习者画像存储（SQLite 持久化：母语 / 自评 CEFR 跨重启存活）
+    pub sessions: SqliteSessionStore,
     /// 运行时设置（设置界面可改；持久化到 `GEC_SETTINGS_FILE`）
     pub settings: RwLock<AppSettings>,
     /// 设置持久化文件路径（构建时捕获，避免并行进程间环境变量互相干扰）
@@ -290,6 +291,20 @@ impl AppState {
             }
         };
 
+        // 会话 + 学习者画像存储（SQLite，与其他存储共用同一个 db 文件）：
+        // Phase 1.5 —— 母语 / 自评 CEFR 与犯错流水跨重启存活
+        let sessions = match SqliteSessionStore::open(&db_path) {
+            Ok(store) => {
+                tracing::info!("会话存储已初始化: {:?}", db_path);
+                store
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "会话存储初始化失败，将使用临时 SQLite");
+                let tmp = std::env::temp_dir().join("langfixer_sessions.db");
+                SqliteSessionStore::open(&tmp).expect("无法打开临时 SQLite")
+            }
+        };
+
         // 规则词表存储（SQLite，与其他存储共用同一个 db 文件）：
         // 1. 打开库并从词表目录播种（已存在的规则保留运行时 enabled/source 状态）
         // 2. 一次性迁移旧版 JSON 开关状态（GEC_RULE_STATE_FILE），迁移后归档为 .migrated
@@ -375,7 +390,7 @@ impl AppState {
             ingest_dir,
             knowledge_dir: kb_dir,
             tables_dir: RwLock::new(tables_dir.clone()),
-            sessions: SessionStore::new(),
+            sessions,
             settings: RwLock::new(settings),
             media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             settings_path,

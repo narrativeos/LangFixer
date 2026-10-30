@@ -15,7 +15,7 @@ name = "media-report"
 path = "src/bin/media_report.rs"
 
 [dependencies]
-shared-model = { workspace = true }
+shared-model = { workspace = true, features = ["sqlite"] }
 gec-core = { workspace = true }
 gec-zh = { workspace = true }
 gec-en = { workspace = true }

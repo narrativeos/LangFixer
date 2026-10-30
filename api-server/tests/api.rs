@@ -664,6 +664,49 @@ async fn session_profile_injected_into_explain_prompt() {
 }
 
 #[tokio::test]
+async fn session_profile_survives_restart() {
+    // Phase 1.5 验收：画像持久化到 SQLite——「重启」（共享同一 db 文件的第二个 server 实例）后读回
+    let db = std::env::temp_dir().join(format!(
+        "langfixer_profile_{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let _guard = env_guard();
+    let base1 = build_server_locked(Some(&db), Some(&lexicons_abs())).await;
+    let c = client();
+    let body = serde_json::json!({
+        "lang": "zh",
+        "native_language": "nativelang-PERSIST",
+        "cefr": "B2",
+    });
+    let status = c
+        .put(format!("{base1}/gec/sessions/persist1/profile"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::OK);
+
+    // 第二个实例（模拟进程重启）：同一 db 文件，画像应还在
+    let base2 = build_server_locked(Some(&db), Some(&lexicons_abs())).await;
+    let got: SessionRecord = c
+        .get(format!("{base2}/gec/sessions/persist1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        got.meta.native_language.as_deref(),
+        Some("nativelang-PERSIST"),
+        "重启后应读回画像母语"
+    );
+    assert_eq!(got.meta.cefr.as_deref(), Some("B2"));
+    let _ = std::fs::remove_file(&db);
+}
+
+#[tokio::test]
 async fn ops_unlock_requires_token_when_configured() {
     // 「平台运营」角色解锁端点：配置 token 时必须携带匹配头（与决策表热更新同语义）
     let base = {
