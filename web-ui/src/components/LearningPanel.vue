@@ -127,9 +127,13 @@ function masteryTag(m: Mistake): { label: string; type: 'info' | 'warning' | 'su
     case 'mastered':
       return { label: '已掌握', type: 'success' }
     case 'reviewing':
-      return { label: m.next_review_at ? `复习中 · ${m.next_review_at.slice(0, 10)}` : '复习中', type: 'warning' }
+      return {
+        label: m.next_review_at ? `复习中 · 下次 ${m.next_review_at.slice(5, 10)}` : '复习中',
+        type: 'warning',
+      }
     default:
-      return { label: '待复习', type: 'info' }
+      // 「没练过」而非「待复习」：与错题本「待复习」页签（今日到期）区分，一个概念一个名字
+      return { label: '没练过', type: 'info' }
   }
 }
 
@@ -228,14 +232,14 @@ onMounted(load)
   <el-card shadow="never" class="mistake-card">
     <template #header>
       <div class="card-head">
-        <span class="card-title">错题本</span>
+        <span class="card-title">错题本 · 跨文稿</span>
         <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
       </div>
     </template>
 
     <p class="intro">
       你在「检测」中<b>确认并采纳</b>的纠错会自动沉淀到这里，<b>跨会话</b>按错误类型聚合——
-      换文稿、删会话都不丢；复习进度（FSRS 记忆状态）同样跨会话共享。
+      换文稿、删会话都不丢；复习进度（记忆状态）同样跨会话共享。
     </p>
 
     <el-alert v-if="errorMsg" :title="`错题本加载失败：${errorMsg}`" type="warning" :closable="false" class="err" />
@@ -291,7 +295,7 @@ onMounted(load)
     <div v-if="groups.length" class="summary">
       共 {{ mistakes.length }} 条错题 · 待复习 {{ queue.length }} · 已掌握 {{ masteredCount }}
       <span v-if="profile?.basis === 'confirmed'" class="basis">
-        · 画像基于确认错误（误报与未采纳建议不计入）
+        · 只统计你确认过的错误
       </span>
     </div>
 
@@ -328,7 +332,13 @@ onMounted(load)
         <div class="group-head" @click="toggleGroup(g.type)">
           <span class="group-caret">{{ collapsed.has(g.type) ? '▸' : '▾' }}</span>
           <span class="group-label">{{ g.label }}</span>
-          <el-tag v-if="g.habitual" size="small" type="danger" effect="plain">习惯性</el-tag>
+          <el-tag
+            v-if="g.habitual"
+            size="small"
+            type="danger"
+            effect="plain"
+            title="在你确认过的错误里，这类占比最高（跨文稿统计）"
+          >习惯性</el-tag>
           <el-tag size="small" type="info" round>{{ g.total }} 次</el-tag>
         </div>
         <template v-if="!collapsed.has(g.type)">
