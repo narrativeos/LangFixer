@@ -29,12 +29,14 @@ const current = computed(() => queue.value[0] ?? null)
 const revealed = ref(false)
 const submitting = ref(false)
 
-/** 挖空句：把错误片段替换为下划线（大小写不敏感一次替换） */
+/** 挖空句：把错误片段替换为下划线（大小写不敏感一次替换）。
+ *  回退语义（防泄露答案）：original 不在句中时**不展示原句**——
+ *  句面可能直接包含答案，复习有效性优先，返回空串由模板走提示文案 */
 const clozeSentence = computed(() => {
   const m = current.value
   if (!m) return ''
-  if (!m.original || !m.sentence.includes(m.original)) return m.sentence
-  return m.sentence.replace(m.original, '＿＿＿')
+  if (m.original && m.sentence.includes(m.original)) return m.sentence.replace(m.original, '＿＿＿')
+  return ''
 })
 
 const masteredCount = computed(
@@ -106,6 +108,8 @@ async function submitReview(passed: boolean) {
     await api.reviewGlobalMistake(m.id, passed)
     queue.value = queue.value.filter((x) => x.id !== m.id)
     revealed.value = false
+    // 导航徽章保鲜（非阻断）
+    void store.refreshReviewDue()
     // 列表掌握度同步刷新（非阻断）
     try {
       mistakes.value = await api.listGlobalMistakes()
@@ -153,11 +157,16 @@ onMounted(load)
       </div>
       <div class="review-card">
         <div class="review-type">{{ errorTypeLabel(current.error_type) }}</div>
-        <div class="sentence">{{ clozeSentence }}</div>
+        <div class="sentence">
+          {{ clozeSentence || '（该错题没有可挖空的上下文——请先回忆，再看下方改错）' }}
+        </div>
         <div v-if="revealed" class="fix">
           <span class="orig">{{ current.original }}</span>
           <span v-if="current.correction" class="arrow">→</span>
           <span v-if="current.correction" class="corr">{{ current.correction }}</span>
+        </div>
+        <div v-if="revealed && !clozeSentence && current.sentence" class="review-context">
+          原句：{{ current.sentence }}
         </div>
         <div class="review-actions">
           <template v-if="!revealed">
@@ -232,6 +241,7 @@ onMounted(load)
 .review-card { border: 1px solid var(--el-color-primary-light-5); border-radius: 8px; padding: 12px 14px; background: var(--el-color-primary-light-9); }
 .review-type { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px; }
 .review-actions { margin-top: 10px; display: flex; gap: 8px; }
+.review-context { margin-top: 6px; color: var(--el-text-color-secondary); font-size: 13px; }
 .tip { margin: 8px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
 .group { margin-bottom: 16px; }
 .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }

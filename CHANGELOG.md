@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **交互切片 A（P0，见 `docs/UX_REVIEW.md`）**：导航「练习与复习」显示今日到期复习徽章；采纳成功提示补「已进入错题本」（批量采纳汇总一次，不再逐条弹）；复习队列改按**到期最久优先**（新卡其次，错题本列表保持最近出现浏览序）；复习卡挖空修复——`original` 不在句中时不再整句展示泄露答案，改为提示文案 + 揭晓后补原句
 - **全局错题本（跨会话，学习闭环功能闭合）**：错题本从会话级升级为跨会话全局视图——`GET /gec/mistakes`（按 语言+类型+原文+修正 聚合全部会话，带出现次数与 `sessions_seen` 出现会话数）、`GET /gec/review`（全局到期复习队列）、`POST /gec/mistakes/:gid/review`（FSRS 复习）、`GET /gec/analysis`（全局统一错误画像，确认错误基准）；桌面端同构命令 `global_mistakes / global_review_queue / review_global_mistake / global_analysis`。设计：错题本体单一事实源（`mistakes` 表跨会话投影，无聚合表无双写无回填迁移），FSRS 记忆状态按错题键挂 `global_mastery` 表——**跨会话共享、删除会话不丢，同一错误日后重现记忆复活**；「练习与复习」面板切到全局错题本（不再依赖当前会话，展示「来自 N 个会话」标记）；会话级错题端点保留（契约不变）
 - **评测基准与 CI 回归门（P0-1）**：新 workspace crate `tools/gec-eval`——对四份金集（CSCD+SIGHAN/EC-Med/EC-LAW、MuCGEC、NaCGEC、JFLEG）逐句跑规则层（离线确定性，无 LLM），产出 precision / recall / F0.5（GEC 惯例 β=0.5）与每千字符延迟中位数（release）；`--json` 写机器可读报告，`--check <baseline> [--tolerance]` 与基线对比、任一数据集 P/R/F0.5 下降超容差（默认 0.02）退出码 1；基线固化在 `datasets/eval_reports/baseline_rules.json`，CI 新增回归门步骤；README 新增「质量评测」小节（实测表 + 解读 + 定性定位对照）
 - **统一错误画像（Phase 3）**：学生错题本 / 间隔复习与审校侧「作者习惯性错误」合并为同一分析模型（`shared-model::profile::ErrorProfile`）——同一主体（会话）随时间沉淀的错误模式的统一投影：类型分布 / 习惯性（主导，占比 ≥ 0.3）错误 + 示例 / 高频改错对 / 掌握度摘要。`GET /gec/sessions/:id/analysis`（桌面端 `session_analysis`）改为该投影：错题本非空时以**确认错误**为基准（`basis = confirmed`，误报与未采纳建议不再污染画像），旧会话回退检测记录（`basis = detected`，向后兼容）；「练习与复习」错题类型按同一口径标记「习惯性」

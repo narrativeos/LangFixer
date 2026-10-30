@@ -58,6 +58,8 @@ onMounted(() => {
   store.loadLanguages()
   // 同步决策模型启用状态（「检查模式」标准检查的状态显示用）
   store.loadSettings()
+  // 学习闭环召回钩子：导航「练习与复习」徽章显示今日到期复习数
+  if (store.caps.learning) void store.refreshReviewDue()
   try {
     showOnboarding.value = !localStorage.getItem('langfixer.onboarded.v1')
   } catch {
@@ -78,6 +80,8 @@ function finishOnboarding() {
 // 设置页保存（或他处变更）后，L2 的状态标签 / 管线提示自动与服务端对齐
 watch(activeView, (v) => {
   if (v === 'workspace') void store.refreshEngineStatus()
+  // 进入练习页时徽章保鲜（复习完成数即时反映到导航）
+  if (v === 'learning') void store.refreshReviewDue()
   // 视图同步进地址栏（replaceState：不产生历史堆栈，刷新仍在当前视图）
   try {
     const url = new URL(window.location.href)
@@ -168,14 +172,21 @@ function toggleTheme() {
       >
         检测
       </el-button>
-      <el-button
+      <el-badge
         v-if="store.caps.learning"
-        :class="{ 'nav-active': activeView === 'learning' }"
-        :aria-current="activeView === 'learning' ? 'page' : undefined"
-        @click="activeView = 'learning'"
+        :value="store.reviewDue"
+        :hidden="store.reviewDue <= 0"
+        :max="99"
+        class="nav-badge"
       >
-        练习与复习
-      </el-button>
+        <el-button
+          :class="{ 'nav-active': activeView === 'learning' }"
+          :aria-current="activeView === 'learning' ? 'page' : undefined"
+          @click="activeView = 'learning'"
+        >
+          练习与复习
+        </el-button>
+      </el-badge>
       <el-button
         v-if="store.caps.proofreading"
         :class="{ 'nav-active': activeView === 'media' }"

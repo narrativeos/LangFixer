@@ -31,6 +31,9 @@ const MKEY_SQL: &str =
 const MKEY_SQL_LATEST: &str = "latest.lang || char(1) || latest.error_type || char(1) \
                                || latest.original || char(1) || COALESCE(latest.correction, '')";
 
+/// 记忆状态行：(review_count, last_review_at, stability, difficulty)；None = 新卡
+type MasteryRow = (i64, Option<String>, Option<f64>, Option<f64>);
+
 /// FSRS 调度结果（会话级 `mistake_mastery` 与全局 `global_mastery` 共用）
 struct FsrsOut {
     mastered: bool,
@@ -46,10 +49,7 @@ struct FsrsOut {
 /// - 旧版「连对阶梯」数据（无记忆状态）→ 经 SM-2 近似自动迁移（Anki 同款迁移路径）
 ///
 /// `prev` = (review_count, last_review_at, stability, difficulty)，None = 新卡
-fn fsrs_schedule(
-    prev: Option<(i64, Option<String>, Option<f64>, Option<f64>)>,
-    passed: bool,
-) -> Option<FsrsOut> {
+fn fsrs_schedule(prev: Option<MasteryRow>, passed: bool) -> Option<FsrsOut> {
     let fsrs = FSRS::default();
     let memory: Option<MemoryState> = match prev {
         Some((_, _, Some(s), Some(d))) => Some(MemoryState {
@@ -352,7 +352,8 @@ impl SqliteSessionStore {
              LEFT JOIN mistake_mastery mm ON mm.session_id = g.sid AND mm.mistake_id = g.min_id
              WHERE COALESCE(mm.status, 'new') != 'mastered'
                AND (mm.next_review_at IS NULL OR mm.next_review_at <= datetime('now'))
-             ORDER BY g.last_id DESC",
+             ORDER BY CASE WHEN mm.next_review_at IS NULL THEN 1 ELSE 0 END,
+                      mm.next_review_at ASC, g.last_id DESC",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -381,7 +382,7 @@ impl SqliteSessionStore {
     pub fn record_review(&self, session_id: &str, mistake_id: i64, passed: bool) -> bool {
         let conn = self.conn.lock().unwrap();
         // 当前记忆状态（无记录 = 新卡）
-        let prev: Option<(i64, Option<String>, Option<f64>, Option<f64>)> = conn
+        let prev: Option<MasteryRow> = conn
             .query_row(
                 "SELECT review_count, last_review_at, stability, difficulty
                  FROM mistake_mastery WHERE session_id = ? AND mistake_id = ?",
@@ -455,6 +456,14 @@ impl SqliteSessionStore {
         } else {
             ""
         };
+        // 复习队列按记忆科学排序：到期最久优先，新卡其次，再按最近出现；
+        // 错题本列表保持最近出现倒序（浏览语义）
+        let order = if due_only {
+            "ORDER BY CASE WHEN gm.next_review_at IS NULL THEN 1 ELSE 0 END, \
+                    gm.next_review_at ASC, g.last_id DESC"
+        } else {
+            "ORDER BY g.last_id DESC"
+        };
         let sql = format!(
             "SELECT g.min_id, latest.lang, g.error_type, g.original, g.correction,
                     latest.sentence, latest.created_at, latest.session_id, g.cnt, g.sessions,
@@ -468,7 +477,7 @@ impl SqliteSessionStore {
              JOIN mistakes latest ON latest.id = g.last_id
              LEFT JOIN global_mastery gm ON gm.mkey = {MKEY_SQL_LATEST}
              WHERE 1 = 1 {due_filter}
-             ORDER BY g.last_id DESC"
+             {order}"
         );
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
@@ -507,7 +516,7 @@ impl SqliteSessionStore {
             Ok(k) => k,
             Err(_) => return false,
         };
-        let prev: Option<(i64, Option<String>, Option<f64>, Option<f64>)> = conn
+        let prev: Option<MasteryRow> = conn
             .query_row(
                 "SELECT review_count, last_review_at, stability, difficulty
                  FROM global_mastery WHERE mkey = ?",
@@ -937,6 +946,65 @@ mod tests {
             Some("reviewing"),
             "记忆复活"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn global_queue_orders_overdue_first() {
+        // 复习队列排序（记忆科学）：到期最久优先 → 新卡其次 → 最近出现；
+        // 错题本列表保持最近出现倒序（浏览语义）
+        let (store, path) = tmp_store("global_order");
+        store.add_mistake("s_o", "zh", "spelling", "甲", Some("a"), "句甲。");
+        store.add_mistake("s_o", "zh", "spelling", "乙", Some("b"), "句乙。");
+        store.add_mistake("s_o", "zh", "spelling", "丙", Some("c"), "句丙。");
+        let by_orig = |o: &str| {
+            store
+                .list_global_mistakes()
+                .into_iter()
+                .find(|m| m.original == o)
+                .unwrap()
+                .id
+        };
+        let (gid_jia, gid_yi) = (by_orig("甲"), by_orig("乙"));
+        // 直接写记忆状态：甲逾期最久，乙逾期较近，丙新卡
+        {
+            let conn = store.conn.lock().unwrap();
+            for (gid, due) in [
+                (gid_jia, "2020-01-01 00:00:00"),
+                (gid_yi, "2024-06-01 00:00:00"),
+            ] {
+                let mkey: String = conn
+                    .query_row(
+                        &format!("SELECT {MKEY_SQL} FROM mistakes WHERE id = ?1"),
+                        params![gid],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                conn.execute(
+                    "INSERT INTO global_mastery (mkey, status, next_review_at)
+                     VALUES (?1, 'reviewing', ?2)",
+                    params![mkey, due],
+                )
+                .unwrap();
+            }
+        }
+        let queue: Vec<i64> = store
+            .list_global_review_queue()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            queue,
+            vec![gid_jia, gid_yi, by_orig("丙")],
+            "到期最久优先，新卡其次"
+        );
+        // 错题本列表仍是最近出现倒序
+        let notebook: Vec<String> = store
+            .list_global_mistakes()
+            .into_iter()
+            .map(|m| m.original)
+            .collect();
+        assert_eq!(notebook, vec!["丙", "乙", "甲"]);
         let _ = std::fs::remove_file(&path);
     }
 

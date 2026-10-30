@@ -100,7 +100,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
 
   /** 单条采纳（统一反馈端点，全部来源层）；批量采纳与单条按钮共用本函数
    *  成功 → feedbackDone 落定 + 按 via 展示对应结果卡片；失败 → 卡片内错误信息 */
-  async function adoptOne(index: number) {
+  async function adoptOne(index: number, silent = false) {
     const e = store.errors[index]
     if (!e) return
     feedbackLoading.value = index
@@ -124,14 +124,20 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       if (e.source === 'llm') collectL3Sample(index)
       feedbackVia[index] = res.via ?? ''
       feedbackMsg[index] = res.message
+      // 闭环可见：采纳即入全局错题本（toast 说明去向；批量采纳走 silent 汇总提示）；
+      // 顺带保鲜导航「练习与复习」徽章
+      const toastAdopted = () => {
+        if (!silent) ElMessage.success(`${res.message} · 已进入错题本`)
+      }
+      if (store.caps.learning) void store.refreshReviewDue()
       if (res.via === 'rule' || res.via === 'knowledge' || res.via === 'anomaly') {
         // 规则 / 知识 / anomaly 分支：与 LLM 采纳同构，复用既有卡片
         adoptResult[index] = res as unknown as AdoptResult
         if (res.via === 'rule') {
           ruleEnabled[index] = res.rule?.enabled ?? false
-          ElMessage.success(res.message)
+          toastAdopted()
         } else if (res.via === 'anomaly' && res.anomaly?.accepted) {
-          ElMessage.success(res.message)
+          toastAdopted()
         } else {
           if (store.text) {
             runRecallTest(index)
@@ -146,7 +152,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
         }
       } else {
         // 确认类（rule / knowledge 层采纳）：仅提示
-        ElMessage.success(res.message)
+        toastAdopted()
       }
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
@@ -396,7 +402,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     let fail = 0
     for (const { i } of adoptable) {
       try {
-        await adoptOne(i)
+        await adoptOne(i, true)
         if (feedbackDone[i]) ok += 1
         else fail += 1
       } catch {
@@ -407,7 +413,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     batch.scope = ''
     batch.total = 0
     batch.done = 0
-    if (fail === 0) ElMessage.success(`批量采纳完成：成功 ${ok} 条`)
+    if (fail === 0) ElMessage.success(`批量采纳完成：成功 ${ok} 条，已进入错题本`)
     else ElMessage.warning(`批量采纳完成：成功 ${ok} 条，失败 ${fail} 条（详见各卡片提示）`)
   }
 

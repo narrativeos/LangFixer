@@ -95,6 +95,8 @@ export const useGecStore = defineStore('gec', {
     /** 能力位（角色门控）：learning 学习扩展 / proofreading 编校扩展 / ops 平台运营扩展。
      *  本地偏好（localStorage 持久化），门控导航与视图；ops 的服务端防线是 token 鉴权端点 */
     caps: loadCaps() as Caps,
+    /** 全局复习队列到期数（导航「练习与复习」徽章；refreshReviewDue 保鲜） */
+    reviewDue: 0,
     /** 讲解目标语言（空 = 跟随检测语言） */
     targetLanguage: '',
     /** 分类过滤（纯前端展示过滤，作用于检测结果列表；空 = 不过滤；不再作为检测参数下发） */
@@ -364,6 +366,14 @@ export const useGecStore = defineStore('gec', {
     },
     /** 反思流程导航：请求切换到指定顶层视图（检测工作区 / 规则管理 / 设置 / 进化中心）；
      *  anchor 仅对 settings 有效：设置页滚动定位并高亮对应卡片（PipelineStatus 点击直达） */
+    /** 刷新全局复习队列到期数（导航徽章；静默失败保持原值，非阻断） */
+    async refreshReviewDue() {
+      try {
+        this.reviewDue = (await api.listGlobalReviewQueue()).length
+      } catch {
+        /* 徽章取数失败不影响主流程 */
+      }
+    },
     requestNav(view: 'workspace' | 'rules' | 'settings' | 'evolution', anchor?: string) {
       this.navView = view
       this.settingsAnchor = anchor ?? ''
