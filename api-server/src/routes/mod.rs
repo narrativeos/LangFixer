@@ -320,6 +320,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(session::review_mistake),
         )
         .route(
+            "/gec/sessions/:id/mistakes/:mid/review/undo",
+            axum::routing::post(session::undo_review_mistake),
+        )
+        .route(
             "/gec/sessions/:id/analysis",
             axum::routing::get(session::analysis),
         )
@@ -330,6 +334,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/gec/mistakes/:gid/review",
             axum::routing::post(session::review_global_mistake),
+        )
+        .route(
+            "/gec/mistakes/:gid/review/undo",
+            axum::routing::post(session::undo_global_review),
         )
         .route(
             "/gec/review",

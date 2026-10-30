@@ -4869,16 +4869,43 @@ pub fn session_review_queue(
     Ok(core.sessions.list_review_queue(&session_id))
 }
 
-/// 记录一次复习结果（桌面端；FSRS 间隔复习调度：记住 → 按记忆状态个性化递增间隔，
-/// 到期 ≥30 天已掌握；没记住 → 次日再练）
+/// 记录一次复习结果（桌面端；FSRS 四键间隔复习调度：rating = again/hard/good/easy，
+/// 兼容旧契约 passed → good/again）
 #[tauri::command]
 pub fn review_mistake(
     core: tauri::State<'_, Arc<Core>>,
     session_id: String,
     mistake_id: i64,
-    passed: bool,
+    passed: Option<bool>,
+    rating: Option<String>,
 ) -> Result<bool, String> {
-    Ok(core.sessions.record_review(&session_id, mistake_id, passed))
+    let rating = resolve_rating(rating.as_deref(), passed)?;
+    Ok(core.sessions.record_review(&session_id, mistake_id, rating))
+}
+
+/// 撤销最近一次复习（桌面端；还原复习前记忆状态，每卡仅一次）
+#[tauri::command]
+pub fn undo_review_mistake(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+    mistake_id: i64,
+) -> Result<bool, String> {
+    Ok(core.sessions.undo_review(&session_id, mistake_id))
+}
+
+/// 复习评分解析：rating 优先；无 rating 时用 passed 映射（good/again）
+fn resolve_rating(
+    rating: Option<&str>,
+    passed: Option<bool>,
+) -> Result<shared_model::session_store::ReviewRating, String> {
+    use shared_model::session_store::ReviewRating;
+    if let Some(r) = rating {
+        return ReviewRating::parse(r).ok_or_else(|| format!("无效 rating: {r}"));
+    }
+    match passed {
+        Some(p) => Ok(ReviewRating::from_passed(p)),
+        None => Err("需要 rating 或 passed".into()),
+    }
 }
 
 /// 统一错误画像（桌面端；错题本与习惯性错误分析同一投影：
@@ -4944,14 +4971,22 @@ pub fn global_review_queue(
     Ok(core.sessions.list_global_review_queue())
 }
 
-/// 记录一次全局错题复习结果（桌面端；FSRS 记忆状态挂在错题键上，跨会话共享）
+/// 记录一次全局错题复习结果（桌面端；FSRS 四键调度挂在错题键上，跨会话共享）
 #[tauri::command]
 pub fn review_global_mistake(
     core: tauri::State<'_, Arc<Core>>,
     gid: i64,
-    passed: bool,
+    passed: Option<bool>,
+    rating: Option<String>,
 ) -> Result<bool, String> {
-    Ok(core.sessions.record_global_review(gid, passed))
+    let rating = resolve_rating(rating.as_deref(), passed)?;
+    Ok(core.sessions.record_global_review(gid, rating))
+}
+
+/// 撤销全局错题最近一次复习（桌面端）
+#[tauri::command]
+pub fn undo_global_review(core: tauri::State<'_, Arc<Core>>, gid: i64) -> Result<bool, String> {
+    Ok(core.sessions.undo_global_review(gid))
 }
 
 /// 全局统一错误画像（桌面端；确认错误基准，跨会话，含掌握度摘要）

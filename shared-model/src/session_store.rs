@@ -33,6 +33,52 @@ const MKEY_SQL_LATEST: &str = "latest.lang || char(1) || latest.error_type || ch
 
 /// 记忆状态行：(review_count, last_review_at, stability, difficulty)；None = 新卡
 type MasteryRow = (i64, Option<String>, Option<f64>, Option<f64>);
+/// 记忆状态全行（撤销快照用）：(review_count, last_review_at, stability, difficulty, status, next_review_at)
+type MasteryFullRow = (
+    i64,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+    String,
+    Option<String>,
+);
+
+/// 复习评分（FSRS 四键，Anki 同款）：忘了 / 有点难 / 记住了 / 很轻松
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewRating {
+    Again,
+    Hard,
+    Good,
+    Easy,
+}
+
+impl ReviewRating {
+    /// API 字符串解析（again / hard / good / easy）
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "again" => Some(Self::Again),
+            "hard" => Some(Self::Hard),
+            "good" => Some(Self::Good),
+            "easy" => Some(Self::Easy),
+            _ => None,
+        }
+    }
+    /// 旧二键契约（记住 / 没记住）→ FSRS 四键映射
+    pub fn from_passed(passed: bool) -> Self {
+        if passed { Self::Good } else { Self::Again }
+    }
+}
+
+/// 撤销快照（review_undo 表一行）
+struct UndoSnap {
+    has_prev: i64,
+    status: Option<String>,
+    review_count: Option<i64>,
+    last_review_at: Option<String>,
+    next_review_at: Option<String>,
+    stability: Option<f64>,
+    difficulty: Option<f64>,
+}
 
 /// FSRS 调度结果（会话级 `mistake_mastery` 与全局 `global_mastery` 共用）
 struct FsrsOut {
@@ -49,7 +95,7 @@ struct FsrsOut {
 /// - 旧版「连对阶梯」数据（无记忆状态）→ 经 SM-2 近似自动迁移（Anki 同款迁移路径）
 ///
 /// `prev` = (review_count, last_review_at, stability, difficulty)，None = 新卡
-fn fsrs_schedule(prev: Option<MasteryRow>, passed: bool) -> Option<FsrsOut> {
+fn fsrs_schedule(prev: Option<MasteryRow>, rating: ReviewRating) -> Option<FsrsOut> {
     let fsrs = FSRS::default();
     let memory: Option<MemoryState> = match prev {
         Some((_, _, Some(s), Some(d))) => Some(MemoryState {
@@ -74,7 +120,12 @@ fn fsrs_schedule(prev: Option<MasteryRow>, passed: bool) -> Option<FsrsOut> {
     let states = fsrs
         .next_states(memory, DESIRED_RETENTION, days_elapsed)
         .ok()?;
-    let item = if passed { states.good } else { states.again };
+    let item = match rating {
+        ReviewRating::Again => states.again,
+        ReviewRating::Hard => states.hard,
+        ReviewRating::Good => states.good,
+        ReviewRating::Easy => states.easy,
+    };
     let interval_days = (item.interval as f64).round().clamp(1.0, MAX_INTERVAL_DAYS);
     Some(FsrsOut {
         mastered: item.interval as f64 >= MASTERED_INTERVAL_DAYS,
@@ -82,6 +133,64 @@ fn fsrs_schedule(prev: Option<MasteryRow>, passed: bool) -> Option<FsrsOut> {
         stability: item.memory.stability,
         difficulty: item.memory.difficulty,
     })
+}
+
+/// 写复习前快照（撤销用：每卡只保留最近一次；has_prev=0 表示复习前无记忆行）
+fn write_undo(conn: &Connection, scope: &str, skey: &str, prev: Option<&MasteryFullRow>) {
+    let (has_prev, status, rc, lra, nra, st, df) = match prev {
+        Some(p) => (
+            1,
+            Some(p.4.clone()),
+            Some(p.0),
+            p.1.clone(),
+            p.5.clone(),
+            p.2,
+            p.3,
+        ),
+        None => (0, None, None, None, None, None, None),
+    };
+    let _ = conn.execute(
+        "INSERT INTO review_undo
+             (scope, skey, has_prev, status, review_count, last_review_at, next_review_at, stability, difficulty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(scope, skey) DO UPDATE SET
+             has_prev = excluded.has_prev,
+             status = excluded.status,
+             review_count = excluded.review_count,
+             last_review_at = excluded.last_review_at,
+             next_review_at = excluded.next_review_at,
+             stability = excluded.stability,
+             difficulty = excluded.difficulty,
+             created_at = datetime('now')",
+        params![scope, skey, has_prev, status, rc, lra, nra, st, df],
+    );
+}
+
+/// 取出并删除撤销快照（无快照 = None）
+fn take_undo(conn: &Connection, scope: &str, skey: &str) -> Option<UndoSnap> {
+    let snap = conn
+        .query_row(
+            "SELECT has_prev, status, review_count, last_review_at, next_review_at, stability, difficulty
+             FROM review_undo WHERE scope = ?1 AND skey = ?2",
+            params![scope, skey],
+            |r| {
+                Ok(UndoSnap {
+                    has_prev: r.get(0)?,
+                    status: r.get(1)?,
+                    review_count: r.get(2)?,
+                    last_review_at: r.get(3)?,
+                    next_review_at: r.get(4)?,
+                    stability: r.get(5)?,
+                    difficulty: r.get(6)?,
+                })
+            },
+        )
+        .ok()?;
+    let _ = conn.execute(
+        "DELETE FROM review_undo WHERE scope = ?1 AND skey = ?2",
+        params![scope, skey],
+    );
+    Some(snap)
 }
 
 /// 会话存储（SQLite 持久化；`Mutex<Connection>` 与 detect_history 等存储同构）
@@ -142,6 +251,21 @@ impl SqliteSessionStore {
                 next_review_at TEXT,
                 stability REAL,
                 difficulty REAL
+            );
+            -- 复习撤销快照：每张卡只保留最近一次复习「之前」的记忆状态快照
+            -- （scope: session/global；skey: session_id|mistake_id 或 mkey）
+            CREATE TABLE IF NOT EXISTS review_undo (
+                scope TEXT NOT NULL,
+                skey TEXT NOT NULL,
+                has_prev INTEGER NOT NULL,
+                status TEXT,
+                review_count INTEGER,
+                last_review_at TEXT,
+                next_review_at TEXT,
+                stability REAL,
+                difficulty REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (scope, skey)
             );",
         )?;
         // 旧库迁移：mistake_mastery 增列 FSRS 记忆状态（stability / difficulty）；
@@ -378,23 +502,39 @@ impl SqliteSessionStore {
         .unwrap_or_default()
     }
 
-    /// 记录一次复习结果（会话级；FSRS 调度核心见 [`fsrs_schedule`]）
-    pub fn record_review(&self, session_id: &str, mistake_id: i64, passed: bool) -> bool {
+    /// 记录一次复习结果（会话级；FSRS 四键调度核心见 [`fsrs_schedule`]）
+    pub fn record_review(&self, session_id: &str, mistake_id: i64, rating: ReviewRating) -> bool {
         let conn = self.conn.lock().unwrap();
         // 当前记忆状态（无记录 = 新卡）
-        let prev: Option<MasteryRow> = conn
+        let prev_full: Option<MasteryFullRow> = conn
             .query_row(
-                "SELECT review_count, last_review_at, stability, difficulty
+                "SELECT review_count, last_review_at, stability, difficulty, status, next_review_at
                  FROM mistake_mastery WHERE session_id = ? AND mistake_id = ?",
                 params![session_id, mistake_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .ok();
+        let prev: Option<MasteryRow> = prev_full.as_ref().map(|p| (p.0, p.1.clone(), p.2, p.3));
         let review_count = prev.as_ref().map(|p| p.0).unwrap_or(0) + 1;
-        let Some(out) = fsrs_schedule(prev, passed) else {
+        let Some(out) = fsrs_schedule(prev, rating) else {
             return false;
         };
         let next_modifier = format!("+{} days", out.interval_days);
+        write_undo(
+            &conn,
+            "session",
+            &format!("{session_id}|{mistake_id}"),
+            prev_full.as_ref(),
+        );
 
         conn.execute(
             "INSERT INTO mistake_mastery
@@ -505,7 +645,7 @@ impl SqliteSessionStore {
 
     /// 记录一次复习结果（全局错题本）：`gid` 为全局视图返回的代表行 id（MIN(id)）。
     /// 记忆状态挂在错题键 mkey 上（跨会话共享），FSRS 调度与会话级同一核心
-    pub fn record_global_review(&self, gid: i64, passed: bool) -> bool {
+    pub fn record_global_review(&self, gid: i64, rating: ReviewRating) -> bool {
         let conn = self.conn.lock().unwrap();
         // gid → 全局错题键（组代表行）
         let sql = format!(
@@ -516,19 +656,30 @@ impl SqliteSessionStore {
             Ok(k) => k,
             Err(_) => return false,
         };
-        let prev: Option<MasteryRow> = conn
+        let prev_full: Option<MasteryFullRow> = conn
             .query_row(
-                "SELECT review_count, last_review_at, stability, difficulty
+                "SELECT review_count, last_review_at, stability, difficulty, status, next_review_at
                  FROM global_mastery WHERE mkey = ?",
                 params![mkey],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .ok();
+        let prev: Option<MasteryRow> = prev_full.as_ref().map(|p| (p.0, p.1.clone(), p.2, p.3));
         let review_count = prev.as_ref().map(|p| p.0).unwrap_or(0) + 1;
-        let Some(out) = fsrs_schedule(prev, passed) else {
+        let Some(out) = fsrs_schedule(prev, rating) else {
             return false;
         };
         let next_modifier = format!("+{} days", out.interval_days);
+        write_undo(&conn, "global", &mkey, prev_full.as_ref());
 
         conn.execute(
             "INSERT INTO global_mastery
@@ -560,6 +711,76 @@ impl SqliteSessionStore {
         )
         .map(|_| true)
         .unwrap_or(false)
+    }
+
+    /// 撤销最近一次复习（会话级）：记忆状态还原到复习前（新卡回到无记忆行）。
+    /// 每卡仅可撤销最近一次；时间窗（5s）由 UI 侧把关
+    pub fn undo_review(&self, session_id: &str, mistake_id: i64) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let skey = format!("{session_id}|{mistake_id}");
+        let Some(snap) = take_undo(&conn, "session", &skey) else {
+            return false;
+        };
+        let res = if snap.has_prev == 0 {
+            conn.execute(
+                "DELETE FROM mistake_mastery WHERE session_id = ?1 AND mistake_id = ?2",
+                params![session_id, mistake_id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE mistake_mastery
+                 SET status = ?1, review_count = ?2, last_review_at = ?3,
+                     next_review_at = ?4, stability = ?5, difficulty = ?6
+                 WHERE session_id = ?7 AND mistake_id = ?8",
+                params![
+                    snap.status,
+                    snap.review_count,
+                    snap.last_review_at,
+                    snap.next_review_at,
+                    snap.stability,
+                    snap.difficulty,
+                    session_id,
+                    mistake_id
+                ],
+            )
+        };
+        res.map(|_| true).unwrap_or(false)
+    }
+
+    /// 撤销最近一次复习（全局错题本；`gid` 同 [`Self::record_global_review`]）
+    pub fn undo_global_review(&self, gid: i64) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {MKEY_SQL} FROM mistakes
+             GROUP BY lang, error_type, original, correction HAVING MIN(id) = ?"
+        );
+        let mkey: String = match conn.query_row(&sql, params![gid], |r| r.get(0)) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+        let Some(snap) = take_undo(&conn, "global", &mkey) else {
+            return false;
+        };
+        let res = if snap.has_prev == 0 {
+            conn.execute("DELETE FROM global_mastery WHERE mkey = ?1", params![mkey])
+        } else {
+            conn.execute(
+                "UPDATE global_mastery
+                 SET status = ?1, review_count = ?2, last_review_at = ?3,
+                     next_review_at = ?4, stability = ?5, difficulty = ?6
+                 WHERE mkey = ?7",
+                params![
+                    snap.status,
+                    snap.review_count,
+                    snap.last_review_at,
+                    snap.next_review_at,
+                    snap.stability,
+                    snap.difficulty,
+                    mkey
+                ],
+            )
+        };
+        res.map(|_| true).unwrap_or(false)
     }
 
     fn set_status(&self, session_id: &str, status: &str) -> bool {
@@ -604,6 +825,10 @@ impl SqliteSessionStore {
             "DELETE FROM mistake_mastery WHERE session_id = ?",
             params![session_id],
         );
+        let _ = conn.execute(
+            "DELETE FROM review_undo WHERE scope = 'session' AND skey LIKE ?",
+            params![format!("{session_id}|%")],
+        );
         ok
     }
 
@@ -616,6 +841,7 @@ impl SqliteSessionStore {
         let _ = conn.execute("DELETE FROM session_history", []);
         let _ = conn.execute("DELETE FROM mistakes", []);
         let _ = conn.execute("DELETE FROM mistake_mastery", []);
+        let _ = conn.execute("DELETE FROM review_undo", []);
         let _ = conn.execute("DELETE FROM global_mastery", []);
         let _ = conn.execute("DELETE FROM sessions", []);
         n.max(0) as usize
@@ -718,7 +944,7 @@ mod tests {
             Some("new")
         );
         // 记住一次（FSRS Good）→ reviewing，下次到期在未来 → 队列暂空
-        assert!(store.record_review("s_r", mid, true));
+        assert!(store.record_review("s_r", mid, ReviewRating::Good));
         assert_eq!(
             store.list_mistakes("s_r")[0].mastery_status.as_deref(),
             Some("reviewing")
@@ -729,7 +955,7 @@ mod tests {
         );
         assert!(store.list_mistakes("s_r")[0].next_review_at.is_some());
         // 没记住（FSRS Again）→ 间隔钳到最短 1 天（次日再练），状态仍 reviewing
-        assert!(store.record_review("s_r", mid, false));
+        assert!(store.record_review("s_r", mid, ReviewRating::Again));
         assert_eq!(
             store.list_mistakes("s_r")[0].mastery_status.as_deref(),
             Some("reviewing")
@@ -748,7 +974,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            assert!(store.record_review("s_r", mid, true));
+            assert!(store.record_review("s_r", mid, ReviewRating::Good));
             let m = store.list_mistakes("s_r")[0].clone();
             if m.mastery_status.as_deref() == Some("mastered") {
                 mastered_at = Some(step);
@@ -787,7 +1013,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert!(store.record_review("s_l", mid, true));
+        assert!(store.record_review("s_l", mid, ReviewRating::Good));
         let (s, d): (Option<f64>, Option<f64>) = {
             let conn = store.conn.lock().unwrap();
             conn.query_row(
@@ -901,7 +1127,7 @@ mod tests {
         let gid = store.list_global_mistakes()[0].id;
 
         // 记住 → FSRS 排到未来；到期队列不再包含，但错题本仍展示
-        assert!(store.record_global_review(gid, true));
+        assert!(store.record_global_review(gid, ReviewRating::Good));
         let row = store
             .list_global_mistakes()
             .into_iter()
@@ -926,7 +1152,7 @@ mod tests {
         assert!(store.list_global_mistakes().iter().any(|m| m.id == gid));
 
         // 没记住 → 重新到期（next_review_at 仍在，间隔钳到最短）
-        assert!(store.record_global_review(gid, false));
+        assert!(store.record_global_review(gid, ReviewRating::Again));
 
         // 删除全部会话 → 全局错题消失，但记忆状态保留；重现时记忆复活（非 new）
         assert!(store.remove("s_f1"));
@@ -1020,7 +1246,7 @@ mod tests {
             "这里有个错吴。",
         );
         let gid = store.list_global_mistakes()[0].id;
-        assert!(store.record_global_review(gid, true));
+        assert!(store.record_global_review(gid, ReviewRating::Good));
         assert_eq!(store.clear(), 1);
         assert!(store.list_global_mistakes().is_empty());
         // 重现后记忆也被清空（clear = 全量重置）
@@ -1034,6 +1260,105 @@ mod tests {
         );
         assert_eq!(
             store.list_global_mistakes()[0].mastery_status.as_deref(),
+            Some("new")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// next_review_at 距今天数（SQLite datetime 与 UTC 时钟同基准，够用）
+    fn days_from_now(t: &str) -> i64 {
+        let t = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S").unwrap();
+        (t - chrono::Utc::now().naive_utc()).num_days()
+    }
+
+    #[test]
+    fn four_rating_intervals_increase_with_rating() {
+        // FSRS 四键：again（钳到最短）≤ hard < good < easy——评分粒度直接反映在间隔上
+        let (store, path) = tmp_store("ratings");
+        let ratings = [
+            ("甲", ReviewRating::Again),
+            ("乙", ReviewRating::Hard),
+            ("丙", ReviewRating::Good),
+            ("丁", ReviewRating::Easy),
+        ];
+        for (o, _) in ratings {
+            store.add_mistake("s_rt", "zh", "spelling", o, Some(o), &format!("句{o}。"));
+        }
+        let gid = |o: &str| {
+            store
+                .list_global_mistakes()
+                .iter()
+                .find(|m| m.original == o)
+                .unwrap()
+                .id
+        };
+        for (o, r) in ratings {
+            assert!(store.record_global_review(gid(o), r));
+        }
+        let next_days = |o: &str| {
+            let row = store
+                .list_global_mistakes()
+                .into_iter()
+                .find(|m| m.original == o)
+                .unwrap();
+            days_from_now(row.next_review_at.as_deref().unwrap())
+        };
+        assert!(
+            next_days("甲") <= next_days("乙"),
+            "again {} ≤ hard {}",
+            next_days("甲"),
+            next_days("乙")
+        );
+        assert!(
+            next_days("乙") <= next_days("丙") && next_days("丙") < next_days("丁"),
+            "hard ≤ good < easy：{} {} {}",
+            next_days("乙"),
+            next_days("丙"),
+            next_days("丁")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn undo_review_restores_previous_state() {
+        let (store, path) = tmp_store("undo");
+        store.add_mistake(
+            "s_u",
+            "zh",
+            "spelling",
+            "错吴",
+            Some("错误"),
+            "这里有个错吴。",
+        );
+        let gid = store.list_global_mistakes()[0].id;
+
+        // 新卡复习一次后撤销 → 回到「无记忆行」（new，无排期）
+        assert!(store.record_global_review(gid, ReviewRating::Good));
+        assert!(store.undo_global_review(gid));
+        let row = store.list_global_mistakes()[0].clone();
+        assert_eq!(row.mastery_status.as_deref(), Some("new"));
+        assert_eq!(row.next_review_at, None);
+        // 快照一次性：再撤销 → false
+        assert!(!store.undo_global_review(gid));
+
+        // 两次复习后撤销 → 回到第一次复习后的排期
+        assert!(store.record_global_review(gid, ReviewRating::Good));
+        let after_first = store.list_global_mistakes()[0]
+            .next_review_at
+            .clone()
+            .unwrap();
+        assert!(store.record_global_review(gid, ReviewRating::Again));
+        assert!(store.undo_global_review(gid));
+        let row = store.list_global_mistakes()[0].clone();
+        assert_eq!(row.next_review_at.as_deref(), Some(after_first.as_str()));
+        assert_eq!(row.mastery_status.as_deref(), Some("reviewing"));
+
+        // 会话级撤销同构
+        let mid = store.list_mistakes("s_u")[0].id;
+        assert!(store.record_review("s_u", mid, ReviewRating::Easy));
+        assert!(store.undo_review("s_u", mid));
+        assert_eq!(
+            store.list_mistakes("s_u")[0].mastery_status.as_deref(),
             Some("new")
         );
         let _ = std::fs::remove_file(&path);

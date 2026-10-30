@@ -2883,6 +2883,78 @@ async fn global_notebook_cross_session_and_review() {
     let row2 = list2.iter().find(|m| m["id"] == gid).unwrap();
     assert_eq!(row2["mastery_status"], "reviewing");
 
+    // 撤销复习 → 回到新卡（无排期），重回到期队列
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review/undo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let q3: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/review"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(q3.iter().any(|m| m["id"] == gid), "撤销后应重回到期队列");
+
+    // 四键评分：rating=again → 次日再练（退出今日队列，状态 reviewing）
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({ "rating": "again" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let list3: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row3 = list3.iter().find(|m| m["id"] == gid).unwrap();
+    assert_eq!(row3["mastery_status"], "reviewing");
+
+    // 非法 rating → 400；rating/passed 皆缺 → 400
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({ "rating": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+
+    // 再撤销（撤销 again 那次复习）→ 又回到新卡
+    let resp = c
+        .post(format!("{base}/gec/mistakes/{gid}/review/undo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let list4: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        list4.iter().find(|m| m["id"] == gid).unwrap()["mastery_status"],
+        "new"
+    );
+
     // 全局画像：确认错误基准 + 掌握度摘要
     let p: serde_json::Value = c
         .get(format!("{base}/gec/analysis"))

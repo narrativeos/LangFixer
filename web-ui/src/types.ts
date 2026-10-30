@@ -608,6 +608,9 @@ export interface Mistake {
   sessions_seen?: number | null
 }
 
+/** FSRS 复习评分（四键，Anki 同款）：忘了 / 有点难 / 记住了 / 很轻松 */
+export type ReviewRating = 'again' | 'hard' | 'good' | 'easy'
+
 /** 会话习惯性错误分析结果 */
 /** 统一错误画像（Phase 3）：错题本与习惯性错误分析是同一投影的两个视图。
  *  basis = confirmed（确认错误为准）/ detected（旧会话回退检测记录） */

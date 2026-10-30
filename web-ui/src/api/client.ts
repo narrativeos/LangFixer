@@ -63,6 +63,7 @@ import type {
   ReflectionReportSummary,
   ReflectionReportFull,
   ReflectionSuggestionRow,
+  ReviewRating,
   TrainingJobRow,
   TrainPoolResponse,
   TrainLlmDataResponse,
@@ -831,15 +832,28 @@ export const api = {
   },
 
   /** POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
-   *  （记住 → FSRS 按记忆状态个性化递增间隔，到期 ≥30 天已掌握；没记住 → 次日再练）
+   *  （FSRS 四键：again/hard/good/easy → 间隔按记忆状态与评分个性化递增，到期 ≥30 天已掌握）
    *  桌面端：invoke('review_mistake')（同构） */
-  reviewMistake(id: string, mistakeId: number, passed: boolean): Promise<{ ok: boolean }> {
+  reviewMistake(id: string, mistakeId: number, rating: ReviewRating): Promise<{ ok: boolean }> {
     if (inTauri)
       return tauri!
-        .invoke('review_mistake', { sessionId: id, mistakeId, passed })
+        .invoke('review_mistake', { sessionId: id, mistakeId, rating })
         .then(() => ({ ok: true }))
     return http
-      .post<{ ok: boolean }>(`/gec/sessions/${id}/mistakes/${mistakeId}/review`, { passed })
+      .post<{ ok: boolean }>(`/gec/sessions/${id}/mistakes/${mistakeId}/review`, { rating })
+      .then((r) => r.data)
+  },
+
+  /** POST /gec/sessions/:id/mistakes/:mid/review/undo — 撤销最近一次复习
+   *  （还原复习前记忆状态；每卡仅一次，5s 时间窗由 UI 侧把关）
+   *  桌面端：invoke('undo_review_mistake')（同构） */
+  undoReviewMistake(id: string, mistakeId: number): Promise<{ ok: boolean }> {
+    if (inTauri)
+      return tauri!
+        .invoke('undo_review_mistake', { sessionId: id, mistakeId })
+        .then(() => ({ ok: true }))
+    return http
+      .post<{ ok: boolean }>(`/gec/sessions/${id}/mistakes/${mistakeId}/review/undo`)
       .then((r) => r.data)
   },
 
@@ -895,12 +909,19 @@ export const api = {
   },
 
   /** POST /gec/mistakes/:gid/review — 全局错题复习结果
-   *  （FSRS 记忆状态挂在错题键上：跨会话共享，删会话不丢，同一错误重现记忆复活）
+   *  （FSRS 四键调度挂在错题键上：跨会话共享，删会话不丢，同一错误重现记忆复活）
    *  桌面端：invoke('review_global_mistake')（同构） */
-  reviewGlobalMistake(gid: number, passed: boolean): Promise<{ ok: boolean }> {
+  reviewGlobalMistake(gid: number, rating: ReviewRating): Promise<{ ok: boolean }> {
     if (inTauri)
-      return tauri!.invoke('review_global_mistake', { gid, passed }).then(() => ({ ok: true }))
-    return http.post<{ ok: boolean }>(`/gec/mistakes/${gid}/review`, { passed }).then((r) => r.data)
+      return tauri!.invoke('review_global_mistake', { gid, rating }).then(() => ({ ok: true }))
+    return http.post<{ ok: boolean }>(`/gec/mistakes/${gid}/review`, { rating }).then((r) => r.data)
+  },
+
+  /** POST /gec/mistakes/:gid/review/undo — 撤销全局错题最近一次复习
+   *  桌面端：invoke('undo_global_review')（同构） */
+  undoGlobalReview(gid: number): Promise<{ ok: boolean }> {
+    if (inTauri) return tauri!.invoke('undo_global_review', { gid }).then(() => ({ ok: true }))
+    return http.post<{ ok: boolean }>(`/gec/mistakes/${gid}/review/undo`).then((r) => r.data)
   },
 
   /** GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话，含掌握度摘要）

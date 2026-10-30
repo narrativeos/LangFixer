@@ -72,26 +72,57 @@ pub async fn review_queue(
 
 #[derive(serde::Deserialize)]
 pub struct ReviewRequest {
-    /// 本次复习是否记住
-    pub passed: bool,
+    /// FSRS 四键评分：again / hard / good / easy（优先于 passed）
+    #[serde(default)]
+    pub rating: Option<String>,
+    /// 旧二键契约（记住 / 没记住）：映射为 good / again，保持兼容
+    #[serde(default)]
+    pub passed: Option<bool>,
+}
+
+impl ReviewRequest {
+    /// 解析评分：rating 优先；无 rating 时用 passed 映射；两者皆缺 → 400
+    fn resolve(&self) -> Result<shared_model::session_store::ReviewRating, ApiError> {
+        if let Some(r) = &self.rating {
+            return shared_model::session_store::ReviewRating::parse(r)
+                .ok_or_else(|| ApiError::BadRequest(format!("无效 rating: {r}")));
+        }
+        match self.passed {
+            Some(p) => Ok(shared_model::session_store::ReviewRating::from_passed(p)),
+            None => Err(ApiError::BadRequest("需要 rating 或 passed".into())),
+        }
+    }
 }
 
 /// POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
-/// （FSRS 间隔复习调度：记住 → 按记忆状态个性化递增间隔，到期 ≥30 天已掌握；没记住 → 次日再练）
+/// （FSRS 四键间隔复习调度：间隔按记忆状态与评分个性化递增，到期 ≥30 天已掌握；again → 次日再练）
 pub async fn review_mistake(
     State(state): State<Arc<AppState>>,
     Path((id, mid)): Path<(String, i64)>,
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ok = state.sessions.record_review(&id, mid, req.passed);
+    let rating = req.resolve()?;
+    let ok = state.sessions.record_review(&id, mid, rating);
     if !ok {
         return Err(ApiError::NotFound(format!(
             "mistake#{mid}（session#{id}）复习记录写入失败"
         )));
     }
-    Ok(Json(
-        serde_json::json!({ "ok": true, "passed": req.passed }),
-    ))
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// POST /gec/sessions/:id/mistakes/:mid/review/undo — 撤销最近一次复习
+/// （还原复习前记忆状态；每卡仅一次，时间窗由 UI 侧把关）
+pub async fn undo_review_mistake(
+    State(state): State<Arc<AppState>>,
+    Path((id, mid)): Path<(String, i64)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.sessions.undo_review(&id, mid) {
+        return Err(ApiError::NotFound(format!(
+            "mistake#{mid}（session#{id}）无可撤销的复习"
+        )));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// PUT /gec/sessions/:id/archive — 归档
@@ -281,20 +312,32 @@ pub async fn global_review_queue(
     Json(state.sessions.list_global_review_queue())
 }
 
-/// POST /gec/mistakes/:gid/review — 全局错题复习结果（FSRS 调度挂在错题键上）
+/// POST /gec/mistakes/:gid/review — 全局错题复习结果（FSRS 四键调度挂在错题键上）
 pub async fn review_global_mistake(
     State(state): State<Arc<AppState>>,
     Path(gid): Path<i64>,
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.sessions.record_global_review(gid, req.passed) {
+    let rating = req.resolve()?;
+    if !state.sessions.record_global_review(gid, rating) {
         return Err(ApiError::NotFound(format!(
             "global mistake#{gid} 不存在或复习记录写入失败"
         )));
     }
-    Ok(Json(
-        serde_json::json!({ "ok": true, "passed": req.passed }),
-    ))
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// POST /gec/mistakes/:gid/review/undo — 撤销全局错题最近一次复习
+pub async fn undo_global_review(
+    State(state): State<Arc<AppState>>,
+    Path(gid): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.sessions.undo_global_review(gid) {
+        return Err(ApiError::NotFound(format!(
+            "global mistake#{gid} 无可撤销的复习"
+        )));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话；
