@@ -831,7 +831,7 @@ export const api = {
   },
 
   /** POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
-   *  （记住 → 间隔递增，连对 6 次已掌握；没记住 → 次日再练）
+   *  （记住 → FSRS 按记忆状态个性化递增间隔，到期 ≥30 天已掌握；没记住 → 次日再练）
    *  桌面端：invoke('review_mistake')（同构） */
   reviewMistake(id: string, mistakeId: number, passed: boolean): Promise<{ ok: boolean }> {
     if (inTauri)

@@ -4869,7 +4869,8 @@ pub fn session_review_queue(
     Ok(core.sessions.list_review_queue(&session_id))
 }
 
-/// 记录一次复习结果（桌面端；记住 → 间隔递增，连对 6 次已掌握；没记住 → 次日再练）
+/// 记录一次复习结果（桌面端；FSRS 间隔复习调度：记住 → 按记忆状态个性化递增间隔，
+/// 到期 ≥30 天已掌握；没记住 → 次日再练）
 #[tauri::command]
 pub fn review_mistake(
     core: tauri::State<'_, Arc<Core>>,

@@ -77,7 +77,7 @@ pub struct ReviewRequest {
 }
 
 /// POST /gec/sessions/:id/mistakes/:mid/review — 记录一次复习结果
-/// （间隔重复调度：记住 → 1/3/7/14/30 天递增，连对 6 次已掌握；没记住 → 次日再练）
+/// （FSRS 间隔复习调度：记住 → 按记忆状态个性化递增间隔，到期 ≥30 天已掌握；没记住 → 次日再练）
 pub async fn review_mistake(
     State(state): State<Arc<AppState>>,
     Path((id, mid)): Path<(String, i64)>,

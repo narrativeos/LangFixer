@@ -9,9 +9,20 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use fsrs::{FSRS, MemoryState};
 use rusqlite::{Connection, params};
 
 use crate::session::{ErrorHistoryEntry, SessionMeta, SessionRecord};
+
+/// FSRS 目标保留率（Anki 缺省同值）
+const DESIRED_RETENTION: f32 = 0.9;
+/// 下次间隔达到该天数即视为已掌握（不再进入复习队列）
+const MASTERED_INTERVAL_DAYS: f64 = 30.0;
+/// 调度间隔上限（天），防止长尾漂移
+const MAX_INTERVAL_DAYS: f64 = 365.0;
+/// 旧版「连对阶梯」调度（1/3/7/14/30 天）→ SM-2 近似参数，用于迁移出 FSRS 记忆状态
+const LEGACY_LADDER: [f32; 5] = [1.0, 3.0, 7.0, 14.0, 30.0];
+const LEGACY_EASE_FACTOR: f32 = 2.5;
 
 /// 会话存储（SQLite 持久化；`Mutex<Connection>` 与 detect_history 等存储同构）
 pub struct SqliteSessionStore {
@@ -57,9 +68,21 @@ impl SqliteSessionStore {
                 review_count INTEGER NOT NULL DEFAULT 0,
                 last_review_at TEXT,
                 next_review_at TEXT,
+                stability REAL,
+                difficulty REAL,
                 PRIMARY KEY (session_id, mistake_id)
             );",
         )?;
+        // 旧库迁移：mistake_mastery 增列 FSRS 记忆状态（stability / difficulty）；
+        // 旧数据（无记忆状态）在下次复习时经 SM-2 近似自动迁移（见 record_review）
+        let has_stability: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('mistake_mastery') WHERE name = 'stability'")
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false);
+        if !has_stability {
+            let _ = conn.execute("ALTER TABLE mistake_mastery ADD COLUMN stability REAL", []);
+            let _ = conn.execute("ALTER TABLE mistake_mastery ADD COLUMN difficulty REAL", []);
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -281,38 +304,82 @@ impl SqliteSessionStore {
         .unwrap_or_default()
     }
 
-    /// 记录一次复习结果（间隔重复调度）：
-    /// - 记住（pass）：连对次数 +1，下次复习间隔 1/3/7/14/30 天；连对 6 次 → `mastered`
-    /// - 没记住（fail）：连对清零、状态回 `reviewing`，次日再练
+    /// 记录一次复习结果（FSRS 间隔复习调度，Anki 同款算法）：
+    /// - 记住（pass）→ Good 按钮：按记忆状态（stability/difficulty）计算下次间隔，
+    ///   间隔 ≥ [`MASTERED_INTERVAL_DAYS`] 天 → `mastered`（退出复习队列）
+    /// - 没记住（fail）→ Again 按钮：记忆状态衰减，间隔钳到最短 1 天（次日再练）
+    /// - 旧版「连对阶梯」数据（无记忆状态）→ 经 SM-2 近似自动迁移（Anki 同款迁移路径）
     pub fn record_review(&self, session_id: &str, mistake_id: i64, passed: bool) -> bool {
         let conn = self.conn.lock().unwrap();
-        let sql = if passed {
-            "INSERT INTO mistake_mastery (session_id, mistake_id, status, review_count, last_review_at, next_review_at)
-             VALUES (?, ?, 'reviewing', 1, datetime('now'), datetime('now', '+1 day'))
+        // 当前记忆状态（无记录 = 新卡）
+        let prev: Option<(i64, Option<String>, Option<f64>, Option<f64>)> = conn
+            .query_row(
+                "SELECT review_count, last_review_at, stability, difficulty
+                 FROM mistake_mastery WHERE session_id = ? AND mistake_id = ?",
+                params![session_id, mistake_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+
+        let fsrs = FSRS::default();
+        let memory: Option<MemoryState> = match prev {
+            Some((_, _, Some(s), Some(d))) => Some(MemoryState {
+                stability: s as f32,
+                difficulty: d as f32,
+            }),
+            // 旧数据：按当时的连对次数还原阶梯间隔，SM-2 → FSRS 近似迁移
+            Some((review_count, _, _, _)) if review_count > 0 => {
+                let idx = (review_count - 1).clamp(0, LEGACY_LADDER.len() as i64 - 1) as usize;
+                fsrs.memory_state_from_sm2(LEGACY_EASE_FACTOR, LEGACY_LADDER[idx], 0.9)
+                    .ok()
+            }
+            _ => None,
+        };
+        let days_elapsed = prev
+            .as_ref()
+            .and_then(|(_, last, _, _)| last.as_ref())
+            .and_then(|t| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S").ok())
+            .map(|t| (chrono::Utc::now().naive_utc() - t).num_days().max(0) as u32)
+            .unwrap_or(0);
+
+        let states = match fsrs.next_states(memory, DESIRED_RETENTION, days_elapsed) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let item = if passed { states.good } else { states.again };
+        let interval_days = (item.interval as f64).round().clamp(1.0, MAX_INTERVAL_DAYS);
+        let mastered = item.interval as f64 >= MASTERED_INTERVAL_DAYS;
+        let review_count = prev.map(|p| p.0).unwrap_or(0) + 1;
+        let next_modifier = format!("+{} days", interval_days.round() as i64);
+
+        conn.execute(
+            "INSERT INTO mistake_mastery
+                 (session_id, mistake_id, status, review_count, last_review_at, next_review_at,
+                  stability, difficulty)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now', ?5), ?6, ?7)
              ON CONFLICT(session_id, mistake_id) DO UPDATE SET
+                 status = excluded.status,
                  review_count = mistake_mastery.review_count + 1,
                  last_review_at = datetime('now'),
-                 status = CASE WHEN mistake_mastery.review_count + 1 >= 6 THEN 'mastered' ELSE 'reviewing' END,
-                 next_review_at = CASE
-                     WHEN mistake_mastery.review_count + 1 >= 6 THEN NULL
-                     WHEN mistake_mastery.review_count + 1 = 2 THEN datetime('now', '+3 days')
-                     WHEN mistake_mastery.review_count + 1 = 3 THEN datetime('now', '+7 days')
-                     WHEN mistake_mastery.review_count + 1 = 4 THEN datetime('now', '+14 days')
-                     WHEN mistake_mastery.review_count + 1 = 5 THEN datetime('now', '+30 days')
-                     ELSE datetime('now', '+30 days')
-                 END"
-        } else {
-            "INSERT INTO mistake_mastery (session_id, mistake_id, status, review_count, last_review_at, next_review_at)
-             VALUES (?, ?, 'reviewing', 0, datetime('now'), datetime('now', '+1 day'))
-             ON CONFLICT(session_id, mistake_id) DO UPDATE SET
-                 review_count = 0,
-                 status = 'reviewing',
-                 last_review_at = datetime('now'),
-                 next_review_at = datetime('now', '+1 day')"
-        };
-        conn.execute(sql, params![session_id, mistake_id])
-            .map(|_| true)
-            .unwrap_or(false)
+                 next_review_at = excluded.next_review_at,
+                 stability = excluded.stability,
+                 difficulty = excluded.difficulty",
+            params![
+                session_id,
+                mistake_id,
+                if mastered { "mastered" } else { "reviewing" },
+                review_count,
+                if mastered {
+                    None
+                } else {
+                    Some(next_modifier.as_str())
+                },
+                item.memory.stability,
+                item.memory.difficulty,
+            ],
+        )
+        .map(|_| true)
+        .unwrap_or(false)
     }
 
     fn set_status(&self, session_id: &str, status: &str) -> bool {
@@ -452,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn review_queue_and_mastery_schedule() {
+    fn review_queue_and_fsrs_schedule() {
         let (store, path) = tmp_store("mastery");
         store.add_mistake(
             "s_r",
@@ -469,7 +536,7 @@ mod tests {
             store.list_mistakes("s_r")[0].mastery_status.as_deref(),
             Some("new")
         );
-        // 记住一次 → reviewing，下次到期在明天 → 队列暂空
+        // 记住一次（FSRS Good）→ reviewing，下次到期在未来 → 队列暂空
         assert!(store.record_review("s_r", mid, true));
         assert_eq!(
             store.list_mistakes("s_r")[0].mastery_status.as_deref(),
@@ -479,21 +546,115 @@ mod tests {
             store.list_review_queue("s_r").is_empty(),
             "记住后到期时间应在未来"
         );
-        // 没记住 → 状态回 reviewing（连对清零）
+        assert!(store.list_mistakes("s_r")[0].next_review_at.is_some());
+        // 没记住（FSRS Again）→ 间隔钳到最短 1 天（次日再练），状态仍 reviewing
         assert!(store.record_review("s_r", mid, false));
         assert_eq!(
             store.list_mistakes("s_r")[0].mastery_status.as_deref(),
             Some("reviewing")
         );
-        // 连对 6 次 → mastered，不再进入队列
-        for _ in 0..6 {
-            store.record_review("s_r", mid, true);
+        // 按到期时间连续复习（模拟时间推进）→ 间隔单调增长，最终 mastered（≥30 天）
+        let mut last_due: Option<String> = None;
+        let mut mastered_at = None;
+        for step in 0..12 {
+            // 把上次复习时间推后，模拟「按时到期复习」（FSRS 稳定性按 elapsed 增长）
+            {
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE mistake_mastery SET last_review_at = datetime('now', ?1)
+                     WHERE session_id = 's_r' AND mistake_id = ?2",
+                    params![format!("-{step} days"), mid],
+                )
+                .unwrap();
+            }
+            assert!(store.record_review("s_r", mid, true));
+            let m = store.list_mistakes("s_r")[0].clone();
+            if m.mastery_status.as_deref() == Some("mastered") {
+                mastered_at = Some(step);
+                break;
+            }
+            if let (Some(prev), Some(cur)) = (&last_due, &m.next_review_at) {
+                assert!(cur > prev, "连续按时答对时间隔应单调增长: {prev} → {cur}");
+            }
+            last_due = m.next_review_at;
         }
-        assert_eq!(
-            store.list_mistakes("s_r")[0].mastery_status.as_deref(),
-            Some("mastered")
-        );
+        assert!(mastered_at.is_some(), "连续按时复习应在有限次数内已掌握");
         assert!(store.list_review_queue("s_r").is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_ladder_rows_migrate_to_fsrs_state() {
+        // 旧版「连对阶梯」数据（无 FSRS 记忆状态）→ 下次复习自动 SM-2 迁移
+        let (store, path) = tmp_store("legacy");
+        store.add_mistake(
+            "s_l",
+            "zh",
+            "spelling",
+            "错吴",
+            Some("错误"),
+            "这里有个错吴。",
+        );
+        let mid = store.list_mistakes("s_l")[0].id;
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mistake_mastery
+                     (session_id, mistake_id, status, review_count, last_review_at, next_review_at)
+                 VALUES ('s_l', ?1, 'reviewing', 3, datetime('now'), datetime('now', '+7 days'))",
+                params![mid],
+            )
+            .unwrap();
+        }
+        assert!(store.record_review("s_l", mid, true));
+        let (s, d): (Option<f64>, Option<f64>) = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT stability, difficulty FROM mistake_mastery
+                 WHERE session_id = 's_l' AND mistake_id = ?1",
+                params![mid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert!(s.unwrap_or(0.0) > 0.0, "旧数据复习后应带 FSRS 稳定性");
+        assert!(d.unwrap_or(0.0) > 0.0, "旧数据复习后应带 FSRS 难度");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn old_db_gets_fsrs_columns_on_open() {
+        // 旧库（mistake_mastery 无 stability/difficulty 列）打开时自动增列迁移
+        let path = std::env::temp_dir().join(format!(
+            "langfixer_session_store_test_oldschema_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE mistake_mastery (
+                    session_id TEXT NOT NULL,
+                    mistake_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'reviewing',
+                    review_count INTEGER NOT NULL DEFAULT 0,
+                    last_review_at TEXT,
+                    next_review_at TEXT,
+                    PRIMARY KEY (session_id, mistake_id)
+                );",
+            )
+            .unwrap();
+        }
+        let store = SqliteSessionStore::open(&path).unwrap();
+        let has: bool = {
+            let conn = store.conn.lock().unwrap();
+            conn.prepare(
+                "SELECT 1 FROM pragma_table_info('mistake_mastery') WHERE name = 'stability'",
+            )
+            .and_then(|mut s| s.exists([]))
+            .unwrap()
+        };
+        assert!(has, "旧库打开后应带 FSRS 记忆状态列");
         let _ = std::fs::remove_file(&path);
     }
 }

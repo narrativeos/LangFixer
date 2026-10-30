@@ -11,7 +11,9 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 rusqlite = { workspace = true, optional = true }
+fsrs = { version = "6.6", optional = true }
 
 [features]
 # SQLite 持久化会话存储（api-server / desktop-app 启用；引擎侧不依赖，保持轻量）
-sqlite = ["dep:rusqlite"]
+# FSRS 间隔复习调度（fsrs-rs，Anki 同款算法）随存储启用
+sqlite = ["dep:rusqlite", "dep:fsrs"]
