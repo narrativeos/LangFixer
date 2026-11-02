@@ -714,7 +714,8 @@ export interface DecisionSettings {
   timeout_secs: number
   /** 弃权阈值：has_error_prob 低于该值视为无错误 */
   abstain_threshold: number
-  /** true = 决策层已启用（默认开启；GEC_DEC_ENABLED=0/false 或设置界面可关闭） */
+  /** true = 决策层已启用。该层已退役出产品路径（EVOLUTION.md §13 #10）：默认 false，
+   *  仅实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启；设置界面不再提供入口 */
   enabled: boolean
 }
 

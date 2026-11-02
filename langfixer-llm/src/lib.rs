@@ -105,6 +105,8 @@ impl LlmService {
     }
 
     /// 渲染提示词变量（含用户画像：母语 + 历史错误类型分布 + 讲解目标语言）
+    // 参数即提示词变量全集（与模板占位符一一对应），聚合结构体只增加间接层
+    #[allow(clippy::too_many_arguments)]
     fn render_vars(
         &self,
         error_type: &str,

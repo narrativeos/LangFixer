@@ -118,7 +118,8 @@ fn mucgec_benchmark_report() {
             n_pred.get(split).copied().unwrap_or(0),
             n_fp.get(split).copied().unwrap_or(0)
         );
-        let mut sorted: Vec<(&(String, String), &(usize, usize))> = per_cat
+        type CatRow<'a> = (&'a (String, String), &'a (usize, usize));
+        let mut sorted: Vec<CatRow> = per_cat
             .iter()
             .filter(|((s, _), _)| s.as_str() == split.as_str())
             .collect();

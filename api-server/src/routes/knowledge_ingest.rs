@@ -585,10 +585,10 @@ fn parse_selection(s: Option<&str>) -> Option<Vec<usize>> {
             continue;
         }
         if let Some((a, b)) = part.split_once('-') {
-            if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
-                if b >= a {
-                    out.extend(a..=b);
-                }
+            if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>())
+                && b >= a
+            {
+                out.extend(a..=b);
             }
         } else if let Ok(n) = part.parse::<usize>() {
             out.push(n);

@@ -615,18 +615,16 @@ impl AgentToolExecutor for RemoveExample {
                 .lexicon_store
                 .delete_example_by_wrong(&self.ctx.lang, rule_id, wrong)
                 .map_err(|e| e.to_string())?
+        } else if self
+            .ctx
+            .core
+            .lexicon_store
+            .delete_example(&self.ctx.lang, rule_id, wrong, right)
+            .map_err(|e| e.to_string())?
+        {
+            1
         } else {
-            if self
-                .ctx
-                .core
-                .lexicon_store
-                .delete_example(&self.ctx.lang, rule_id, wrong, right)
-                .map_err(|e| e.to_string())?
-            {
-                1
-            } else {
-                0
-            }
+            0
         };
         Ok(if deleted > 0 {
             format!("示例「{wrong}」已从规则 {rule_id} 删除（共 {deleted} 条）")

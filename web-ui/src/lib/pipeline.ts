@@ -1,5 +1,8 @@
 /**
- * 检测管线层展示（① 本地 ZEN 规则 → ② 决策模型 → ②.5 知识召回 → ③-F 特征模型 → ③ LLM 兜底）
+ * 检测管线层展示（① 本地 ZEN 规则 → ②.5 知识召回 → ③-F 特征模型 → ③ LLM 兜底）
+ *
+ * ② 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：默认不显示；
+ * 仅当实验开关显式开启（GEC_DEC_ENABLED=1 / 设置文件）时才出现在管线条中。
  *
  * - ①②②.5 状态来自服务端设置（决策模型是否启用 / 嵌入引擎是否配置）；
  * - ③-F 特征模型（三期）：level 2/3 且启用时显示（P0.5：L3 是唯一的 pre-LLM 门控）；
@@ -34,17 +37,16 @@ export interface PipelineState {
 export function computePipelineLayers(s: PipelineState): PipelineLayer[] {
   const layers: PipelineLayer[] = [
     { no: '①', label: '① 本地 ZEN 规则', type: 'success' },
-    {
-      no: '②',
-      label: `② 决策模型${s.decisionEnabled ? ' · 已启用' : ' · 未启用'}`,
-      type: s.decisionEnabled ? 'success' : 'info',
-    },
-    {
-      no: '②.5',
-      label: `②.5 知识召回${s.embeddingConfigured ? ' · 已配置' : ' · 未配置'}`,
-      type: s.embeddingConfigured ? 'success' : 'info',
-    },
   ]
+  // ② 决策模型已退役出产品路径：仅实验开关显式开启时显示（默认路径 = 规则 → L3 → LLM）
+  if (s.decisionEnabled) {
+    layers.push({ no: '②', label: '② 决策模型 · 已启用', type: 'success' })
+  }
+  layers.push({
+    no: '②.5',
+    label: `②.5 知识召回${s.embeddingConfigured ? ' · 已配置' : ' · 未配置'}`,
+    type: s.embeddingConfigured ? 'success' : 'info',
+  })
   if (s.level === 3) {
     if (s.l3Enabled) {
       // 三期：特征模型高置信定案，LLM 收缩到纯长尾

@@ -12,8 +12,13 @@ use api_server::{middleware, routes, state::AppState};
 /// 环境变量互斥锁（与 tests/api.rs 相同的并行隔离约定）
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+/// 环境变量串行锁的守卫：跨 await 持有是**有意**的（env 是进程级全局，
+/// 须覆盖整个测试过程）；newtype 包装与 MutexGuard 语义等价。
+#[allow(dead_code)] // 守卫靠析构放锁生效，字段不读——环境串行守卫的固有形态
+struct EnvGuard(std::sync::MutexGuard<'static, ()>);
+
+fn env_guard() -> EnvGuard {
+    EnvGuard(ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// 词表目录：**出厂词表的临时副本**（每次调用一份）

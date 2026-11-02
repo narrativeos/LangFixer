@@ -77,9 +77,10 @@ pub struct DecisionConfig {
     /// 弃权阈值：句级 `has_error_prob` 低于该值时不产出错误（conformal 校准后概率）
     #[serde(default = "default_abstain_threshold")]
     pub abstain_threshold: f64,
-    /// 决策层开关：**默认 `false`**（P0.5：L3 特征模型是唯一的 pre-LLM 门控，
-    /// 决策模型是 opt-in 层——设置界面 / 设置文件 / `GEC_DEC_ENABLED=1` 显式开启后
-    /// 在 `rule` 引擎组合中挂载（规则为主 + 决策合并））；
+    /// 决策层开关：**默认 `false`**——该层已**退役出产品路径**（EVOLUTION.md §13 #10，
+    /// L3 特征模型是唯一的 pre-LLM 门控）；代码保留为实验路径，仅
+    /// `GEC_DEC_ENABLED=1` / 设置文件显式开启时在 `rule` 引擎组合中挂载
+    /// （规则为主 + 决策合并）。设置界面不再提供该开关；
     /// 旧版设置文件缺失该字段时按关闭处理
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -187,10 +188,10 @@ impl DecisionGecEngine {
     /// → `None`（版本未知；历史复用时与携带版本的历史不匹配，保守不复用）。
     pub async fn model_version(&self) -> Option<String> {
         // 快路径：缓存未过期（锁不跨 await）
-        if let Some((t, v)) = self.version_cache.lock().unwrap().clone() {
-            if t.elapsed() < self.version_ttl {
-                return v;
-            }
+        if let Some((t, v)) = self.version_cache.lock().unwrap().clone()
+            && t.elapsed() < self.version_ttl
+        {
+            return v;
         }
         match self.fetch_model_version().await {
             Ok(v) => {
@@ -235,6 +236,7 @@ impl DecisionGecEngine {
     /// - 显式 `abstain` 标志（服务方按契约输出）；
     /// - 或：未产出错误且 `has_error_prob` 落在灰区
     ///   `[GRAY_ZONE_LOW, abstain_threshold)`（不输出 abstain 字段的旧服务的兜底判定）。
+    ///
     /// 概率低于灰区下界视为「明确无错」，不触发兜底。
     pub async fn decide(&self, text: &str) -> Result<DecideOutcome, DetectorError> {
         // 熔断器：服务宕机跳闸后冷却期内立即失败（毫秒级），
@@ -569,25 +571,22 @@ mod tests {
     ) -> String {
         let app = axum::Router::new().route(
             "/health",
-            axum::routing::get({
-                let hits = hits;
-                move || {
-                    let hits = hits.clone();
-                    async move {
-                        let first = hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
-                        if first {
-                            (
-                                axum::http::StatusCode::OK,
-                                axum::Json(serde_json::json!({
-                                    "status": "ok",
-                                    "mode": "sklearn",
-                                    "versions": { "en": "v1" },
-                                })),
-                            )
-                                .into_response()
-                        } else {
-                            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()
-                        }
+            axum::routing::get(move || {
+                let hits = hits.clone();
+                async move {
+                    let first = hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+                    if first {
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "status": "ok",
+                                "mode": "sklearn",
+                                "versions": { "en": "v1" },
+                            })),
+                        )
+                            .into_response()
+                    } else {
+                        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()
                     }
                 }
             }),

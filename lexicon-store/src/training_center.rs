@@ -123,7 +123,7 @@ impl TrainingCenterStore {
         let mut out = Vec::new();
         for row in rows {
             let row = row?;
-            if status.map_or(true, |s| row.status == s) && lang.map_or(true, |l| row.lang == l) {
+            if status.is_none_or(|s| row.status == s) && lang.is_none_or(|l| row.lang == l) {
                 out.push(row);
             }
         }

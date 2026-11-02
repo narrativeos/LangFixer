@@ -267,9 +267,8 @@ pub async fn retrain_l3(
     let result: Result<serde_json::Value, String> =
         crate::routes::l3::do_retrain(&state, &req.lang)
             .await
-            .map(|body| {
+            .inspect(|_body| {
                 crate::routes::l3::record_retrain_meta_public(&req.lang);
-                body
             })
             .map_err(|e| e.to_string());
     let job_id = complete_job(
@@ -332,31 +331,30 @@ pub async fn apply_lexicon(
     }
     // 建议 payload 补全 rule_id / words
     let (mut rule_id, mut words) = (req.rule_id.clone(), req.words.clone());
-    if let Some(sid) = req.suggestion_id {
-        if let Some(row) = state
+    if let Some(sid) = req.suggestion_id
+        && let Some(row) = state
             .reflection_center
             .get_suggestion(sid)
             .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
-            if rule_id.is_none() {
-                rule_id = row
-                    .payload
-                    .get("rule_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
-            if words.is_empty() {
-                words = row
-                    .payload
-                    .get("originals")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|w| w.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
+    {
+        if rule_id.is_none() {
+            rule_id = row
+                .payload
+                .get("rule_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+        if words.is_empty() {
+            words = row
+                .payload
+                .get("originals")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|w| w.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
         }
     }
     let rule_id = rule_id
@@ -462,9 +460,8 @@ pub(crate) async fn execute_training_action(
             let r: Result<serde_json::Value, ActionError> =
                 crate::routes::l3::do_retrain(state, lang)
                     .await
-                    .map(|body| {
+                    .inspect(|_body| {
                         crate::routes::l3::record_retrain_meta_public(lang);
-                        body
                     })
                     .map_err(|e| ActionError::Execution(e.to_string()));
             r.map(|v| (gec_core::job_kind::L3_RETRAIN.to_string(), v))

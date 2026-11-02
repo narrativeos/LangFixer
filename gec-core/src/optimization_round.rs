@@ -47,16 +47,16 @@ pub mod round_status {
 
     /// 状态迁移是否合法
     pub fn can_transition(from: &str, to: &str) -> bool {
-        match (from, to) {
+        matches!(
+            (from, to),
             (PROPOSED, CONFIRMED)
-            | (PROPOSED, REJECTED)
-            | (PROPOSED, FAILED)
-            | (CONFIRMED, RUNNING)
-            | (CONFIRMED, FAILED)
-            | (RUNNING, COMPLETED)
-            | (RUNNING, FAILED) => true,
-            _ => false,
-        }
+                | (PROPOSED, REJECTED)
+                | (PROPOSED, FAILED)
+                | (CONFIRMED, RUNNING)
+                | (CONFIRMED, FAILED)
+                | (RUNNING, COMPLETED)
+                | (RUNNING, FAILED)
+        )
     }
 }
 
@@ -354,7 +354,6 @@ pub fn round_report(
     //
     // 注意：计划 `actions` 只有 `kind` / `target` / `reason` / `payload`；
     // `job_id` 在执行结果 `result.actions` 里（按 kind 匹配）。
-    let mut action_lines: Vec<String> = Vec::new();
     let result_actions = round
         .get("result")
         .and_then(|v| v.get("actions"))
@@ -473,7 +472,7 @@ pub fn round_report(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    action_lines = actions_out
+    let action_lines: Vec<String> = actions_out
         .iter()
         .filter_map(|v| {
             v.get("summary")

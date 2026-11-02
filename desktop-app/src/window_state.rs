@@ -61,7 +61,7 @@ fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// 恢复上次的窗口状态（在 setup 中、窗口显示前调用）
 pub fn restore(window: &Window) {
     let app = window.app_handle();
-    let Some(path) = state_path(&app) else {
+    let Some(path) = state_path(app) else {
         window.center().ok();
         return;
     };
@@ -117,7 +117,7 @@ pub fn restore(window: &Window) {
 /// 立即保存当前窗口状态（关闭 / 销毁时调用）
 pub fn save(window: &Window) {
     let app = window.app_handle();
-    let Some(path) = state_path(&app) else {
+    let Some(path) = state_path(app) else {
         return;
     };
     if let Some(parent) = path.parent() {

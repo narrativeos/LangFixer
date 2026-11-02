@@ -615,7 +615,7 @@ pub fn detect_anomalies(text: &str, lexicon: &Lexicon) -> Vec<Error> {
         for (rule_id, re, strong, note) in &compiled {
             if re.is_match(sent) {
                 let conf = if *strong { 0.9 } else { 0.6 };
-                if best.as_ref().map_or(true, |(b, _, _)| conf > *b) {
+                if best.as_ref().is_none_or(|(b, _, _)| conf > *b) {
                     best = Some((conf, note, rule_id));
                 }
             }

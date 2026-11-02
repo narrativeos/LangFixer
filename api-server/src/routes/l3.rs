@@ -516,7 +516,7 @@ pub(crate) fn record_retrain_meta_public(lang: &str) -> String {
     let existing = std::fs::read_to_string(&meta_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-    let mut meta = existing.unwrap_or_else(serde_json::Value::default);
+    let mut meta = existing.unwrap_or_default();
     if !meta.is_object() {
         meta = serde_json::Map::new().into();
     }

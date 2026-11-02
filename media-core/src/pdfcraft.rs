@@ -112,7 +112,7 @@ pub fn parse_page_sizes(info: &Value) -> Vec<PageSize> {
         .unwrap_or_default()
 }
 
-pub fn page_size<'a>(sizes: &'a [PageSize], page: u32) -> Option<&'a PageSize> {
+pub fn page_size(sizes: &[PageSize], page: u32) -> Option<&PageSize> {
     sizes.iter().find(|s| s.page == page)
 }
 
@@ -294,7 +294,7 @@ const DOC: i64 = 1;
 
 /// stdout 里取第一个 JSON 值（`--report` 之后可能还跟着错误行；`tools` 是数组不是对象）
 fn first_json(s: &str) -> Option<Value> {
-    let start = s.find(|c: char| c == '{' || c == '[')?;
+    let start = s.find(['{', '['])?;
     let mut iter = serde_json::Deserializer::from_str(&s[start..]).into_iter::<Value>();
     iter.next()?.ok()
 }
@@ -721,7 +721,7 @@ impl PdfCraft {
                 ],
             )
             .await?;
-        let old = our_comment_ids(rows.get(1).unwrap_or(&Value::Null), &req.author);
+        let old = our_comment_ids(rows.get(1).unwrap_or(&Value::Null), req.author);
         let mut steps = vec![Self::open_step(req.source)];
         for id in &old {
             steps.push(json!({ "tool": "comment_delete", "args": { "doc": DOC, "id": id } }));

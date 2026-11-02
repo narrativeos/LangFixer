@@ -123,11 +123,11 @@ impl OptimizationRoundStore {
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLS} FROM optimization_round ORDER BY id DESC LIMIT ?1"
         ))?;
-        let rows = stmt.query_map(rusqlite::params![limit as i64], |r| row_from(r))?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], row_from)?;
         let mut out = Vec::new();
         for row in rows {
             let row = row?;
-            if status.map_or(true, |s| row.status == s) && lang.map_or(true, |l| row.lang == l) {
+            if status.is_none_or(|s| row.status == s) && lang.is_none_or(|l| row.lang == l) {
                 out.push(row);
             }
         }
@@ -140,7 +140,7 @@ impl OptimizationRoundStore {
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLS} FROM optimization_round WHERE id = ?1"
         ))?;
-        let mut rows = stmt.query_map(params![id], |r| row_from(r))?;
+        let mut rows = stmt.query_map(params![id], row_from)?;
         rows.next().transpose()
     }
 
@@ -188,16 +188,16 @@ impl OptimizationRoundStore {
 /// 状态迁移合法性（与 `gec_core::optimization_round::round_status::can_transition`
 /// 同源——存储层与核心解耦，此处保持独立副本）
 fn can_transition(from: &str, to: &str) -> bool {
-    match (from, to) {
+    matches!(
+        (from, to),
         ("proposed", "confirmed")
-        | ("proposed", "rejected")
-        | ("proposed", "failed")
-        | ("confirmed", "running")
-        | ("confirmed", "failed")
-        | ("running", "completed")
-        | ("running", "failed") => true,
-        _ => false,
-    }
+            | ("proposed", "rejected")
+            | ("proposed", "failed")
+            | ("confirmed", "running")
+            | ("confirmed", "failed")
+            | ("running", "completed")
+            | ("running", "failed")
+    )
 }
 
 #[cfg(test)]

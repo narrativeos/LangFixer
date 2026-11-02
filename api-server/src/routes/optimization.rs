@@ -688,14 +688,13 @@ pub async fn round_report(
         .and_then(|v| v.as_array())
     {
         for a in list {
-            if let Some(jid) = a.get("job_id").and_then(|v| v.as_i64()) {
-                if let Some(job) = state
+            if let Some(jid) = a.get("job_id").and_then(|v| v.as_i64())
+                && let Some(job) = state
                     .training_center
                     .get_job(jid)
                     .map_err(|e| ApiError::Internal(e.to_string()))?
-                {
-                    jobs.push(serde_json::to_value(job).unwrap_or_default());
-                }
+            {
+                jobs.push(serde_json::to_value(job).unwrap_or_default());
             }
         }
     }

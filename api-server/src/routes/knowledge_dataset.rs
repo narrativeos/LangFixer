@@ -338,19 +338,19 @@ pub async fn import(
     // ④ staging 草稿会话：仅当无同 ID 会话时恢复（不打断进行中的挖掘；
     //   检查 + 插入同锁完成，杜绝与并发 ingest 启动的 TOCTOU）
     let mut staging_restored = false;
-    if let Some(session) = &pack.components.staging {
-        if state.ingest.put_session_if_absent(session.clone()) {
-            let dir = state.ingest_dir.clone();
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!(error = %e, "staging 目录创建失败（草稿仅内存态）");
-            } else {
-                let path = dir.join(format!("{source_id}.json"));
-                let json = serde_json::to_string_pretty(session)
-                    .map_err(|e| ApiError::Internal(e.to_string()))?;
-                atomic_write(&PathBuf::from(&path), &json)?;
-            }
-            staging_restored = true;
+    if let Some(session) = &pack.components.staging
+        && state.ingest.put_session_if_absent(session.clone())
+    {
+        let dir = state.ingest_dir.clone();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(error = %e, "staging 目录创建失败（草稿仅内存态）");
+        } else {
+            let path = dir.join(format!("{source_id}.json"));
+            let json = serde_json::to_string_pretty(session)
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+            atomic_write(&PathBuf::from(&path), &json)?;
         }
+        staging_restored = true;
     }
 
     tracing::info!(

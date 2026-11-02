@@ -111,6 +111,8 @@ impl Error {
     }
 
     /// 创建带规则元数据的错误（category + rule_id + 多建议）
+    // 参数与 Error 字段一一对应，聚合结构体反而偏离数据模型
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_meta(
         lang: impl Into<String>,
         error_type: impl Into<String>,
@@ -334,11 +336,10 @@ mod tests {
     fn also_found_by_serde_and_idempotent() {
         let mut err = Error::new("zh", error_types::SPELLING, 0.7, [0, 3], "a", None, "t");
         // 默认不序列化（向后兼容）
-        assert_eq!(
-            serde_json::to_string(&err)
+        assert!(
+            !serde_json::to_string(&err)
                 .unwrap()
-                .contains("also_found_by"),
-            false
+                .contains("also_found_by")
         );
         err.source = Some("rule".into());
         err.add_also_found_by("rule"); // 与自身 source 相同 → 忽略
@@ -354,7 +355,7 @@ mod tests {
         assert!(back.also_found_by.is_empty());
     }
 
-    fn zh_err(text: &str, span: [usize; 2], original: &str, corr: Option<&str>) -> Error {
+    fn zh_err(_text: &str, span: [usize; 2], original: &str, corr: Option<&str>) -> Error {
         let mut e = Error::new(
             "zh",
             error_types::GRAMMAR,

@@ -22,8 +22,13 @@ struct DetectResp {
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// 取 env 锁（容忍前序测试 panic 导致的锁污染，避免连锁失败）
-fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+/// 环境变量串行锁的守卫：跨 await 持有是**有意**的（env 是进程级全局，
+/// 须覆盖整个测试过程）；newtype 包装与 MutexGuard 语义等价。
+#[allow(dead_code)] // 守卫靠析构放锁生效，字段不读——环境串行守卫的固有形态
+struct EnvGuard(std::sync::MutexGuard<'static, ()>);
+
+fn env_guard() -> EnvGuard {
+    EnvGuard(ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// 词表目录绝对路径（测试 CWD 是 api-server/，相对路径 lexicons/ 不存在）

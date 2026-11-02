@@ -167,7 +167,7 @@ pub fn occurrence_of(
 
 /// `run --print` 的输出（`review.comments: [{…}]`）→ JSON
 pub fn parse_print_json(stdout: &str) -> Option<Value> {
-    let start = stdout.find(|c: char| c == '[' || c == '{')?;
+    let start = stdout.find(['[', '{'])?;
     let mut iter = serde_json::Deserializer::from_str(&stdout[start..]).into_iter::<Value>();
     iter.next()?.ok()
 }
@@ -523,7 +523,7 @@ impl WordCraft {
         let inspect = self.inspect_json(req.source).await?;
         let blocks = parse_blocks(&inspect);
         let existing = self.list_comments(req.source).await?;
-        let old = our_comment_ids(&existing, &req.author);
+        let old = our_comment_ids(&existing, req.author);
         let mut commands: Vec<Value> = old
             .iter()
             .map(|id| json!({ "command": "review.deleteComment", "params": { "id": id } }))

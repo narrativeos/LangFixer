@@ -202,7 +202,7 @@ pub async fn agent_confirm(
         .executor
         .execute(params.clone())
         .await
-        .map_err(|e| ApiError::Internal(e))?;
+        .map_err(ApiError::Internal)?;
     // 审计：确认执行的高风险动作记入反馈日志
     let error = req.error.as_ref();
     let rule_id = error.and_then(|e| e.rule_id.as_deref());

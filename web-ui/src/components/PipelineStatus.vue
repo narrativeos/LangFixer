@@ -36,15 +36,7 @@ const items = computed<StatusItem[]>(() => [
     hint: 'ZEN 决策表 + 本地词表，进程内运行，始终可用',
     anchor: 'dirs',
   },
-  {
-    key: 'decision',
-    label: '② 决策模型',
-    state: store.decisionEnabled ? 'ok' : 'off',
-    hint: store.decisionEnabled
-      ? 'vegaml 决策层已启用'
-      : '未启用（P0.5 起默认关闭，opt-in）：设置 → 决策模型 打开「启用决策层」',
-    anchor: 'decision',
-  },
+  // ② 决策模型已退役出产品路径（EVOLUTION.md §13 #10）：状态条不再列示
   {
     key: 'embedding',
     label: '②.5 知识召回',

@@ -168,17 +168,15 @@ impl CustomWordStore {
             )
             .ok();
         let n = conn.execute("DELETE FROM custom_words WHERE id = ?1", [id])?;
-        if n > 0 {
-            if let Some((lang, word)) = target {
-                if let Some(set) = self
-                    .index
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get_mut(&lang)
-                {
-                    set.remove(&word);
-                }
-            }
+        if n > 0
+            && let Some((lang, word)) = target
+            && let Some(set) = self
+                .index
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(&lang)
+        {
+            set.remove(&word);
         }
         Ok(n > 0)
     }
@@ -314,6 +312,8 @@ impl DetectHistoryStore {
         })
     }
 
+    // 参数与 feedback_log 表列一一对应（两端同构契约）
+    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &self,
         session_id: Option<&str>,
@@ -431,7 +431,7 @@ impl DetectHistoryStore {
              FROM detect_history WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], |r| self.map_row(r))?;
-        Ok(rows.next().transpose()?)
+        rows.next().transpose()
     }
 
     /// 同文本最近记录（新 → 旧）：重复检测复用历史的候选集
@@ -464,7 +464,7 @@ impl DetectHistoryStore {
 
     pub fn clear(&self) -> Result<usize, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(conn.execute("DELETE FROM detect_history", [])?)
+        conn.execute("DELETE FROM detect_history", [])
     }
 }
 
@@ -970,6 +970,7 @@ impl Core {
     /// - LLM 参数变更 → 重建 LLM 服务（含 `prompts_dir` 变更时热重载模板库），后续讲解请求立即使用新参数
     /// - 决策表目录变更 → 从新目录重新加载决策表
     /// - 更新内存设置并持久化到设置文件
+    ///
     /// 按给定设置重建 zh/en/ja 检测器（整体替换路由表）
     ///
     /// 检测代码只在检测器**构造时**从词表文件加载规则——新采纳的规则
@@ -1248,7 +1249,7 @@ pub async fn detect(
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
         // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）
-        if let Some(reused) = try_reuse_history(&**core, &lang, &text, &category, 1).await {
+        if let Some(reused) = try_reuse_history(&core, &lang, &text, &category, 1).await {
             (reused, true)
         } else {
             let engine = router
@@ -1389,7 +1390,7 @@ pub async fn analyze(
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
         // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）
-        if let Some(reused) = try_reuse_history(&**core, &lang, &text, &None, 1).await {
+        if let Some(reused) = try_reuse_history(&core, &lang, &text, &None, 1).await {
             (reused, true)
         } else {
             let engine = router
@@ -2218,15 +2219,15 @@ pub fn dataset_export(
         let Some(raw) = core.tables.get_raw(&meta.lang) else {
             continue;
         };
-        if let Ok(jdm) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if attribution_engine::tagged_rule_count(&jdm, &source_id) > 0 {
-                pack.components
-                    .decision_tables
-                    .push(attribution_engine::PackDecisionTable {
-                        lang: meta.lang.clone(),
-                        jdm,
-                    });
-            }
+        if let Ok(jdm) = serde_json::from_str::<serde_json::Value>(&raw)
+            && attribution_engine::tagged_rule_count(&jdm, &source_id) > 0
+        {
+            pack.components
+                .decision_tables
+                .push(attribution_engine::PackDecisionTable {
+                    lang: meta.lang.clone(),
+                    jdm,
+                });
         }
     }
     let dir = tables_dir_of(&core);
@@ -2412,15 +2413,15 @@ fn apply_pack(
     // staging 草稿会话：仅当无同 ID 会话时恢复（不打断进行中的挖掘；
     // 检查 + 插入同锁完成，杜绝与并发 ingest 启动的 TOCTOU）
     let mut staging_restored = false;
-    if let Some(session) = &pack.components.staging {
-        if core.ingest.put_session_if_absent(session.clone()) {
-            std::fs::create_dir_all(&core.ingest_dir).map_err(|e| e.to_string())?;
-            pack_atomic_write(
-                &core.ingest_dir.join(format!("{source_id}.json")),
-                &serde_json::to_string_pretty(session).map_err(|e| e.to_string())?,
-            )?;
-            staging_restored = true;
-        }
+    if let Some(session) = &pack.components.staging
+        && core.ingest.put_session_if_absent(session.clone())
+    {
+        std::fs::create_dir_all(&core.ingest_dir).map_err(|e| e.to_string())?;
+        pack_atomic_write(
+            &core.ingest_dir.join(format!("{source_id}.json")),
+            &serde_json::to_string_pretty(session).map_err(|e| e.to_string())?,
+        )?;
+        staging_restored = true;
     }
     Ok(serde_json::json!({
         "knowledge": knowledge,
@@ -2528,6 +2529,8 @@ pub fn dataset_clean(
 /// （非流式请求在生成完成前收不到任何数据，思考模型的长生成会被读超时中断）。
 /// 返回 JSON：`{ explanation, exercises, model, template, template_version }`
 #[tauri::command]
+// Tauri 命令参数名即前端 invoke 契约（与 api-server 请求体字段同构），不能聚合为结构体
+#[allow(clippy::too_many_arguments)]
 pub async fn explain(
     core: tauri::State<'_, Arc<Core>>,
     lang: String,
@@ -2886,7 +2889,7 @@ async fn llm_feedback_inner(
             //    随后 `sync_rules_to_file` 把停用状态写回文件关掉原本启用的规则
             if let Err(e) =
                 core.lexicon_store
-                    .backfill_rule_from_file(&lexicons_dir, &lang, &rule_id)
+                    .backfill_rule_from_file(&lexicons_dir, lang, &rule_id)
             {
                 tracing::warn!(
                     error = %e,
@@ -2896,19 +2899,17 @@ async fn llm_feedback_inner(
             }
 
             // ① 尝试构建规则：store 入库（真正的新规则默认停用，可在规则面板启用）
-            let (rule_ok, created) = match core.lexicon_store.upsert_example(
-                &lang,
-                &rule_id,
-                wrong,
-                right,
-                "llm_distill",
-            ) {
-                Ok(created) => (true, created),
-                Err(e) => {
-                    tracing::warn!(error = %e, rule_id = %rule_id, "规则入库失败");
-                    (false, false)
-                }
-            };
+            let (rule_ok, created) =
+                match core
+                    .lexicon_store
+                    .upsert_example(lang, &rule_id, wrong, right, "llm_distill")
+                {
+                    Ok(created) => (true, created),
+                    Err(e) => {
+                        tracing::warn!(error = %e, rule_id = %rule_id, "规则入库失败");
+                        (false, false)
+                    }
+                };
 
             // ② 规则能否生效的前提：写回词表文件（检测器只在构造时加载词表）
             let file_exists = lexicons_dir
@@ -2916,7 +2917,7 @@ async fn llm_feedback_inner(
                 .exists();
 
             if rule_ok && file_exists {
-                match core.lexicon_store.sync_rules_to_file(&lexicons_dir, &lang) {
+                match core.lexicon_store.sync_rules_to_file(&lexicons_dir, lang) {
                     Ok(outcome) => {
                         // ③ 重建检测器：新规则进入检测词表（新规则默认停用；
                         //    文件既有规则保持原启用状态；启用后即时生效）
@@ -2929,7 +2930,7 @@ async fn llm_feedback_inner(
                         );
                         let enabled = core
                             .lexicon_store
-                            .get_rule(&lang, &rule_id)
+                            .get_rule(lang, &rule_id)
                             .ok()
                             .flatten()
                             .map(|d| d.enabled)
@@ -2997,7 +2998,7 @@ async fn llm_feedback_inner(
             let word = error.original.clone();
             let cw = core
                 .custom_words
-                .add(&lang, &word, "LLM 兜底结果被用户拒绝")
+                .add(lang, &word, "LLM 兜底结果被用户拒绝")
                 .map_err(|e| format!("白名单写入失败: {e}"))?;
             Ok(serde_json::json!({
                 "action": "reject",
@@ -4521,7 +4522,7 @@ pub(crate) async fn l3_retrain_forward(
     let existing = std::fs::read_to_string(&meta_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-    let mut meta = existing.unwrap_or_else(serde_json::Value::default);
+    let mut meta = existing.unwrap_or_default();
     if !meta.is_object() {
         meta = serde_json::Map::new().into();
     }
@@ -4750,44 +4751,44 @@ fn build_reflection_context_cmd<'a>(
                     });
             }
         }
-    } else if source == shared_model::sources::KNOWLEDGE {
-        if let Ok(items) = core.learned_knowledge.list(lang) {
-            // ① 精确：条目文本 == original
-            if let Some(it) = items
-                .iter()
-                .find(|it| it.text.trim() == error.original.trim())
-            {
-                knowledge_item = Some(gec_core::KnowledgeInfo {
-                    id: it.id,
-                    text: it.text.clone(),
-                    error_type: it.error_type.clone(),
-                    correction: it.correction.clone(),
-                    source: it.source.clone(),
-                });
-            } else {
-                // ② 模糊：bigram 相似度最高者
-                let mut best: Option<(i64, f64)> = None;
-                for it in &items {
-                    let sim = gec_core::fuzzy_similarity(&it.text, &error.original);
-                    if sim >= gec_core::knowledge_recall::FUZZY_THRESHOLD
-                        && best.as_ref().is_none_or(|(_, b)| sim > *b)
-                    {
-                        best = Some((it.id, sim));
-                    }
+    } else if source == shared_model::sources::KNOWLEDGE
+        && let Ok(items) = core.learned_knowledge.list(lang)
+    {
+        // ① 精确：条目文本 == original
+        if let Some(it) = items
+            .iter()
+            .find(|it| it.text.trim() == error.original.trim())
+        {
+            knowledge_item = Some(gec_core::KnowledgeInfo {
+                id: it.id,
+                text: it.text.clone(),
+                error_type: it.error_type.clone(),
+                correction: it.correction.clone(),
+                source: it.source.clone(),
+            });
+        } else {
+            // ② 模糊：bigram 相似度最高者
+            let mut best: Option<(i64, f64)> = None;
+            for it in &items {
+                let sim = gec_core::fuzzy_similarity(&it.text, &error.original);
+                if sim >= gec_core::knowledge_recall::FUZZY_THRESHOLD
+                    && best.as_ref().is_none_or(|(_, b)| sim > *b)
+                {
+                    best = Some((it.id, sim));
                 }
-                if let Some((id, _)) = best {
-                    knowledge_item =
-                        items
-                            .iter()
-                            .find(|it| it.id == id)
-                            .map(|it| gec_core::KnowledgeInfo {
-                                id: it.id,
-                                text: it.text.clone(),
-                                error_type: it.error_type.clone(),
-                                correction: it.correction.clone(),
-                                source: it.source.clone(),
-                            });
-                }
+            }
+            if let Some((id, _)) = best {
+                knowledge_item =
+                    items
+                        .iter()
+                        .find(|it| it.id == id)
+                        .map(|it| gec_core::KnowledgeInfo {
+                            id: it.id,
+                            text: it.text.clone(),
+                            error_type: it.error_type.clone(),
+                            correction: it.correction.clone(),
+                            source: it.source.clone(),
+                        });
             }
         }
     }
@@ -4829,25 +4830,25 @@ pub async fn error_feedback(
     .await?;
     // 错题本（非阻断）：采纳成功且带会话时写入该会话错题本（Phase 2 学习扩展）；
     // adopt_count = 此类错误累计采纳次数（含本次，D2 闭环价值感）
-    if action == "adopt" {
-        if let Some(sid) = session_id.as_deref() {
-            let sentence = ctx
-                .as_ref()
-                .and_then(|v| v.get("src_text"))
-                .and_then(|v| v.as_str())
-                .map(|src| shared_model::sentence_around(src, error.span, &error.original))
-                .unwrap_or_else(|| error.original.clone());
-            let adopt_count = core.sessions.add_mistake(
-                sid,
-                &lang,
-                &error.error_type,
-                &error.original,
-                error.correction.as_deref(),
-                &sentence,
-            );
-            if let Some(obj) = res.as_object_mut() {
-                obj.insert("adopt_count".to_string(), serde_json::json!(adopt_count));
-            }
+    if action == "adopt"
+        && let Some(sid) = session_id.as_deref()
+    {
+        let sentence = ctx
+            .as_ref()
+            .and_then(|v| v.get("src_text"))
+            .and_then(|v| v.as_str())
+            .map(|src| shared_model::sentence_around(src, error.span, &error.original))
+            .unwrap_or_else(|| error.original.clone());
+        let adopt_count = core.sessions.add_mistake(
+            sid,
+            &lang,
+            &error.error_type,
+            &error.original,
+            error.correction.as_deref(),
+            &sentence,
+        );
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("adopt_count".to_string(), serde_json::json!(adopt_count));
         }
     }
     // 资产沉淀（非阻断）：adopt → adopted.jsonl 句对；reject → rejected.jsonl 负偏好
@@ -5053,32 +5054,29 @@ async fn error_feedback_body(
                 let mut reinforced = false;
                 if let (Some(rule_id), Some(right)) =
                     (error.rule_id.as_deref(), error.correction.as_deref())
+                    && !right.trim().is_empty()
                 {
-                    if !right.trim().is_empty() {
-                        // 规则在词表文件中但不在 store（建库后才加入文件，播种只在库空时执行）：
-                        // 先按文件回填定义，防止 upsert 自动创建「默认停用」影子定义
-                        let lexicons_dir =
-                            PathBuf::from(&core.settings.read().unwrap().lexicons_dir);
-                        if let Err(e) = core.lexicon_store.backfill_rule_from_file(
-                            &lexicons_dir,
-                            &lang,
-                            rule_id,
-                        ) {
-                            tracing::warn!(
-                                error = %e,
-                                rule_id = %rule_id,
-                                "从词表文件回填规则定义失败（继续默认流程）"
-                            );
-                        }
-                        if let Ok(true) = core.lexicon_store.upsert_example(
-                            &lang,
-                            rule_id,
-                            &error.original,
-                            right,
-                            "manual",
-                        ) {
-                            reinforced = true;
-                        }
+                    // 规则在词表文件中但不在 store（建库后才加入文件，播种只在库空时执行）：
+                    // 先按文件回填定义，防止 upsert 自动创建「默认停用」影子定义
+                    let lexicons_dir = PathBuf::from(&core.settings.read().unwrap().lexicons_dir);
+                    if let Err(e) =
+                        core.lexicon_store
+                            .backfill_rule_from_file(&lexicons_dir, &lang, rule_id)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            rule_id = %rule_id,
+                            "从词表文件回填规则定义失败（继续默认流程）"
+                        );
+                    }
+                    if let Ok(true) = core.lexicon_store.upsert_example(
+                        &lang,
+                        rule_id,
+                        &error.original,
+                        right,
+                        "manual",
+                    ) {
+                        reinforced = true;
                     }
                 }
                 let rule_id = error
@@ -5311,7 +5309,7 @@ pub async fn confirm_agent_proposal(
         Some(p) if !p.is_null() => p,
         _ => serde_json::Value::Object(serde_json::Map::new()),
     };
-    let message = mt.executor.execute(params.clone()).await.map_err(|e| e)?;
+    let message = mt.executor.execute(params.clone()).await?;
     // 审计：确认执行的高风险动作记入反馈日志
     let rule_id = error.as_ref().and_then(|e| e.rule_id.as_deref());
     let error_type = error
@@ -5690,18 +5688,16 @@ pub async fn run_reflect(
         if let Ok(jobs) = core
             .training_center
             .list_jobs(Some(&lang), Some("completed"), 50)
-        {
-            if let Some(job) = jobs
+            && let Some(job) = jobs
                 .into_iter()
                 .find(|j| j.kind == gec_core::job_kind::L3_RETRAIN)
-            {
-                st.last_job_report_id = job
-                    .payload
-                    .get("report_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                st.f1_before = job.payload.get("gate_f1").and_then(|v| v.as_f64());
-            }
+        {
+            st.last_job_report_id = job
+                .payload
+                .get("report_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            st.f1_before = job.payload.get("gate_f1").and_then(|v| v.as_f64());
         }
         st.f1_after = eval.as_ref().and_then(|e| {
             e.layers
@@ -6092,31 +6088,30 @@ pub async fn train_apply_lexicon(
             })
             .unwrap_or_default(),
     );
-    if let Some(sid) = suggestion_id {
-        if let Some(row) = core
+    if let Some(sid) = suggestion_id
+        && let Some(row) = core
             .reflection_center
             .get_suggestion(sid)
             .map_err(|e| format!("建议查询失败: {e}"))?
-        {
-            if rule_id.is_none() {
-                rule_id = row
-                    .payload
-                    .get("rule_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
-            if words.is_empty() {
-                words = row
-                    .payload
-                    .get("originals")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|w| w.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
+    {
+        if rule_id.is_none() {
+            rule_id = row
+                .payload
+                .get("rule_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+        if words.is_empty() {
+            words = row
+                .payload
+                .get("originals")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|w| w.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
         }
     }
     let rule_id = rule_id.ok_or_else(|| "rule_id 缺失（且建议 payload 无 rule_id）".to_string())?;
@@ -6948,14 +6943,13 @@ pub async fn round_report(
         .and_then(|v| v.as_array())
     {
         for a in list {
-            if let Some(jid) = a.get("job_id").and_then(|v| v.as_i64()) {
-                if let Some(job) = core
+            if let Some(jid) = a.get("job_id").and_then(|v| v.as_i64())
+                && let Some(job) = core
                     .training_center
                     .get_job(jid)
                     .map_err(|e| format!("作业查询失败: {e}"))?
-                {
-                    jobs.push(serde_json::to_value(job).unwrap_or_default());
-                }
+            {
+                jobs.push(serde_json::to_value(job).unwrap_or_default());
             }
         }
     }

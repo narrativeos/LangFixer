@@ -407,34 +407,34 @@ pub async fn run_agent(
                     }
                 }
             }
-            AgentEvent::MessageEnd { message } => {
-                if let AgentMessage::Llm(Message::Assistant {
-                    content,
-                    stop_reason,
-                    error_message,
-                    ..
-                }) = message
-                {
-                    let text = content_text(content);
-                    match stop_reason {
-                        StopReason::Stop | StopReason::Length => {
-                            result.trace.push(TraceStep {
-                                kind: TraceKind::ModelTurn,
-                                tool: None,
-                                detail: json!({ "text": text }),
-                            });
-                            if *stop_reason == StopReason::Stop {
-                                result.summary = text;
-                            }
+            AgentEvent::MessageEnd {
+                message:
+                    AgentMessage::Llm(Message::Assistant {
+                        content,
+                        stop_reason,
+                        error_message,
+                        ..
+                    }),
+            } => {
+                let text = content_text(content);
+                match stop_reason {
+                    StopReason::Stop | StopReason::Length => {
+                        result.trace.push(TraceStep {
+                            kind: TraceKind::ModelTurn,
+                            tool: None,
+                            detail: json!({ "text": text }),
+                        });
+                        if *stop_reason == StopReason::Stop {
+                            result.summary = text;
                         }
-                        _ => {
-                            if let Some(err) = error_message {
-                                result.trace.push(TraceStep {
-                                    kind: TraceKind::Ended,
-                                    tool: None,
-                                    detail: json!({ "error": err }),
-                                });
-                            }
+                    }
+                    _ => {
+                        if let Some(err) = error_message {
+                            result.trace.push(TraceStep {
+                                kind: TraceKind::Ended,
+                                tool: None,
+                                detail: json!({ "error": err }),
+                            });
                         }
                     }
                 }
@@ -454,14 +454,12 @@ pub async fn run_agent(
                         stop_reason,
                         StopReason::Stop | StopReason::Length | StopReason::ToolUse
                     ) && error_message.is_none();
-                    if !ended_ok {
-                        if let Some(err) = error_message {
-                            result.trace.push(TraceStep {
-                                kind: TraceKind::Ended,
-                                tool: None,
-                                detail: json!({ "error": err }),
-                            });
-                        }
+                    if !ended_ok && let Some(err) = error_message {
+                        result.trace.push(TraceStep {
+                            kind: TraceKind::Ended,
+                            tool: None,
+                            detail: json!({ "error": err }),
+                        });
                     }
                 }
             }

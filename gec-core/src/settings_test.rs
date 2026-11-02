@@ -58,6 +58,8 @@ fn err_result(target: &str, message: impl Into<String>, latency: Instant) -> Tes
 }
 
 /// 测试全部项目（并行执行；顺序固定，便于前端逐项展示）
+// 参数即各被测服务的设置全集（与 SettingsView 字段一一对应）
+#[allow(clippy::too_many_arguments)]
 pub async fn test_all(
     hanlp_endpoint: &str,
     llm_base_url: &str,
@@ -146,7 +148,7 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
     }
     // 测试请求用更短的超时（配置超时上限 10 秒），避免慢服务长时间挂起测试
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs.min(10).max(1)))
+        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)))
         .build()
         .unwrap_or_default();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));

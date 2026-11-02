@@ -58,15 +58,15 @@ pub mod job_status {
     /// `proposed → confirmed / failed`；`confirmed → running / failed`；
     /// `running → completed / failed`。终态（completed / failed）不可再迁移。
     pub fn can_transition(from: &str, to: &str) -> bool {
-        match (from, to) {
+        matches!(
+            (from, to),
             (PROPOSED, CONFIRMED)
-            | (PROPOSED, FAILED)
-            | (CONFIRMED, RUNNING)
-            | (CONFIRMED, FAILED)
-            | (RUNNING, COMPLETED)
-            | (RUNNING, FAILED) => true,
-            _ => false,
-        }
+                | (PROPOSED, FAILED)
+                | (CONFIRMED, RUNNING)
+                | (CONFIRMED, FAILED)
+                | (RUNNING, COMPLETED)
+                | (RUNNING, FAILED)
+        )
     }
 }
 /// 领域池样本
@@ -463,8 +463,7 @@ mod tests {
         assert_eq!(
             pool.by_source
                 .iter()
-                .filter(|(k, _)| k == "flywheel")
-                .next()
+                .find(|(k, _)| k == "flywheel")
                 .unwrap()
                 .1,
             2
@@ -472,8 +471,7 @@ mod tests {
         assert_eq!(
             pool.by_source
                 .iter()
-                .filter(|(k, _)| k == "augment")
-                .next()
+                .find(|(k, _)| k == "augment")
                 .unwrap()
                 .1,
             2

@@ -13,7 +13,7 @@
 - **能做什么**：英文检测最成熟；中文覆盖词典规则类目（同音/形近错别字、的地得、标点排版、时间格式混用等）；日文为早期阶段。归因与讲解三语可用；本地规则层离线完全可用。
 - **做不到什么**：**不保证全量召回**——本地规则层对中文载体审校金集召回 0%（见下文「载体审校」），LLM 复查需自行配置端点且有成本；它不是风格编辑器，不改写内容。能力边界以各语言词表实际覆盖与测评中心实测报告为准。
 
-- **检测**：中文、英文（HanLP 服务 + Rust 侧规则）、日文（Sudachi + 本地规则），每种语言均带**离线兜底**（外部 NLP 服务不可达时自动降级为本地词典/规则检测）；可选挂载 **vegaml 决策模型层**（`decision-model/`）形成三层级联「规则 → 决策 → LLM」——规则未命中的句子交由 vegaml 判断，弃权则放行、服务不可用自动回退纯规则（**默认关闭**，为 opt-in 层：L3 特征模型是唯一的 pre-LLM 门控，设置界面 / `GEC_DEC_ENABLED=1` 可显式开启）；**三级响应**（API `level` 参数）在前两层之上按需触发 LLM 兜底：L3 特征模型（`feature-model/`，**默认开启**）门控——level 2 高置信时直接定案、弃权 / 服务不可用时（L3 未启用时回退决策模型弃权信号）对全文跑 LLM 复查（level 2）；level 3 无条件强制 LLM——特征模型高置信时直接定案（含模式化 span 定位 + 机械修正），**LLM 层收缩到纯长尾**（前端「深度重查」按钮 = force_llm，仍无条件 LLM）。级联与三级响应的完整机制见下文「三级响应」。
+- **检测**：中文、英文（HanLP 服务 + Rust 侧规则）、日文（Sudachi + 本地规则），每种语言均带**离线兜底**（外部 NLP 服务不可达时自动降级为本地词典/规则检测）；**三级响应**（API `level` 参数）在规则层之上按需触发 LLM 兜底：L3 特征模型（`feature-model/`，**默认开启**）门控——level 2 高置信时直接定案、弃权 / 服务不可用时对全文跑 LLM 复查（level 2）；level 3 无条件强制 LLM——特征模型高置信时直接定案（含模式化 span 定位 + 机械修正），**LLM 层收缩到纯长尾**（前端「深度重查」按钮 = force_llm，仍无条件 LLM）。~~vegaml 决策模型层~~**已退役出产品路径**（评测证实其被 L3 严格覆盖，见 [EVOLUTION.md](EVOLUTION.md) §13 #10）：代码保留为实验路径，仅 `GEC_DEC_ENABLED=1` 显式开启，默认路径 = 规则 → L3 → LLM。级联与三级响应的完整机制见下文「三级响应」。
 - **词表**：各语言的规则词表（混淆词、过去式表、助词组合等）外置于 `lexicons/*.json`，不重新编译即可扩充；文件缺失/损坏时回退到内置默认词表。
 - **归因**：ZEN Engine（GoRules JDM 标准）决策表，输出归因标签（知识缺口 / 习惯固化 / 规则缺失 / 规则遗忘 / 搭配薄弱）+ 韦纳三维度（内外源 × 稳定性 × 可控性）+ **CEFR 难度分级（A1-C2）** + 补救措施 + 决策追踪。
 - **交付**：Axum API 服务（Docker 化）+ Vue 3 Web UI + Tauri 2 桌面端（离线模式）。
@@ -30,7 +30,7 @@ LangFixer/
 ├── gec-ja/               # 日文检测器（Sudachi /parse + 规则，离线兜底）
 ├── attribution-engine/   # ZEN 决策表引擎 + 热更新 TableStore + 知识库 KnowledgeStore + 韦纳映射
 ├── langfixer-llm/        # LLM 扩展（OpenAI 兼容客户端 + SSE 流式 + 提示词模板）
-├── decision-model/       # 决策模型（vegaml）：FastAPI 服务（POST /decide，支持 VEGAML_MOCK 离线 mock）+ 微调工作流（extract/train/eval）+ gold 数据转换
+├── decision-model/       # 决策模型（vegaml）【已退役出产品路径，实验代码保留】：FastAPI 服务（POST /decide，支持 VEGAML_MOCK 离线 mock）+ 微调工作流（extract/train/eval）+ gold 数据转换
 ├── feature-model/        # L3 特征模型：FastAPI 服务（POST /l3-detect，支持 FEATURE_MOCK 离线 mock）+ 训练工作流 + 模式化 span 定位 / 机械修正（correct.py）+ **训练飞轮**（LLM 确认样本 → 重训练 → 热切换，自进化）
 ├── api-server/           # Axum API 服务（Dockerfile 内置）
 ├── desktop-app/          # Tauri 2 桌面端（离线运行）
@@ -236,7 +236,7 @@ POST /gec/knowledge/dataset/:id/clean    删除资源包（?keep_orphan_points=1
 | `4801` | api-server（Axum API） | `PORT`（Docker `EXPOSE 4801`） |
 | `4802` | 日文 Sudachi 分词服务 | `SUDACHI_ENDPOINT` |
 | `4803` | 统计 GEC 服务（Harper / HF transformers server 类） | `GEC_STAT_ENDPOINT` |
-| `4804` | vegaml 决策模型服务（`POST /decide`） | `GEC_DEC_ENDPOINT` / `decision-model` 的 `DEC_PORT` |
+| `4804` | vegaml 决策模型服务（`POST /decide`；**实验层，默认不启动**——该层已退役出产品路径） | `GEC_DEC_ENDPOINT` / `decision-model` 的 `DEC_PORT` |
 | `4805` | Vite dev server（前端开发 + Tauri devUrl） | `web-ui/vite.config.ts` / `tauri.conf.json` |
 | `4806` | L3 特征模型服务（`POST /l3-detect`；飞轮：`POST /l3-retrain` / `GET /l3/status`） | `GEC_L3_ENDPOINT` / `feature-model` 的 `L3_PORT` |
 
@@ -291,8 +291,8 @@ POST /gec/knowledge/dataset/:id/clean    删除资源包（?keep_orphan_points=1
 
 | level | 行为 | LLM 触发条件 |
 |---|---|---|
-| 1（缺省） | 规则（+ 决策模型，若显式启用） | 不触发 |
-| 2 | 1 级 + **L3 特征模型门控**（若启用；L3 是唯一的 pre-LLM 门控） | L3 **弃权**（灰区 `[0.25, GEC_L3_ABSTAIN_THRESHOLD)`）或**服务不可用**时触发；L3 高置信（有错 / 明确无错）时直接定案，**不调用 LLM**；L3 未启用时回退旧语义：决策模型**明确弃权**（`abstain: true`，或无 `abstain` 字段时概率落在灰区 `[0.25, abstain_threshold)`） |
+| 1（缺省） | 规则（+ 决策模型**实验层**，仅显式开启时） | 不触发 |
+| 2 | 1 级 + **L3 特征模型门控**（若启用；L3 是唯一的 pre-LLM 门控） | L3 **弃权**（灰区 `[0.25, GEC_L3_ABSTAIN_THRESHOLD)`）或**服务不可用**时触发；L3 高置信（有错 / 明确无错）时直接定案，**不调用 LLM**；L3 未启用时回退旧语义：决策模型**实验层**（默认退役关闭）明确弃权时 |
 | 3 | 1 级 + **L3 特征模型**（若启用）+ LLM 兜底 | **无条件**触发（「漏报」兜底）；特征模型高置信时直接定案，**不调用 LLM**（LLM 收缩到纯长尾） |
 
 - LLM 兜底引擎按请求从运行时 LLM 参数 + 检测模板（`prompts/{lang}_detect_prompt.json`）现构建，支持设置热更新；
@@ -372,7 +372,9 @@ cd web-ui && npm run typecheck && npm run build
    rule / statistical / llm 按语言经 `GEC_ENGINE_{LANG}` 分发）+ `StatisticalGecEngine` 统计服务客户端
    （Harper / HuggingFace 序列模型，`POST /gec`）；统计引擎为主、规则引擎兜底合并（按 span 去重），
    突破纯规则引擎的召回率上限——接入真实模型服务只需配置 `GEC_ENGINE_*` + `GEC_STAT_*`。
-3. **vegaml 决策模型层**（✅ 挂载点就位）：`gec-core` 新增 `DecisionGecEngine`（`POST /decide`
+3. **vegaml 决策模型层**（**已退役出产品路径**，EVOLUTION.md §13 #10：选型未落地、被 L3
+   严格覆盖、生产实测贡献 0——代码保留为实验路径，`GEC_DEC_ENABLED=1` 显式开启）：
+   `gec-core` 的 `DecisionGecEngine`（`POST /decide`
    客户端）+ `GecEngineKind::Decision`，`compose_detector` 在启用决策层时以「规则 + 决策」组合
    （`CompositeDetector`，span 去重合并）；vegaml 对规则未命中句子做判断——检出错误合成错误项
    （`collocation`→COLLOCATION、`word_order`→WORD_ORDER、其余→GRAMMAR），弃权（prob 低于

@@ -53,8 +53,9 @@ pub struct AppSettings {
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     #[serde(default = "default_lexicons_dir")]
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数（设置界面可改，持久化；
-    /// `enabled=true` 时 `rule` 引擎组合中挂载决策模型层；等价环境变量 `GEC_DEC_*`）
+    /// 决策模型（vegaml）层参数（已退役出产品路径：设置界面入口移除；
+    /// `enabled=true` 时 `rule` 引擎组合中挂载决策模型层——仅实验路径；
+    /// 等价环境变量 `GEC_DEC_*`）
     #[serde(default)]
     pub decision: DecisionConfig,
     /// L3 特征模型层参数（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
@@ -130,8 +131,7 @@ impl AppSettings {
 
     /// 持久化到指定文件（调用方负责错误处理）
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let content = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, content)
     }
 }

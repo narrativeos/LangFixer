@@ -23,6 +23,7 @@
 //! 字符串键值，见 `decision-tables/generate_tables.py`）：
 //! - `_id` = 规则稳定 ID；`_meta` = 派生该规则的知识源 source_id
 //!   （无 `_meta` = 产品内置通用规则，删除资源包不触碰）。
+//!
 //! 按源摘除/合并规则行见 [`remove_tagged_rows`] / [`merge_tagged_rows`]。
 //!
 //! 校验和为导出/导入同工具内自洽的内容指纹（SipHash，防篡改/截断提示），
@@ -410,13 +411,6 @@ pub fn validate_pack(pack: &ResourcePack) -> Result<(), String> {
     Ok(())
 }
 
-/// 导入（知识数据部分）：注册表 upsert → 知识点按 `point_id` 幂等归并。
-///
-/// 归并规则（与 [`crate::ingest::plan_merge`] 发布语义一致）：
-/// - 既有点：只追加该源 `sources[]` 背书（已背书则跳过），**不覆盖内容**；
-/// - 新点：直接收录（强制 lang 与分组一致，并保证含该源引用）。
-///
-/// 前置 [`validate_pack`] 通过后调用；校验失败调用方不得进入本函数。
 // ---------------------------------------------------------------------------
 // aux 决策数据文件（条目级归属标记：entry.source_id）
 // ---------------------------------------------------------------------------
@@ -610,6 +604,13 @@ pub fn pack_from_bytes(bytes: &[u8]) -> Result<ResourcePack, String> {
     }
 }
 
+/// 导入（知识数据部分）：注册表 upsert → 知识点按 `point_id` 幂等归并。
+///
+/// 归并规则（与 [`crate::ingest::plan_merge`] 发布语义一致）：
+/// - 既有点：只追加该源 `sources[]` 背书（已背书则跳过），**不覆盖内容**；
+/// - 新点：直接收录（强制 lang 与分组一致，并保证含该源引用）。
+///
+/// 前置 [`validate_pack`] 通过后调用；校验失败调用方不得进入本函数。
 pub fn import_pack(
     store: &KnowledgeStore,
     pack: &ResourcePack,

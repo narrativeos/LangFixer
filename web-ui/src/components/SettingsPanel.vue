@@ -351,53 +351,11 @@ onMounted(() => {
   load()
 })
 
-// ── 「启用决策层」开关：切换即自动保存（即时生效 + 持久化），L2 状态随之自动同步 ──
-const decisionApplying = ref(false)
-const decisionApplyMsg = ref('')
-let decisionApplyTimer: ReturnType<typeof setTimeout> | null = null
-/** load() 从服务端回填表单值期间为 true，避免误触发自动保存 */
+// 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+// 「启用决策层」开关与自动保存逻辑移除，decision* 表单值仅随 GET/PUT 透传，
+// 保持服务端状态与设置契约不变；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启。
+/** load() 从服务端回填表单值期间为 true，避免误触发自动保存（如 L3 开关） */
 let suppressAutoSave = false
-/** 自动保存（含失败回滚）进行中，防止 watch 重入造成循环 */
-let autoSaveBusy = false
-watch(decisionEnabled, async (v, old) => {
-  if (old === undefined || suppressAutoSave || autoSaveBusy) return
-  autoSaveBusy = true
-  decisionApplying.value = true
-  decisionApplyMsg.value = ''
-  // 乐观更新全局 store：检测页 L2 状态标签立即跟随开关
-  store.decisionEnabled = v
-  try {
-    const res = await api.updateSettings({ decision: { enabled: v } })
-    savedSnapshot.value = res
-    const confirmed = res.decision?.enabled
-    if (confirmed === undefined || confirmed === v) {
-      decisionApplyMsg.value = `决策层已${v ? '启用' : '停用'}（即时生效，已持久化）`
-    } else {
-      // 服务端未接受该值：回滚开关 + store
-      suppressAutoSave = true
-      decisionEnabled.value = confirmed
-      store.decisionEnabled = confirmed
-      await nextTick()
-      suppressAutoSave = false
-      decisionApplyMsg.value = '保存失败：服务端未接受该状态'
-    }
-  } catch (e) {
-    // 保存失败：回滚开关 + store，避免界面状态与服务端不一致
-    suppressAutoSave = true
-    decisionEnabled.value = !v
-    store.decisionEnabled = !v
-    await nextTick()
-    suppressAutoSave = false
-    decisionApplyMsg.value = `保存失败：${errMsg(e)}`
-  } finally {
-    autoSaveBusy = false
-    decisionApplying.value = false
-    if (decisionApplyTimer) clearTimeout(decisionApplyTimer)
-    decisionApplyTimer = setTimeout(() => {
-      decisionApplyMsg.value = ''
-    }, 8000)
-  }
-})
 
 // ── 「启用特征模型」开关：切换即自动保存（即时生效 + 持久化），L3 状态随之同步 ──
 const l3Applying = ref(false)
@@ -544,17 +502,7 @@ const serviceOverview = computed<OverviewRow[]>(() => {
       offlineMode.value ? 'info' : hanlpEndpoint.value.trim() ? 'success' : 'warning',
       'hanlp',
     ),
-    row(
-      '决策模型（vegaml）',
-      '外部服务',
-      decisionEnabled.value
-        ? decisionEndpoint.value.trim()
-          ? '已启用'
-          : '已启用（未填地址）'
-        : '未启用（默认关闭）',
-      decisionEnabled.value ? 'success' : 'info',
-      'decision',
-    ),
+    // 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：总览不再列示
     row(
       'L3 特征模型',
       '外部服务',
@@ -791,68 +739,8 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <!-- 高级（运营）：决策模型层——阈值 / 端点 / 消融开关，面向平台维护者 -->
-    <el-card v-if="store.caps.ops" shadow="never" id="set-decision" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">决策模型（vegaml）</span>
-          <el-tag :type="decisionEnabled ? 'success' : 'info'" size="small">
-            {{ decisionEnabled ? '已启用' : '未启用' }}
-          </el-tag>
-          <span class="sub">规则引擎之后、LLM 之前的中间检测层（三层级联：规则 → 决策 → LLM）</span>
-        </div>
-      </template>
-      <el-form label-width="110px">
-        <el-form-item label="启用决策层">
-          <el-switch v-model="decisionEnabled" :loading="decisionApplying" />
-          <span class="sub">
-            切换即自动保存（即时生效 + 持久化），检测页「标准检查」状态自动同步；
-            开启后规则引擎未命中的句子交由 vegaml 决策模型判断
-          </span>
-        </el-form-item>
-        <el-form-item v-if="decisionApplyMsg" label=" ">
-          <span :class="decisionApplyMsg.startsWith('保存失败') ? 'apply-err' : 'apply-ok'">
-            {{ decisionApplyMsg }}
-          </span>
-        </el-form-item>
-        <el-form-item label="服务地址">
-          <el-input
-            v-model="decisionEndpoint"
-            placeholder="http://127.0.0.1:4804（留空 = 仅环境变量 GEC_DEC_ENDPOINT 可启用）"
-            style="width: 420px"
-          />
-        </el-form-item>
-        <el-form-item label="模型">
-          <el-input v-model="decisionModel" placeholder="vega-base" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="超时（秒）">
-          <el-input-number v-model="decisionTimeout" :min="1" :max="120" />
-        </el-form-item>
-        <el-form-item label="弃权阈值">
-          <el-input-number v-model="decisionThreshold" :min="0" :max="1" :step="0.05" :precision="2" />
-          <span class="sub">has_error_prob 低于该值视为无错误（弃权）</span>
-        </el-form-item>
-        <el-form-item label="服务测试">
-          <el-button :loading="testing.decision" @click="runTest('decision')">测试决策服务</el-button>
-          <span v-if="testResults.decision" :class="testResults.decision.ok ? 'apply-ok' : 'apply-err'">
-            {{ testResults.decision.message }}
-            <span class="sub">（{{ testResults.decision.latency_ms }} ms）</span>
-          </span>
-        </el-form-item>
-      </el-form>
-      <div class="hint">
-        决策层对「规则引擎未命中」的句子做 vegaml 判断：检出错误则合成错误项（与规则结果合并去重），
-        弃权（prob 低于阈值）则放行；服务不可用时自动回退纯规则，不影响检测。
-        保存后即时重建检测器，无需重启。
-        <br />
-        该开关与检测页「检查模式」对齐：
-        <el-tag size="small" :type="decisionEnabled ? 'success' : 'warning'">
-          当前{{ decisionEnabled ? '已启用' : '未启用' }}
-        </el-tag>
-        ——「标准检查」（决策模型弃权时 LLM 复查）仅在决策层启用时生效；未启用时
-        标准检查等效快速检查。
-      </div>
-    </el-card>
+    <!-- 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+         设置卡片移除；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启（代码保留）。 -->
 
     <el-card shadow="never" id="set-embedding" class="settings-card">
       <template #header>

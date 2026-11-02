@@ -87,7 +87,7 @@ impl KnowledgeStore {
                 .get(&s.lang)
                 .map(|ps| {
                     ps.iter()
-                        .filter(|p| p.sources.iter().any(|r| &r.source_id == &s.source_id))
+                        .filter(|p| p.sources.iter().any(|r| r.source_id == s.source_id))
                         .count()
                 })
                 .unwrap_or(0);
@@ -115,7 +115,7 @@ impl KnowledgeStore {
             .read()
             .unwrap()
             .get(lang)
-            .and_then(|ps| ps.iter().find(|p| &p.point_id == point_id).cloned())
+            .and_then(|ps| ps.iter().find(|p| p.point_id == point_id).cloned())
     }
 
     /// 已加载知识点集合的语言列表（排序；数据集按语言盘点/导出用）
@@ -265,15 +265,16 @@ pub fn classify_point_en(
 ) -> Option<String> {
     let o = original.trim();
     let c = correction.trim();
-    if !o.is_empty() && !c.is_empty() {
-        if let Some(p) = store.points("en", None).into_iter().find(|p| {
+    if !o.is_empty()
+        && !c.is_empty()
+        && let Some(p) = store.points("en", None).into_iter().find(|p| {
             p.error_type == error_type
                 && p.corrections.iter().any(|x| {
                     x.wrong.trim().eq_ignore_ascii_case(o) && x.right.trim().eq_ignore_ascii_case(c)
                 })
-        }) {
-            return Some(p.point_id);
-        }
+        })
+    {
+        return Some(p.point_id);
     }
     fallback
 }

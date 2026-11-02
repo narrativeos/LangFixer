@@ -249,7 +249,7 @@ mod tests {
         assert!(cosine_similarity(&a, &c).abs() < 1e-6);
         // 零向量 / 维度不匹配 → 0
         assert_eq!(cosine_similarity(&[], &a), 0.0);
-        assert_eq!(cosine_similarity(&a, &vec![0.0, 0.0]), 0.0);
+        assert_eq!(cosine_similarity(&a, &[0.0, 0.0]), 0.0);
     }
 
     #[test]

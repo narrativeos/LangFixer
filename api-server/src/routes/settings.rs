@@ -143,7 +143,8 @@ pub struct SettingsResponse {
     pub tables_dir: String,
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数（设置界面可改，即时生效 + 持久化）
+    /// 决策模型（vegaml）层参数（已退役出产品路径：界面不再提供入口，
+    /// 字段保留透传以维持契约；实验路径经设置文件 / `GEC_DEC_ENABLED` 开启）
     pub decision: DecisionSettingsView,
     /// L3 特征模型层参数（三期：level 3 先跑特征模型，LLM 收缩到纯长尾）
     pub l3: L3SettingsView,

@@ -19,7 +19,7 @@
 | `GEC_STAT_ENDPOINT` | `http://127.0.0.1:4803` | 统计 GEC 服务（Harper / HuggingFace transformers server 类，`POST /gec`） |
 | `GEC_STAT_TIMEOUT_SECS` | `30` | 统计 GEC 服务请求超时 |
 | `GEC_STAT_MODEL` | `hf-gec` | 统计模型名（日志 / 元数据） |
-| `GEC_DEC_ENABLED` | `0`（默认关闭） | **vegaml 决策模型层**开关（三层级联：规则 → 决策 → LLM）：**默认关闭**（L3 特征模型是唯一的 pre-LLM 门控，决策模型是 opt-in 层）；显式 `1`/`true` 时开启 |
+| `GEC_DEC_ENABLED` | `0`（默认关闭） | **vegaml 决策模型层**开关——该层**已退役出产品路径**（EVOLUTION.md §13 #10，2026-11-02 执行：设置界面入口移除）；代码保留为实验路径，显式 `1`/`true` 时开启 |
 | `GEC_DEC_ENDPOINT` | `http://127.0.0.1:4804` | vegaml 决策模型服务（`POST /decide`；`decision-model/server.py`，`VEGAML_MOCK=1` 可离线 mock） |
 | `GEC_DEC_MODEL` | `vega-base` | 决策模型名（日志 / 元数据） |
 | `GEC_DEC_TIMEOUT_SECS` | `10` | 决策模型请求超时（超时 = 该句弃权，回退纯规则） |

@@ -410,63 +410,64 @@ mod tests {
         // 去重后：1 个被采纳文本 + 2 个被拒绝文本（「a」「c」）
         assert_eq!(store.stats_by_rule_distinct("zh", "R1").unwrap(), (1, 2));
         assert_eq!(store.stats_by_rule_distinct("zh", "NOPE").unwrap(), (0, 0));
-        #[test]
-        fn stats_since_window() {
-            let dir = std::env::temp_dir().join(format!("lf_fb_since_{}", std::process::id()));
-            let _ = std::fs::remove_file(&dir);
-            let store = FeedbackLogStore::open(&dir).unwrap();
-            store
-                .insert("zh", "feature", None, "grammar", "句子一", "", "reject", "")
-                .unwrap();
-            store
-                .insert("zh", "feature", None, "grammar", "句子二", "", "reject", "")
-                .unwrap();
-            store
-                .insert(
-                    "zh",
-                    "llm",
-                    None,
-                    "grammar",
-                    "句子三",
-                    "修正三",
-                    "adopt",
-                    "",
-                )
-                .unwrap();
-            // 第一行回拨到更早时间（模拟「上次轮次之前」的旧反馈）
-            {
-                let conn = rusqlite::Connection::open(&dir).unwrap();
-                conn.execute(
+    }
+
+    #[test]
+    fn stats_since_window() {
+        let dir = std::env::temp_dir().join(format!("lf_fb_since_{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let store = FeedbackLogStore::open(&dir).unwrap();
+        store
+            .insert("zh", "feature", None, "grammar", "句子一", "", "reject", "")
+            .unwrap();
+        store
+            .insert("zh", "feature", None, "grammar", "句子二", "", "reject", "")
+            .unwrap();
+        store
+            .insert(
+                "zh",
+                "llm",
+                None,
+                "grammar",
+                "句子三",
+                "修正三",
+                "adopt",
+                "",
+            )
+            .unwrap();
+        // 第一行回拨到更早时间（模拟「上次轮次之前」的旧反馈）
+        {
+            let conn = rusqlite::Connection::open(&dir).unwrap();
+            conn.execute(
                 "UPDATE feedback_log SET created_at = '2020-01-01 00:00:00' WHERE original = '句子一'",
                 [],
             )
             .unwrap();
-            }
-            // since = None → 全量（与 stats 一致）
-            let all = store.stats_since("zh", None).unwrap();
-            assert_eq!(
-                all.iter().find(|s| s.source == "feature").unwrap().rejected,
-                2
-            );
-            // 时间窗口：只统计 2025 年之后（第一行被排除）
-            let since = store
-                .stats_since("zh", Some("2025-01-01 00:00:00"))
-                .unwrap();
-            assert_eq!(
-                since
-                    .iter()
-                    .find(|s| s.source == "feature")
-                    .unwrap()
-                    .rejected,
-                1
-            );
-            assert_eq!(since.iter().find(|s| s.source == "llm").unwrap().adopted, 1);
-            // 明细窗口
-            let list = store
-                .list_since(Some("zh"), Some("2025-01-01 00:00:00"), 100)
-                .unwrap();
-            assert_eq!(list.len(), 2);
-            let _ = std::fs::remove_file(&dir);
         }
+        // since = None → 全量（与 stats 一致）
+        let all = store.stats_since("zh", None).unwrap();
+        assert_eq!(
+            all.iter().find(|s| s.source == "feature").unwrap().rejected,
+            2
+        );
+        // 时间窗口：只统计 2025 年之后（第一行被排除）
+        let since = store
+            .stats_since("zh", Some("2025-01-01 00:00:00"))
+            .unwrap();
+        assert_eq!(
+            since
+                .iter()
+                .find(|s| s.source == "feature")
+                .unwrap()
+                .rejected,
+            1
+        );
+        assert_eq!(since.iter().find(|s| s.source == "llm").unwrap().adopted, 1);
+        // 明细窗口
+        let list = store
+            .list_since(Some("zh"), Some("2025-01-01 00:00:00"), 100)
+            .unwrap();
+        assert_eq!(list.len(), 2);
+        let _ = std::fs::remove_file(&dir);
     }
 }

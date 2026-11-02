@@ -44,10 +44,10 @@ pub struct AppSettings {
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     #[serde(default = "default_lexicons_dir")]
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数（设置界面可改，持久化；
-    /// **默认关闭**（P0.5：L3 特征模型是唯一的 pre-LLM 门控，决策模型是 opt-in 层）；
-    /// `enabled=true` 显式开启时在 `rule` 引擎组合中挂载决策模型层；
-    /// 等价环境变量 `GEC_DEC_*`）
+    /// 决策模型（vegaml）层参数——该层已**退役出产品路径**（EVOLUTION.md §13 #10，
+    /// 设置界面卡片已移除）；代码保留为实验路径，`enabled=true`（设置文件）或
+    /// `GEC_DEC_ENABLED=1` 显式开启时在 `rule` 引擎组合中挂载决策模型层；
+    /// 等价环境变量 `GEC_DEC_*`。字段保留以维持设置契约与实验可用）
     #[serde(default)]
     pub decision: DecisionConfig,
     /// L3 特征模型层参数（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；

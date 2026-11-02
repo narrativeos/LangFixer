@@ -131,24 +131,21 @@ impl L3FeatureConfig {
         {
             cfg.endpoint = v;
         }
-        if let Some(v) = std::env::var("GEC_L3_TIMEOUT_SECS").ok() {
-            if let Ok(t) = v.parse::<u64>() {
-                cfg.timeout_secs = t.max(1);
-            }
+        if let Ok(v) = std::env::var("GEC_L3_TIMEOUT_SECS")
+            && let Ok(t) = v.parse::<u64>()
+        {
+            cfg.timeout_secs = t.max(1);
         }
         if let Some(v) = std::env::var("GEC_L3_MODEL").ok().filter(|s| !s.is_empty()) {
             cfg.model = v;
         }
-        if let Some(v) = std::env::var("GEC_L3_ABSTAIN_THRESHOLD").ok() {
-            if let Ok(t) = v.parse::<f64>() {
-                cfg.abstain_threshold = t.clamp(0.0, 1.0);
-            }
+        if let Ok(v) = std::env::var("GEC_L3_ABSTAIN_THRESHOLD")
+            && let Ok(t) = v.parse::<f64>()
+        {
+            cfg.abstain_threshold = t.clamp(0.0, 1.0);
         }
-        if let Some(v) = std::env::var("GEC_L3_ENABLED").ok() {
-            cfg.enabled = match v.to_lowercase().as_str() {
-                "0" | "false" | "off" | "no" => false,
-                _ => true,
-            };
+        if let Ok(v) = std::env::var("GEC_L3_ENABLED") {
+            cfg.enabled = !matches!(v.to_lowercase().as_str(), "0" | "false" | "off" | "no");
         }
         cfg
     }
@@ -189,6 +186,7 @@ impl L3FeatureEngine {
     /// - 显式 `abstain` 标志（服务方按契约输出）；
     /// - 或：未产出错误且 `has_error_prob` 落在灰区
     ///   `[GRAY_ZONE_LOW, abstain_threshold)`（不输出 abstain 字段的旧服务兜底判定）。
+    ///
     /// 概率低于灰区下界视为「明确无错」，不触发 LLM。
     pub async fn detect(&self, text: &str) -> Result<L3Outcome, DetectorError> {
         // 熔断器：服务宕机跳闸后冷却期内立即失败（毫秒级），

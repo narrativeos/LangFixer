@@ -117,6 +117,7 @@ pub fn fuzzy_similarity(a: &str, b: &str) -> f64 {
 ///
 /// 1. 知识条目文本是命中句子的精确子串 → 精确 span（字节级）；
 /// 2. 否则 bigram 相似度 ≥ [`FUZZY_THRESHOLD`] → 句级粗定位（span = 整句）。
+///
 /// 两级均未命中（理论上不会：召回阈值已过滤）→ `None`。
 pub fn knowledge_hit_to_error(hit: &RecallHit) -> Option<Error> {
     let item = &hit.item;

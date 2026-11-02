@@ -572,6 +572,8 @@ fn char_diff_edits(original: &str, corrected: &str) -> Vec<PlainEdit> {
     edits
 }
 
+// plain 协议缺口编辑的追加（参数即 diff 上下文全集，聚合结构体只增加间接层）
+#[allow(clippy::too_many_arguments)]
 fn push_gap_edit(
     edits: &mut Vec<PlainEdit>,
     original: &str,

@@ -78,7 +78,7 @@ fn minimal_docx(paragraphs: &[(&str, &str)]) -> Vec<u8> {
     let mut zw = zip::ZipWriter::new(buf);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
-    zw.start_file("[Content_Types].xml", opts.clone()).unwrap();
+    zw.start_file("[Content_Types].xml", opts).unwrap();
     zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
     zw.start_file("word/document.xml", opts).unwrap();
     zw.write_all(document.as_bytes()).unwrap();

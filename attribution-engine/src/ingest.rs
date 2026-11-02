@@ -418,10 +418,10 @@ impl StagingStore {
             .get_mut(source_id)
             .ok_or_else(|| format!("导入会话不存在: {source_id}"))?;
         session.rules_done += 1;
-        if let Some(e) = error {
-            if session.rules_errors.len() < MAX_SESSION_ERRORS {
-                session.rules_errors.push(e);
-            }
+        if let Some(e) = error
+            && session.rules_errors.len() < MAX_SESSION_ERRORS
+        {
+            session.rules_errors.push(e);
         }
         if session.rules_done >= session.rules_total {
             session.rules_status = if session.rules_errors.len() >= session.rules_total {
@@ -902,15 +902,14 @@ pub fn apply_plan(
     let mut points = store.points(&source.lang, None);
     let mut endorsed = 0usize;
     for e in &plan.endorsements {
-        if let Some(p) = points.iter_mut().find(|p| p.point_id == e.point_id) {
-            if !p
+        if let Some(p) = points.iter_mut().find(|p| p.point_id == e.point_id)
+            && !p
                 .sources
                 .iter()
                 .any(|r| r.source_id == e.source_ref.source_id)
-            {
-                p.sources.push(e.source_ref.clone());
-                endorsed += 1;
-            }
+        {
+            p.sources.push(e.source_ref.clone());
+            endorsed += 1;
         }
     }
     points.extend(plan.new_points.iter().cloned());
@@ -1048,10 +1047,10 @@ pub fn validate_rule_draft(draft: &DraftRule) -> Result<(), String> {
     if draft.remedial.chars().count() > 4000 {
         return Err("remedial 过长（> 4000 字符）".into());
     }
-    if let Some(c) = draft.min_confidence {
-        if !(0.0..=1.0).contains(&c) {
-            return Err(format!("min_confidence 应在 [0,1]: {c}"));
-        }
+    if let Some(c) = draft.min_confidence
+        && !(0.0..=1.0).contains(&c)
+    {
+        return Err(format!("min_confidence 应在 [0,1]: {c}"));
     }
     Ok(())
 }
@@ -1129,10 +1128,10 @@ pub fn build_rule_row(
             serde_json::json!(format!("== \"{}\"", draft.error_type.trim())),
         );
     }
-    if inputs.iter().any(|c| c == COL_IS_NOVICE) {
-        if let Some(n) = draft.novice {
-            row.insert(COL_IS_NOVICE.into(), serde_json::json!(format!("== {n}")));
-        }
+    if inputs.iter().any(|c| c == COL_IS_NOVICE)
+        && let Some(n) = draft.novice
+    {
+        row.insert(COL_IS_NOVICE.into(), serde_json::json!(format!("== {n}")));
     }
     if inputs.iter().any(|c| c == COL_CONFIDENCE) && draft.novice == Some(false) {
         let c = draft.min_confidence.unwrap_or(0.8);
@@ -1691,7 +1690,12 @@ mod tests {
             .unwrap();
         let pos_generic = rows_after
             .iter()
-            .position(|r| r.get("_meta").and_then(|v| v.as_str()).unwrap_or("") == "")
+            .position(|r| {
+                r.get("_meta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .is_empty()
+            })
             .unwrap();
         assert!(pos_new < pos_generic, "源派生行须在通用行前");
     }

@@ -126,18 +126,16 @@ pub async fn run(
         if let Ok(jobs) = state
             .training_center
             .list_jobs(Some(&req.lang), Some("completed"), 50)
-        {
-            if let Some(job) = jobs
+            && let Some(job) = jobs
                 .into_iter()
                 .find(|j| j.kind == gec_core::job_kind::L3_RETRAIN)
-            {
-                st.last_job_report_id = job
-                    .payload
-                    .get("report_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                st.f1_before = job.payload.get("gate_f1").and_then(|v| v.as_f64());
-            }
+        {
+            st.last_job_report_id = job
+                .payload
+                .get("report_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            st.f1_before = job.payload.get("gate_f1").and_then(|v| v.as_f64());
         }
         st.f1_after = eval.as_ref().and_then(|e| {
             e.layers

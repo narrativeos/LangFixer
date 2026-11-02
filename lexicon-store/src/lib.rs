@@ -589,7 +589,7 @@ impl LexiconStore {
         let mut merged: Vec<serde_json::Value> = v
             .get("rules")
             .and_then(|r| r.as_array())
-            .map(|a| a.clone())
+            .cloned()
             .unwrap_or_default();
         let mut updated: Option<String> = None;
         if let Some(arr) = exported_rules.as_array() {
@@ -1005,10 +1005,9 @@ impl LexiconStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT id FROM rule_defs WHERE lang = ?1 AND enabled = 0 ORDER BY id")?;
-        let rows = stmt
-            .query_map(params![lang], |r| r.get::<_, String>(0))?
-            .collect::<SqlResult<Vec<_>>>();
-        rows
+
+        stmt.query_map(params![lang], |r| r.get::<_, String>(0))?
+            .collect::<SqlResult<Vec<_>>>()
     }
 
     /// 迁移旧版 JSON 开关状态（`{rule_id: enabled}`，原 `GEC_RULE_STATE_FILE`）：

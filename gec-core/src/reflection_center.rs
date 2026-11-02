@@ -807,24 +807,25 @@ pub fn build_report(
                 }
                 "feature" => {
                     // L3 门控判别力不足 → 重训练
-                    if let Some(f1) = l.gate_f1 {
-                        if f1 < L3_GATE_F1_WEAK {
-                            // 「重训无效」检查：已重训过且复测 F1 无改善 → 不再提议
-                            // （避免「提议→重训→无变化→再提议」的循环假阳性；
-                            //  有新数据进来时重新评估）
-                            let ineffective = l3_retrain
-                                .f1_before
-                                .zip(l3_retrain.f1_after)
-                                .map(|(before, after)| {
-                                    let re_measured = l3_retrain
-                                        .last_job_report_id
-                                        .as_deref()
-                                        .is_some_and(|rid| !rid.is_empty() && rid != ev.report_id);
-                                    re_measured && after <= before + L3_RETRAIN_EPSILON
-                                })
-                                .unwrap_or(false);
-                            if ineffective {
-                                findings.push(format!(
+                    if let Some(f1) = l.gate_f1
+                        && f1 < L3_GATE_F1_WEAK
+                    {
+                        // 「重训无效」检查：已重训过且复测 F1 无改善 → 不再提议
+                        // （避免「提议→重训→无变化→再提议」的循环假阳性；
+                        //  有新数据进来时重新评估）
+                        let ineffective = l3_retrain
+                            .f1_before
+                            .zip(l3_retrain.f1_after)
+                            .map(|(before, after)| {
+                                let re_measured = l3_retrain
+                                    .last_job_report_id
+                                    .as_deref()
+                                    .is_some_and(|rid| !rid.is_empty() && rid != ev.report_id);
+                                re_measured && after <= before + L3_RETRAIN_EPSILON
+                            })
+                            .unwrap_or(false);
+                        if ineffective {
+                            findings.push(format!(
                                     "L3 门控 F1={:.3} 仍偏低，但已执行过重训练（报告 {}）且复测无改善（{:.3}→{:.3}）→ 标记重训无效，不再重复提议（有新数据时重新评估）",
                                     f1,
                                     l3_retrain
@@ -834,23 +835,22 @@ pub fn build_report(
                                     l3_retrain.f1_before.unwrap_or(0.0),
                                     l3_retrain.f1_after.unwrap_or(0.0),
                                 ));
-                            } else {
-                                push_suggestion(
-                                    &mut suggestions,
-                                    suggestion_kinds::L3_SAMPLE,
-                                    "feature".into(),
-                                    format!(
-                                        "测评：L3 门控 F1={:.3}（< {L3_GATE_F1_WEAK}）→ 建议重训练提升判别力（当前弃权偏保守）",
-                                        f1
-                                    ),
-                                    vec![format!(
-                                        "报告 {}（{}/{}）",
-                                        ev.report_id, ev.benchmark, ev.arm
-                                    )],
-                                    serde_json::json!({ "lang": lang, "source": "feature", "gate_f1": f1, "report_id": ev.report_id }),
-                                    1,
-                                );
-                            }
+                        } else {
+                            push_suggestion(
+                                &mut suggestions,
+                                suggestion_kinds::L3_SAMPLE,
+                                "feature".into(),
+                                format!(
+                                    "测评：L3 门控 F1={:.3}（< {L3_GATE_F1_WEAK}）→ 建议重训练提升判别力（当前弃权偏保守）",
+                                    f1
+                                ),
+                                vec![format!(
+                                    "报告 {}（{}/{}）",
+                                    ev.report_id, ev.benchmark, ev.arm
+                                )],
+                                serde_json::json!({ "lang": lang, "source": "feature", "gate_f1": f1, "report_id": ev.report_id }),
+                                1,
+                            );
                         }
                     }
                 }
@@ -980,10 +980,10 @@ fn recent_rejected_originals(
         if e.action != "reject" || e.source != source {
             continue;
         }
-        if let Some(rid) = rule_id {
-            if e.rule_id.as_deref() != Some(rid) {
-                continue;
-            }
+        if let Some(rid) = rule_id
+            && e.rule_id.as_deref() != Some(rid)
+        {
+            continue;
         }
         if !e.original.is_empty() && !out.contains(&e.original) {
             out.push(e.original.clone());

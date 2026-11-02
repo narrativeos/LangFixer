@@ -9,9 +9,9 @@
 //!   - `decision` / `feature` / `statistical` → 蒸馏为规则（与 llm 采纳同路径，
 //!     规则 id 前缀 `MODEL`）+ L3 飞轮正样本；
 //!   - `knowledge` → 确认知识条目正确：反馈留痕。
-//!   采纳路径在 upsert 前会先按词表文件回填目标规则定义
-//!   （`backfill_rule_from_file`：建库后才加入文件、播种未覆盖的规则）——
-//!   防止 `upsert_example` 的「默认停用」自动创建把文件里原本启用的规则关掉。
+//!     采纳路径在 upsert 前会先按词表文件回填目标规则定义
+//!     （`backfill_rule_from_file`：建库后才加入文件、播种未覆盖的规则）——
+//!     防止 `upsert_example` 的「默认停用」自动创建把文件里原本启用的规则关掉。
 //! - **放弃**（reject）：
 //!   - `original` 加入自定义词白名单（后续检测不再报告）；
 //!   - 写入反馈日志（反思流程的数据基础）；
@@ -133,13 +133,12 @@ fn collect_feedback_assets(req: &FeedbackRequest, action: &str) {
     match action {
         "adopt" => {
             if let (Some(src), Some(dst)) = (req.src_text.as_deref(), req.corrected_text.as_deref())
+                && !src.trim().is_empty()
+                && !dst.trim().is_empty()
             {
-                if !src.trim().is_empty() && !dst.trim().is_empty() {
-                    let added =
-                        crate::routes::l3::collect_adopted(&dir, &req.lang, src, dst, "adopt");
-                    if added > 0 {
-                        tracing::info!(lang = %req.lang, added, "沉淀：采纳平行句对已汇入 adopted.jsonl");
-                    }
+                let added = crate::routes::l3::collect_adopted(&dir, &req.lang, src, dst, "adopt");
+                if added > 0 {
+                    tracing::info!(lang = %req.lang, added, "沉淀：采纳平行句对已汇入 adopted.jsonl");
                 }
             }
         }
@@ -352,32 +351,31 @@ fn confirm_rule_adopt(
     );
     // 示例补强：有 correction 且该示例对不在规则中时补入（幂等）
     let mut reinforced = false;
-    if let (Some(rule_id), Some(right)) = (&req.error.rule_id, req.error.correction.as_deref()) {
-        if !right.trim().is_empty() {
-            // 规则在词表文件中但不在 store（建库后才加入文件，播种只在库空时执行）：
-            // 先按文件回填定义，防止 upsert 自动创建「默认停用」影子定义
-            let lexicons_dir =
-                std::path::PathBuf::from(&state.settings.read().unwrap().lexicons_dir);
-            if let Err(e) =
-                state
-                    .lexicon_store
-                    .backfill_rule_from_file(&lexicons_dir, &req.lang, rule_id)
-            {
-                tracing::warn!(
-                    error = %e,
-                    rule_id = %rule_id,
-                    "从词表文件回填规则定义失败（继续默认流程）"
-                );
-            }
-            if let Ok(true) = state.lexicon_store.upsert_example(
-                &req.lang,
-                rule_id,
-                &req.error.original,
-                right,
-                "manual",
-            ) {
-                reinforced = true;
-            }
+    if let (Some(rule_id), Some(right)) = (&req.error.rule_id, req.error.correction.as_deref())
+        && !right.trim().is_empty()
+    {
+        // 规则在词表文件中但不在 store（建库后才加入文件，播种只在库空时执行）：
+        // 先按文件回填定义，防止 upsert 自动创建「默认停用」影子定义
+        let lexicons_dir = std::path::PathBuf::from(&state.settings.read().unwrap().lexicons_dir);
+        if let Err(e) =
+            state
+                .lexicon_store
+                .backfill_rule_from_file(&lexicons_dir, &req.lang, rule_id)
+        {
+            tracing::warn!(
+                error = %e,
+                rule_id = %rule_id,
+                "从词表文件回填规则定义失败（继续默认流程）"
+            );
+        }
+        if let Ok(true) = state.lexicon_store.upsert_example(
+            &req.lang,
+            rule_id,
+            &req.error.original,
+            right,
+            "manual",
+        ) {
+            reinforced = true;
         }
     }
     let rule_id = req

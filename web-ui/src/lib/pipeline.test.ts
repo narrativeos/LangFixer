@@ -1,8 +1,8 @@
 /**
  * pipeline.ts 单元测试（vitest）
  *
- * 覆盖：检测管线四层（① 规则 / ② 决策模型 / ②.5 知识召回 / ③ LLM 兜底）
- * 的启用状态与 ③ 层按「响应级别」的动态显示。
+ * 覆盖：检测管线层（① 规则 / ② 决策模型（退役后仅实验开启时显示）/ ②.5 知识召回 /
+ * ③ LLM 兜底）的启用状态与 ③ 层按「响应级别」的动态显示。
  */
 import { describe, expect, it } from 'vitest'
 import { computePipelineLayers, summarizeRun, type PipelineState } from './pipeline'
@@ -15,6 +15,9 @@ const base: PipelineState = {
   l3Enabled: false,
 }
 
+const find = (s: PipelineState, no: string) =>
+  computePipelineLayers(s).find((l) => l.no === no)
+
 describe('computePipelineLayers', () => {
   it('① 本地 ZEN 规则恒为已启用', () => {
     const l1 = computePipelineLayers(base)[0]
@@ -22,79 +25,79 @@ describe('computePipelineLayers', () => {
     expect(l1.type).toBe('success')
   })
 
-  it('② 决策模型跟随启用状态', () => {
-    expect(computePipelineLayers(base)[1].label).toBe('② 决策模型 · 已启用')
-    expect(computePipelineLayers({ ...base, decisionEnabled: false })[1].label).toBe('② 决策模型 · 未启用')
-    expect(computePipelineLayers({ ...base, decisionEnabled: false })[1].type).toBe('info')
+  it('② 决策模型已退役出产品路径：默认（未启用）不显示；实验开启时显示', () => {
+    expect(find({ ...base, decisionEnabled: false }, '②')).toBeUndefined()
+    expect(find(base, '②')?.label).toBe('② 决策模型 · 已启用')
+    expect(find(base, '②')?.type).toBe('success')
   })
 
   it('②.5 知识召回跟随嵌入引擎配置状态', () => {
-    expect(computePipelineLayers(base)[2].label).toBe('②.5 知识召回 · 已配置')
-    expect(computePipelineLayers({ ...base, embeddingConfigured: false })[2].label).toBe('②.5 知识召回 · 未配置')
+    expect(find(base, '②.5')?.label).toBe('②.5 知识召回 · 已配置')
+    expect(find({ ...base, embeddingConfigured: false }, '②.5')?.label).toBe('②.5 知识召回 · 未配置')
   })
 
   it('L1：③ 未启用', () => {
-    const l3 = computePipelineLayers(base)[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 未启用')
-    expect(l3.type).toBe('info')
+    const l3 = find(base, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 未启用')
+    expect(l3?.type).toBe('info')
   })
 
-  it('L2 + L3 未启用 + 决策模型启用 + LLM 已配置：③ 弃权时触发（主色，旧语义回退）', () => {
-    const l3 = computePipelineLayers({ ...base, level: 2 })[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 弃权时触发')
-    expect(l3.type).toBe('')
+  it('L2 + L3 未启用 + 决策模型实验开启 + LLM 已配置：③ 弃权时触发（主色，旧语义回退）', () => {
+    const l3 = find({ ...base, level: 2 }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 弃权时触发')
+    expect(l3?.type).toBe('')
   })
 
-  it('L2 + L3 未启用 + 决策模型启用 + LLM 未配置：③ 未配置（warning）', () => {
-    const l3 = computePipelineLayers({ ...base, level: 2, llmEnabled: false })[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 未配置')
-    expect(l3.type).toBe('warning')
+  it('L2 + L3 未启用 + 决策模型实验开启 + LLM 未配置：③ 未配置（warning）', () => {
+    const l3 = find({ ...base, level: 2, llmEnabled: false }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 未配置')
+    expect(l3?.type).toBe('warning')
   })
 
-  it('L2 + L3 未启用 + 决策模型未启用：③ 未启用（等效 L1）', () => {
-    const l3 = computePipelineLayers({ ...base, level: 2, decisionEnabled: false })[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 未启用（等效 L1）')
-    expect(l3.type).toBe('info')
+  it('L2 + L3 未启用 + 决策模型未启用（产品默认）：③ 未启用（等效 L1）', () => {
+    const l3 = find({ ...base, level: 2, decisionEnabled: false }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 未启用（等效 L1）')
+    expect(l3?.type).toBe('info')
   })
 
   it('L2 + L3 启用 + LLM 已配置：③-F 已启用，③ 仅长尾（L3 弃权时）', () => {
     const layers = computePipelineLayers({ ...base, level: 2, l3Enabled: true })
-    expect(layers[3].label).toBe('③-F 特征模型 · 已启用')
-    expect(layers[3].type).toBe('success')
-    expect(layers[4].label).toBe('③ LLM 兜底 · 仅长尾（L3 弃权时）')
-    expect(layers[4].type).toBe('success')
+    expect(find({ ...base, level: 2, l3Enabled: true }, '③-F')).toEqual({
+      no: '③-F',
+      label: '③-F 特征模型 · 已启用',
+      type: 'success',
+    })
+    expect(layers.find((l) => l.no === '③')?.label).toBe('③ LLM 兜底 · 仅长尾（L3 弃权时）')
   })
 
   it('L2 + L3 启用 + LLM 未配置：③ 未配置（warning）', () => {
-    const layers = computePipelineLayers({ ...base, level: 2, l3Enabled: true, llmEnabled: false })
-    expect(layers[4].label).toBe('③ LLM 兜底 · 未配置')
-    expect(layers[4].type).toBe('warning')
+    const l3 = find({ ...base, level: 2, l3Enabled: true, llmEnabled: false }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 未配置')
+    expect(l3?.type).toBe('warning')
   })
 
   it('L3 + LLM 已配置：③ 无条件', () => {
-    const l3 = computePipelineLayers({ ...base, level: 3 })[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 无条件')
-    expect(l3.type).toBe('success')
+    const l3 = find({ ...base, level: 3 }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 无条件')
+    expect(l3?.type).toBe('success')
   })
 
   it('L3 + LLM 未配置：③ 未配置（warning）', () => {
-    const l3 = computePipelineLayers({ ...base, level: 3, llmEnabled: false })[3]
-    expect(l3.label).toBe('③ LLM 兜底 · 未配置')
-    expect(l3.type).toBe('warning')
+    const l3 = find({ ...base, level: 3, llmEnabled: false }, '③')
+    expect(l3?.label).toBe('③ LLM 兜底 · 未配置')
+    expect(l3?.type).toBe('warning')
   })
 
   it('L3 + 特征模型启用 + LLM 已配置：③-F 已启用，③ 仅长尾', () => {
     const layers = computePipelineLayers({ ...base, level: 3, l3Enabled: true })
-    expect(layers[3].label).toBe('③-F 特征模型 · 已启用')
-    expect(layers[3].type).toBe('success')
-    expect(layers[4].label).toBe('③ LLM 兜底 · 仅长尾（特征模型弃权时）')
-    expect(layers[4].type).toBe('success')
+    expect(find({ ...base, level: 3, l3Enabled: true }, '③-F')?.label).toBe('③-F 特征模型 · 已启用')
+    expect(layers.find((l) => l.no === '③')?.label).toBe('③ LLM 兜底 · 仅长尾（特征模型弃权时）')
   })
 
   it('L3 + 特征模型启用 + LLM 未配置：③ 未配置（warning）', () => {
     const layers = computePipelineLayers({ ...base, level: 3, l3Enabled: true, llmEnabled: false })
-    expect(layers[4].label).toBe('③ LLM 兜底 · 未配置')
-    expect(layers[4].type).toBe('warning')
+    expect(layers.find((l) => l.no === '③')?.label).toBe('③ LLM 兜底 · 未配置')
+    expect(layers.find((l) => l.no === '③')?.type).toBe('warning')
   })
 
   it('L2 + L3 启用：显示 ③-F 门控层（P0.5：L3 是唯一的 pre-LLM 门控）', () => {
