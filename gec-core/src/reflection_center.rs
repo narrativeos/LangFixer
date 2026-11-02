@@ -721,28 +721,26 @@ pub fn build_report(
                     );
                 }
             }
-            "llm" => {
-                if rejected >= LLM_ARM_REJECT_COUNT {
-                    let originals = recent_rejected_originals(recent, "llm", None, 5);
-                    push_suggestion(
-                        &mut suggestions,
-                        suggestion_kinds::LLM_ARM,
-                        "llm".into(),
-                        format!(
-                            "LLM 层累计误报 {rejected} 条 → 建议评估换臂（cec3 / cec4 / custom）或构建训练数据"
-                        ),
-                        vec![format!(
-                            "被放弃样本：{}",
-                            if originals.is_empty() {
-                                "（见反馈明细）".into()
-                            } else {
-                                originals.join("、")
-                            }
-                        )],
-                        serde_json::json!({ "lang": lang, "current_arm": null, "count": rejected }),
-                        2,
-                    );
-                }
+            "llm" if rejected >= LLM_ARM_REJECT_COUNT => {
+                let originals = recent_rejected_originals(recent, "llm", None, 5);
+                push_suggestion(
+                    &mut suggestions,
+                    suggestion_kinds::LLM_ARM,
+                    "llm".into(),
+                    format!(
+                        "LLM 层累计误报 {rejected} 条 → 建议评估换臂（cec3 / cec4 / custom）或构建训练数据"
+                    ),
+                    vec![format!(
+                        "被放弃样本：{}",
+                        if originals.is_empty() {
+                            "（见反馈明细）".into()
+                        } else {
+                            originals.join("、")
+                        }
+                    )],
+                    serde_json::json!({ "lang": lang, "current_arm": null, "count": rejected }),
+                    2,
+                );
             }
             // knowledge 层：逐条删除已由单条反思流程覆盖（remove_knowledge），中心层仅记 findings
             _ => {}
@@ -854,25 +852,23 @@ pub fn build_report(
                         }
                     }
                 }
-                "rule" => {
-                    // 规则层 FP 显著多于 TP → 条件化 / 调参
-                    if l.n_pred > 0 && l.fp_overlap > 3 * l.tp_overlap.max(1) {
-                        push_suggestion(
-                            &mut suggestions,
-                            suggestion_kinds::LEXICON_CONDITION,
-                            "rule".into(),
-                            format!(
-                                "测评：规则层 FP 重叠 {} ≫ 命中 {}（预测 {}）→ 建议条件化条目 / 规则调参",
-                                l.fp_overlap, l.tp_overlap, l.n_pred
-                            ),
-                            vec![format!(
-                                "报告 {}（{}/{}）",
-                                ev.report_id, ev.benchmark, ev.arm
-                            )],
-                            serde_json::json!({ "lang": lang, "rule_id": null, "report_id": ev.report_id }),
-                            1,
-                        );
-                    }
+                // 规则层 FP 显著多于 TP → 条件化 / 调参
+                "rule" if l.n_pred > 0 && l.fp_overlap > 3 * l.tp_overlap.max(1) => {
+                    push_suggestion(
+                        &mut suggestions,
+                        suggestion_kinds::LEXICON_CONDITION,
+                        "rule".into(),
+                        format!(
+                            "测评：规则层 FP 重叠 {} ≫ 命中 {}（预测 {}）→ 建议条件化条目 / 规则调参",
+                            l.fp_overlap, l.tp_overlap, l.n_pred
+                        ),
+                        vec![format!(
+                            "报告 {}（{}/{}）",
+                            ev.report_id, ev.benchmark, ev.arm
+                        )],
+                        serde_json::json!({ "lang": lang, "rule_id": null, "report_id": ev.report_id }),
+                        1,
+                    );
                 }
                 _ => {}
             }

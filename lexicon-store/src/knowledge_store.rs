@@ -100,8 +100,10 @@ impl KnowledgeStore {
         let rows = stmt.query_map(params![lang], |row| {
             let emb_blob: Vec<u8> = row.get(5)?;
             let embedding: Vec<f32> = emb_blob
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             Ok(LearnedKnowledge {
                 id: row.get(0)?,
