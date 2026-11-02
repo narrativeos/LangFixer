@@ -122,7 +122,7 @@ fn jfleg_benchmark_report() {
             .iter()
             .filter(|((s, _), _)| s.as_str() == split)
             .collect();
-        sorted.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        sorted.sort_by_key(|row| std::cmp::Reverse(row.1.1));
         for ((_, cat), (hit, total)) in sorted {
             println!(
                 "  {:<12} 召回 {}/{} = {:.1}%",

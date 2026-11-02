@@ -129,7 +129,7 @@ fn run_eval(gold_name: &str, verbose_env: &str) -> (usize, usize) {
             .iter()
             .filter(|((s, _), _)| s.as_str() == split.as_str())
             .collect();
-        sorted.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        sorted.sort_by_key(|row| std::cmp::Reverse(row.1.1));
         for ((_, cat), (hit, total)) in sorted {
             println!(
                 "  {:<12} 召回 {}/{} = {:.1}%",
