@@ -2557,7 +2557,7 @@ pub async fn explain(
                         .iter()
                         .map(|(k, v)| (k.clone(), *v))
                         .collect();
-                    items.sort_by(|a, b| b.1.cmp(&a.1));
+                    items.sort_by_key(|a| std::cmp::Reverse(a.1));
                     Some(
                         items
                             .iter()

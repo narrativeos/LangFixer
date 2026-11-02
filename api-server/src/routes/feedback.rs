@@ -142,15 +142,15 @@ fn collect_feedback_assets(req: &FeedbackRequest, action: &str) {
                 }
             }
         }
-        "reject" => {
+        "reject"
             if crate::routes::l3::collect_rejected(
                 &dir,
                 &req.lang,
                 &req.error,
                 req.reason.as_deref(),
-            ) {
-                tracing::info!(lang = %req.lang, "沉淀：放弃负偏好已汇入 rejected.jsonl");
-            }
+            ) =>
+        {
+            tracing::info!(lang = %req.lang, "沉淀：放弃负偏好已汇入 rejected.jsonl");
         }
         _ => {}
     }
