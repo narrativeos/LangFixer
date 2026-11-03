@@ -75,6 +75,7 @@ fn main() {
             commands::review_mistake,
             commands::undo_review_mistake,
             commands::session_analysis,
+            commands::delete_session,
             commands::global_mistakes,
             commands::global_review_queue,
             commands::review_global_mistake,

@@ -3079,3 +3079,113 @@ async fn global_notebook_cross_session_and_review() {
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn session_delete_flow() {
+    // C4：删会话——错题移除、复习进度保留（global_mastery 不随会话删除）
+    let base = start_server().await;
+    let c = client();
+    let src = "他昨天去了去了商店。";
+    let start = src.find("去了去了").unwrap();
+    let body = |sid: &str| {
+        serde_json::json!({
+            "lang": "zh",
+            "session_id": sid,
+            "src_text": src,
+            "error": {
+                "lang": "zh",
+                "error_type": "grammar",
+                "confidence": 0.8,
+                "span": [start, start + "去了去了".len()],
+                "original": "去了去了",
+                "correction": "去了",
+                "message": "动词重复",
+                "rule_id": "ZH_MISSING_SUBJECT",
+                "source": "rule",
+            },
+            "action": "adopt",
+        })
+    };
+    for sid in ["del_s1", "del_s2"] {
+        let resp: serde_json::Value = c
+            .post(format!("{base}/gec/feedback"))
+            .json(&body(sid))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            resp["adopt_count"].as_i64().unwrap_or(0) >= 1,
+            "采纳应成功并计数: {sid} resp={resp}"
+        );
+    }
+
+    // 全局复习一次（good）→ 复习进度挂在错题键上
+    let glist: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(glist.len(), 1, "两会话聚合同一条全局错题");
+    assert_eq!(glist[0]["sessions_seen"].as_u64().unwrap(), 2);
+    let gid = glist[0]["id"].as_i64().unwrap();
+    let resp: serde_json::Value = c
+        .post(format!("{base}/gec/mistakes/{gid}/review"))
+        .json(&serde_json::json!({ "rating": "good" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["ok"], true);
+
+    // 删除会话 del_s1 → 会话级错题清空
+    let resp: serde_json::Value = c
+        .delete(format!("{base}/gec/sessions/del_s1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["deleted"], true);
+    let s1: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/del_s1/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(s1.is_empty(), "删会话后该会话错题应为空");
+
+    // 全局错题仍在（来自 del_s2）且复习进度保留（reviewing 而非 new）
+    let glist: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(glist.len(), 1, "另一会话的同一错题仍在");
+    assert_eq!(
+        glist[0]["mastery_status"].as_str(),
+        Some("reviewing"),
+        "删会话不清复习进度"
+    );
+
+    // 再删不存在的会话 → 404
+    let resp = c
+        .delete(format!("{base}/gec/sessions/del_s1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+}

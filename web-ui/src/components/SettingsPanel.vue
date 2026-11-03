@@ -2,7 +2,7 @@
 import { computed, ref, watch, onMounted, nextTick } from 'vue'
 import { errMsg } from '../lib/err'
 
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
 import type { AppSettings, L3FlywheelStatus, ModelView, SettingsTestResult, SettingsTestTarget } from '../types'
@@ -98,6 +98,32 @@ async function loadProfile() {
   }
 }
 void loadProfile()
+
+// ── 删除当前会话（C4）：级联移除会话与错题；复习进度（全局记忆）保留 ──
+const sessionDeleting = ref(false)
+async function deleteCurrentSession() {
+  const id = store.sessionId
+  if (!id) return
+  sessionDeleting.value = true
+  try {
+    const mistakes = await api.listSessionMistakes(id)
+    await ElMessageBox.confirm(
+      `将移除该会话的 ${mistakes.length} 条错题；你的复习进度会保留。`,
+      '删除当前会话',
+      { type: 'warning', confirmButtonText: '删除会话', cancelButtonText: '取消' },
+    )
+    await api.deleteSession(id)
+    store.sessionId = ''
+    profileNative.value = ''
+    profileCefr.value = ''
+    ElMessage.success('当前会话已删除；复习进度已保留')
+  } catch (e) {
+    if (e === 'cancel' || e === 'close') return
+    profileError.value = errMsg(e)
+  } finally {
+    sessionDeleting.value = false
+  }
+}
 
 async function saveProfile() {
   profileSaving.value = true
@@ -649,6 +675,15 @@ async function runTest(target: SettingsTestTarget) {
       </el-form>
       <div class="actions">
         <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存档案</el-button>
+        <el-button
+          type="danger"
+          plain
+          :loading="sessionDeleting"
+          :disabled="!store.sessionId"
+          @click="deleteCurrentSession"
+        >
+          删除当前会话
+        </el-button>
         <span v-if="profileError" class="apply-err">{{ profileError }}</span>
         <span v-else class="hint">
           档案挂在当前会话（{{ store.sessionId || '保存时自动生成' }}）；

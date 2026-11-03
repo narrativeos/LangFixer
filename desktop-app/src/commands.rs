@@ -466,6 +466,15 @@ impl DetectHistoryStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM detect_history", [])
     }
+
+    /// 级联删除某会话的全部检测历史（与 api-server 端同语义；删会话时调用）
+    pub fn remove_by_session(&self, session_id: &str) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM detect_history WHERE session_id = ?1",
+            [session_id],
+        )
+    }
 }
 
 /// 桌面端核心：检测器路由 + 决策表存储 + 会话存储 + LLM 扩展
@@ -5021,6 +5030,21 @@ pub fn global_analysis(
         &observations,
         Some(summary),
     ))
+}
+
+/// 删除会话（REST `DELETE /gec/sessions/:id` 同构）：级联删除会话的犯错流水 /
+/// 错题本 / 会话级掌握度 / 撤销快照与检测历史；**全局复习进度（global_mastery）
+/// 不删**——错题移除、复习进度保留，同一错误日后重现时记忆复活。
+#[tauri::command]
+pub fn delete_session(
+    core: tauri::State<'_, Arc<Core>>,
+    session_id: String,
+) -> Result<bool, String> {
+    if !core.sessions.remove(&session_id) {
+        return Err(format!("session#{session_id} 不存在"));
+    }
+    let _ = core.detect_history.remove_by_session(&session_id);
+    Ok(true)
 }
 
 async fn error_feedback_body(

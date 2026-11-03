@@ -881,8 +881,13 @@ export const api = {
     return http.put<{ session_id: string; status: string }>(`/gec/sessions/${id}/restore`).then((r) => r.data)
   },
 
-  /** DELETE /gec/sessions/:id — 删除会话（级联删除历史） */
+  /** DELETE /gec/sessions/:id — 删除会话（级联删除历史；桌面端：invoke delete_session）
+   *  错题移除、复习进度保留（全局记忆 global_mastery 不随会话删除） */
   deleteSession(id: string): Promise<{ deleted: boolean; session_id: string }> {
+    if (inTauri)
+      return tauri!
+        .invoke('delete_session', { sessionId: id })
+        .then(() => ({ deleted: true, session_id: id }))
     return http.delete<{ deleted: boolean; session_id: string }>(`/gec/sessions/${id}`).then((r) => r.data)
   },
 
