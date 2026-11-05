@@ -60,3 +60,6 @@ decision-model/gate_ft/*.jsonl
 
 # 多模态 job 工作目录（每个 job 一个子目录：原件副本 / result.* / annotations.json）
 media-jobs/
+
+# 按发布源打包的安装产物（scripts/release.sh 产出）
+dist/

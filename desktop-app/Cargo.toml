@@ -11,6 +11,7 @@ tauri-build = { workspace = true }
 [dependencies]
 tauri = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
+tauri-plugin-updater = { workspace = true }
 shared-model = { workspace = true, features = ["sqlite"] }
 gec-core = { workspace = true }
 gec-zh = { workspace = true }

@@ -9,6 +9,7 @@ mod commands;
 mod knowledge_recall;
 mod media;
 mod settings;
+mod update;
 mod window_state;
 
 use std::sync::Arc;
@@ -131,6 +132,17 @@ fn main() {
             if let Some(win) = app.get_webview_window("main") {
                 let window: tauri::Window = win.as_ref().window();
                 window_state::restore(&window);
+            }
+            // 自动更新：从构建时烧入的发布源自动检查 / 下载 / 安装（见 update.rs）
+            #[cfg(desktop)]
+            {
+                if let Err(e) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    tracing::warn!("updater 插件注册失败: {e}");
+                }
+                update::spawn(app.handle().clone());
             }
             Ok(())
         })
