@@ -6,6 +6,10 @@
   laya_en → ollama laya:latest（ModernBERT-large，英文检查点，参照臂）
   laya_ml → 本地 laya shim（convaiinnovations/laya-multilingual，mmBERT 多语言）
   sklearn → 旧决策模型（对照；其训练池=MuC dev，本评测集与之零重叠）
+  chdec   → chinese-decision-0.8b（Qwen3.5-0.8B 中文决策 LoRA；官方 serve.py，
+            hmm/System One 兼容，vendor/chinese-decision）
+  largha  → Phocinae-Largha-150M-v1（mmBERT-small 双语编码器；phocinae-server，
+            /v1/systemone 但 questions 为 list、概率在 option_scores；vendor/phocinae-server）
 
 指标：AUC / ECE / 阈值扫描 / 操作点（clean-skip 漏检率 ≤2%、≤5% 时的跳过率）/ 延迟。
 温度校准：折半拟合 T，在另一半上报告校准前后 ECE。
@@ -47,6 +51,9 @@ ARMS = {
     "kev9b": {"endpoint": "http://127.0.0.1:11434", "model": "turintech/kev-9b-artemis"},
     "laya_en": {"endpoint": "http://127.0.0.1:11434", "model": "laya"},
     "laya_ml": {"endpoint": "http://127.0.0.1:11435", "model": "laya-multilingual"},
+    "chdec": {"endpoint": "http://127.0.0.1:8790", "model": "chinese-decision-0.8b"},
+    "largha": {"endpoint": "http://127.0.0.1:8155", "model": "Phocinae-Largha-150M-v1",
+               "protocol": "phocinae"},
 }
 
 
@@ -62,6 +69,29 @@ def systemone_perror(endpoint: str, model: str, text: str, timeout: int = 120) -
     ms = (time.time() - t0) * 1000
     probs = data["answers"]["has_error"]["probabilities"]
     return float(probs["A"]), ms
+
+
+def perror_largha(endpoint: str, model: str, text: str, timeout: int = 120) -> tuple[float, float]:
+    """phocinae-server（Largha）：questions 为 list、选项为字符串，概率在 option_scores。"""
+    import urllib.request
+
+    err_desc = ("The state text contains a language error that needs correction "
+                "(typo, grammar, punctuation, or word usage).")
+    clean_desc = "The state text is correct and needs no correction."
+    body = json.dumps({"model": model, "state": text, "questions": [
+        {"id": "has_error", "type": "choice", "options": [err_desc, clean_desc]}]}).encode()
+    req = urllib.request.Request(f"{endpoint}/v1/systemone", data=body,
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read())
+    ms = (time.time() - t0) * 1000
+    scores = data.get("option_scores", {}).get("has_error")
+    if scores:
+        p = float(scores[0])  # options[0] = 有错
+    else:  # 扩展键关闭时退化为 argmax 旗标
+        p = 1.0 if data["answers"]["has_error"] == 0 else 0.0
+    return p, ms
 
 
 def perror_sklearn(text: str) -> tuple[float, float]:
@@ -94,7 +124,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     else:
         cfg = ARMS[args.arm]
         endpoint, model = args.endpoint or cfg["endpoint"], args.model or cfg["model"]
-        fn = lambda t: systemone_perror(endpoint, model, t)
+        if cfg.get("protocol") == "phocinae":
+            fn = lambda t: perror_largha(endpoint, model, t)
+        else:
+            fn = lambda t: systemone_perror(endpoint, model, t)
 
     f = open(out_path, "a", encoding="utf-8")
     n = 0

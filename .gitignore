@@ -63,3 +63,6 @@ media-jobs/
 
 # 按发布源打包的安装产物（scripts/release.sh 产出）
 dist/
+
+# gate 评测 vendor 服务与模型权重（外部仓库副本，体量 GB 级，不入库）
+decision-model/vendor/
