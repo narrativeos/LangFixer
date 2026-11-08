@@ -261,6 +261,9 @@ html.desktop .main-area > .manage-pane {
 }
 .engine-hint .hint-label { flex: none; }
 .char-count { float: right; font-variant-numeric: tabular-nums; }
+/* 示例文本入口：标题行右侧、字数旁；link 按钮保持轻量不抢主操作 */
+.sample-links { float: right; display: inline-flex; align-items: center; gap: 2px; margin-right: 12px; }
+.sample-links .sample-label { font-size: 12px; color: var(--el-text-color-secondary); margin-right: 2px; }
 
 /* ── 主区域 ── */
 .main-area { display: block; }

@@ -25,6 +25,19 @@ const activeLang = computed(
   () => store.displayLangs.find((l) => l.lang === store.lang) ?? store.displayLangs[0],
 )
 
+/** 示例文本：一键「填入 + 检测」。各覆盖一类典型错误，短句、无需上下文即可看懂 */
+const samples = [
+  { label: '错别字', text: '他从小就立志要干一番大报复。' },
+  { label: '多字少字', text: '我昨天在图书管看了一下午书。' },
+  { label: '语序颠倒', text: '他把作业没有按时交给老师。' },
+]
+function useSample(s: { text: string }) {
+  // 可反悔：覆盖非空原文前存快照，⌥⌘Z（或菜单「撤销全部采纳」）可找回
+  if (store.text.trim() && store.text !== s.text) store.applySnapshot = store.text
+  store.text = s.text
+  store.detect()
+}
+
 /** 检测管线四层（① 本地 ZEN 规则 → ② 决策模型 → ②.5 知识召回 → ③ LLM 兜底）：
  *  ①②②.5 状态来自服务端设置；③ 按「检查模式」（store.level，内部 level 1/2/3）动态显示
  *  （逻辑见 lib/pipeline.ts，有单测） */
@@ -85,6 +98,20 @@ const l2Warn = computed(() => {
       <template #label>
         <span>待检测文本</span>
         <span class="char-count">{{ store.text.length }} 字</span>
+        <span class="sample-links">
+          <span class="sample-label">试一试</span>
+          <el-button
+            v-for="s in samples"
+            :key="s.label"
+            link
+            type="primary"
+            size="small"
+            :disabled="store.loading"
+            @click="useSample(s)"
+          >
+            {{ s.label }}
+          </el-button>
+        </span>
       </template>
       <el-input
         v-model="store.text"
