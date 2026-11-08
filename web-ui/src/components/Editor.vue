@@ -38,9 +38,9 @@ const pipelineLayers = computed(() =>
   }),
 )
 
-// 检查模式用户语言命名（Phase 0 术语翻译）：内部级联细节（规则 / 决策模型 /
-// L3 特征模型 / LLM）只出现在「检测管线」状态条、选项右侧状态标签与设置页，
-// 选项文案本身不再暴露 L1/L2/L3 内部编号。
+// 检查模式用户语言命名（Phase 0 术语翻译 + 信息减负）：级联内部细节
+// （规则层编号 / 决策模型 / L3 特征模型 / LLM）退出主界面，收进「详情」tooltip；
+// 主界面只留一句人话的执行方式描述。
 const modeLabels: Record<number, string> = {
   1: '快速检查（即时，本地规则）',
   2: '标准检查（推荐）',
@@ -48,23 +48,34 @@ const modeLabels: Record<number, string> = {
 }
 const modeHint = computed(() =>
   store.level === 1
-    ? '只跑本地规则引擎，即时完成，离线完全可用。'
+    ? '本地检查，即时出结果，离线也能用。'
     : store.level === 2
-      ? '本地模型先把高置信结果定案，仅不确定的句子交给 AI 复查服务（LLM）复核；需已配置 LLM。'
-      : '对全文跑一遍 AI 复查（LLM），漏报召回最高，但较慢；本地模型可先把高置信结果定案以节省时间。',
+      ? '本地能定的先定，拿不准的句子交给 AI 复查，需要几秒钟。'
+      : 'AI 对全文逐句复查，漏检最少，但需要一些时间。',
 )
-// 标准检查门控语义（P0.5 重绑）：L3 特征模型启用时门控是特征模型（弃权 → LLM 复查）；
-// L3 未启用才回退旧语义（决策模型弃权 → LLM 复查）。警告文案随之动态化。
+/** 主界面「检测方式」一句话摘要（人话；细节见「详情」） */
+const plainPipelineText = computed(() => {
+  if (!store.llmEnabled && store.level > 1) return '本地检查（AI 复查未配置）'
+  if (store.level === 1) return '本地检查，即时完成'
+  if (store.level === 2)
+    return store.l3Enabled || store.decisionEnabled
+      ? '本地快速定案 + AI 复查拿不准的句子'
+      : '本地检查 + AI 复查'
+  return store.l3Enabled || store.decisionEnabled
+    ? '本地快速定案 + AI 全文复查'
+    : 'AI 全文复查'
+})
+// 标准检查门控语义（P0.5 重绑）：警告文案随之动态化，但只说用户听得懂的结果与出路。
 const l2Warn = computed(() => {
   if (store.level !== 2) return ''
-  if (store.l3Enabled) {
+  if (store.l3Enabled || store.decisionEnabled) {
     return store.llmEnabled
       ? ''
-      : 'AI 复查服务（LLM）未配置：灰区句子无法复核，本次等效快速检查。可在「设置 → LLM 参数」配置。'
+      : 'AI 复查还没配置：拿不准的句子没法复核，这次相当于快速检查。可以在设置里配置。'
   }
-  return store.decisionEnabled
-    ? ''
-    : '快速定案的本地模型均未启用：AI 复查兜底不会触发，本次等效快速检查。可在「设置 → L3 特征模型」开启后即时生效。'
+  return store.llmEnabled
+    ? 'AI 复查这次不会触发，相当于快速检查。可以在设置里开启快速定案。'
+    : 'AI 复查与快速定案都还没配置，这次相当于快速检查。可以在设置里配置。'
 })
 </script>
 
@@ -82,25 +93,6 @@ const l2Warn = computed(() => {
         placeholder="在此粘贴或输入待检测文本… 例如：他昨天报复很大。"
       />
     </el-form-item>
-
-    <div class="engine-hint">
-      <div class="pipeline-row">
-        <span class="hint-label">检测管线</span>
-        <el-tag
-          v-for="l in pipelineLayers"
-          :key="l.no"
-          size="small"
-          :type="l.type"
-          effect="plain"
-        >
-          {{ l.label }}
-        </el-tag>
-      </div>
-      <div class="preprocess-row">
-        <span class="hint-label">预处理</span>
-        <span>{{ activeLang.nlp_service }}</span>
-      </div>
-    </div>
 
     <div class="actions">
       <el-button
@@ -156,7 +148,7 @@ const l2Warn = computed(() => {
                 size="small"
                 class="level-tag"
               >
-                {{ store.decisionEnabled ? '含决策模型' : '纯本地规则' }}
+                {{ store.decisionEnabled ? '含快速定案' : '本地检查' }}
               </el-tag>
             </el-option>
             <el-option :value="2" :label="modeLabels[2]">
@@ -166,7 +158,7 @@ const l2Warn = computed(() => {
                 size="small"
                 class="level-tag"
               >
-                {{ store.llmEnabled ? 'AI 复查已配置' : 'AI 复查未配置' }}
+                {{ store.llmEnabled ? 'AI 复查可用' : 'AI 复查未配置' }}
               </el-tag>
             </el-option>
             <el-option :value="3" :label="modeLabels[3]">
@@ -176,13 +168,42 @@ const l2Warn = computed(() => {
                 size="small"
                 class="level-tag"
               >
-                {{ store.l3Enabled ? '快速定案已启用' : '全量 AI 复查' }}
+                {{ store.l3Enabled ? '含快速定案' : 'AI 全文复查' }}
               </el-tag>
             </el-option>
           </el-select>
           <div class="mode-hint">{{ modeHint }}</div>
           <div v-if="l2Warn" class="level-warn">{{ l2Warn }}</div>
         </el-form-item>
+      </div>
+    </div>
+
+    <!-- 引擎信息（信息减负）：主界面只留一句人话「检测方式」；层级标签与预处理
+         引擎等内部细节收进「详情」popover（渐进披露，运营/排障可查） -->
+    <div class="engine-hint">
+      <div class="pipeline-row">
+        <span class="hint-label">检测方式</span>
+        <span>{{ plainPipelineText }}</span>
+        <el-popover placement="top" :width="380" trigger="hover">
+          <template #reference>
+            <el-button link type="primary" size="small" aria-label="查看检测管线细节">详情</el-button>
+          </template>
+          <div class="pipeline-detail">
+            <el-tag
+              v-for="l in pipelineLayers"
+              :key="l.no"
+              size="small"
+              :type="l.type"
+              effect="plain"
+            >
+              {{ l.label }}
+            </el-tag>
+            <div class="preprocess-row">
+              <span class="hint-label">预处理</span>
+              <span>{{ activeLang.nlp_service }}</span>
+            </div>
+          </div>
+        </el-popover>
       </div>
     </div>
   </el-form>
@@ -231,4 +252,6 @@ const l2Warn = computed(() => {
   background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: 6px;
   font-size: 12.5px; color: var(--warn-ink); line-height: 1.6;
 }
+.pipeline-detail { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12.5px; }
+.pipeline-detail .preprocess-row { flex: 1 0 100%; display: flex; gap: 6px; color: var(--el-text-color-secondary); }
 </style>

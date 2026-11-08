@@ -35,35 +35,35 @@ const SETTINGS_GUIDES: GuideRule[] = [
   {
     patterns: ['决策模型', 'decision model', 'vegaml'],
     guide: {
-      text: '「设置 → 决策模型（vegaml）」：检查服务地址并点「服务测试」；若暂不需要，可关闭「启用决策层」，检测将回退到 L1 本地规则。',
+      text: '「设置 → 服务总览」：决策模型是实验功能，出现此提示可忽略——检测会自动改用本地检查，不受影响。',
       view: 'settings',
     },
   },
   {
     patterns: ['特征模型', 'feature model', 'feature-model'],
     guide: {
-      text: '「设置 → L3 特征模型」：检查服务地址（feature-model 服务）并点「服务测试」；测评 / 贡献测量也依赖该服务。若暂不需要，可关闭「启用特征模型」，L3 将回退到 LLM 兜底。',
+      text: '「设置 → 快速定案（特征模型）」：检查服务地址并点「测试」；测评与贡献测量也依赖该服务。若暂不需要，可关闭该层，深度扫描将改由 AI 全文复查。',
       view: 'settings',
     },
   },
   {
     patterns: ['hanlp', 'nlp 服务'],
     guide: {
-      text: '「设置 → NLP 服务（HanLP）」：检查服务地址并点「服务测试」；若无法部署 NLP 服务，可开启「离线模式」（检测器仅用本地规则词表）。',
+      text: '「设置 → 文本处理服务（HanLP）」：检查服务地址并点「测试」；若无法部署该服务，可开启「离线模式」（只用本地规则词表）。',
       view: 'settings',
     },
   },
   {
     patterns: ['嵌入', 'embedding'],
     guide: {
-      text: '「设置 → 嵌入引擎」：配置服务地址 / API Key 后点「服务测试」。未配置时 ②.5 知识向量召回静默跳过（不影响其他层）。',
+      text: '「设置 → 知识查询（向量检索）」：配置服务地址 / API Key 后点「测试」。未配置时知识查询自动跳过（不影响其他检测）。',
       view: 'settings',
     },
   },
   {
     patterns: ['llm', 'api key'],
     guide: {
-      text: '「设置 → LLM 参数」：配置 Base URL / API Key / 模型后点「服务测试」。LLM 未配置时，L2/L3 的兜底层与「LLM 个性化讲解」不可用（讲解会回退静态建议）。',
+      text: '「设置 → AI 复查（LLM）」：配置服务地址 / API Key / 模型后点「测试」。未配置时，标准 / 深度检查会回退本地检查，个性化讲解显示备选建议。',
       view: 'settings',
     },
   },

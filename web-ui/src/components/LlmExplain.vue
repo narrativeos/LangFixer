@@ -26,8 +26,8 @@ onMounted(maybeExplain)
       store.detectCompleted
         ? '检测完成，未发现需要讲解的错误'
         : store.llmEnabled
-          ? '尚未生成讲解 — 先在左侧完成「检测 + 归因」，再按 CEFR 水平生成个性化讲解'
-          : 'LLM 未配置：个性化讲解不可用。到「设置 → LLM 参数」配置后，先在左侧完成「检测 + 归因」'
+          ? '尚未生成讲解 — 先在左侧完成「检测 + 归因」，再生成贴合你语言水平的个性化讲解'
+          : 'AI 复查还没配置：个性化讲解暂不可用。到「设置」配置好 AI 复查后，先在左侧完成「检测 + 归因」'
     "
     :image-size="80"
   />
@@ -85,7 +85,7 @@ onMounted(maybeExplain)
         <p class="llm-text" style="white-space: pre-wrap">{{ store.llm.exercises }}</p>
       </el-card>
       <div v-if="!store.llm.explanation && !store.llm.loading" class="hint">
-        点击「生成个性化讲解」，按 CEFR 水平流式生成讲解与练习；也可回到「错误归因」标签，点某条错误的「讲解」按钮定向生成
+        点击「生成个性化讲解」，会按你的语言水平自动生成讲解与练习；也可回到「错误归因」标签，点某条错误的「讲解」按钮定向生成
       </div>
     </template>
   </div>

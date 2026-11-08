@@ -156,6 +156,8 @@ function b64ToBlob(p: BinaryPayload): Blob {
  *  桌面端离线运行：检测/归因/决策表/讲解全部走 Rust 侧命令，不依赖 api-server */
 type TauriInternals = {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+  transformCallback?: (cb: (resp: { error?: string; payload?: unknown }) => void, once?: boolean) => number
+  removeCallback?: (id: number) => void
 }
 const tauri = (
   typeof window !== 'undefined' ? (window as unknown as { __TAURI_INTERNALS__?: TauriInternals }) : undefined
@@ -163,6 +165,27 @@ const tauri = (
 const inTauri = !!tauri
 /** 是否运行在 Tauri 桌面端（前端自适应布局 / 面板分支用） */
 export const isTauri = inTauri
+
+/** 订阅 Tauri 事件（原生菜单栏 menu-action / 窗口拖放 tauri://drag-drop）。
+ *  Web 形态（无 Tauri）为 no-op，返回空解绑函数。 */
+export function tauriListen(event: string, handler: (payload: unknown) => void): () => void {
+  const internals = tauri
+  if (!internals?.transformCallback) return () => {}
+  const cbId = internals.transformCallback((resp) => handler(resp.payload), false)
+  let eventId: number | undefined
+  void internals
+    .invoke('plugin:event|listen', { event, target: { kind: 'any' }, handler: cbId })
+    .then((id) => {
+      eventId = id as number
+    })
+    .catch(() => {
+      /* 事件插件不可用：静默（菜单/拖放功能自然失效，不影响主流程） */
+    })
+  return () => {
+    if (eventId !== undefined) void internals.invoke('plugin:event|unlisten', { event, eventId }).catch(() => {})
+    internals.removeCallback?.(cbId)
+  }
+}
 
 /** Tauri 命令参数（与 desktop-app/src/commands.rs 的 Rust 参数名一一对应，snake_case） */
 interface ExplainBody {
@@ -1485,6 +1508,48 @@ export const api = {
   mediaJobs(): Promise<MediaJob[]> {
     if (inTauri) return tauri!.invoke('media_jobs').then((r) => r as MediaJob[])
     return http.get<MediaJob[]>('/gec/media/jobs').then((r) => r.data)
+  },
+
+  /** 桌面端拖放导入：Finder 拖入的文件直接按路径建 job（Web 形态不可用） */
+  mediaCreateJobFromPath(body: {
+    path: string
+    apply_mode?: MediaApplyMode
+    lang?: string
+    level?: number
+    force_llm?: boolean
+    category?: string
+    mode?: MediaMode
+  }): Promise<MediaJob> {
+    if (!inTauri) return Promise.reject(new Error('拖放导入仅桌面端可用'))
+    return tauri!
+      .invoke('media_create_job_from_path', {
+        path: body.path,
+        applyMode: body.apply_mode ?? null,
+        lang: body.lang ?? null,
+        level: body.level ?? null,
+        forceLlm: body.force_llm ?? null,
+        category: body.category ?? null,
+        mode: body.mode ?? null,
+      })
+      .then((r) => r as MediaJob)
+  },
+
+  /** 原生右键上下文菜单（桌面端；Web 形态返回 null 走默认右键）。
+   *  kind：history / error / media-job；返回选中的项 id（如 ctx:history:load），未选择 = null */
+  showContextMenu(kind: 'history' | 'error' | 'media-job'): Promise<string | null> {
+    if (!inTauri) return Promise.resolve(null)
+    return tauri!.invoke('show_context_menu', { kind }).then((r) => (r as string | null) ?? null)
+  },
+
+  /** 同步原生窗口背景色（日/夜），消除暗色冷启动闪浅色底；Web 形态 no-op */
+  setWindowTheme(dark: boolean): void {
+    if (inTauri) void tauri!.invoke('set_window_theme', { dark }).catch(() => {})
+  },
+
+  /** 帮助菜单「检查更新…」：手动触发即时检查（桌面端专属） */
+  checkUpdateNow(): Promise<void> {
+    if (!inTauri) return Promise.reject(new Error('检查更新仅桌面端可用'))
+    return tauri!.invoke('check_update_now').then(() => undefined)
   },
 
   /** GET /gec/media/jobs/:id — 状态轮询（stage 到终态即停） */

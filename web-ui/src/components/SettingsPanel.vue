@@ -137,7 +137,7 @@ async function saveProfile() {
     })
     profileNative.value = rec.meta.native_language ?? profileNative.value
     profileCefr.value = rec.meta.cefr ?? profileCefr.value
-    ElMessage.success('档案已保存：LLM 讲解将按画像自动个性化')
+    ElMessage.success('档案已保存：AI 讲解会自动贴合你的水平')
   } catch (e) {
     profileError.value = errMsg(e)
   } finally {
@@ -487,11 +487,11 @@ onMounted(() => {
 
 /** 测试目标 → 展示名称（「测试全部」逐项结果用） */
 const TEST_LABELS: Record<string, string> = {
-  hanlp: 'NLP 服务',
-  llm: 'LLM',
-  decision: '决策模型',
-  l3: '特征模型',
-  embedding: '嵌入引擎',
+  hanlp: '文本处理服务',
+  llm: 'AI 复查',
+  decision: '快速定案',
+  l3: '快速定案',
+  embedding: '知识查询',
   tables_dir: '决策表目录',
   lexicons_dir: '词表目录',
   all: '全部项目',
@@ -520,9 +520,9 @@ const serviceOverview = computed<OverviewRow[]>(() => {
     target?: SettingsTestTarget,
   ): OverviewRow => ({ name, kind, state, stateType, test: target ? (t[target] ?? null) : null })
   return [
-    row('① 本地规则', '进程内', '始终可用', 'success'),
+    row('本地检查', '进程内', '始终可用', 'success'),
     row(
-      'NLP 服务（HanLP）',
+      '文本处理服务（HanLP）',
       '外部服务',
       offlineMode.value ? '离线模式（仅本地）' : hanlpEndpoint.value.trim() ? '已配置' : '未配置',
       offlineMode.value ? 'info' : hanlpEndpoint.value.trim() ? 'success' : 'warning',
@@ -530,7 +530,7 @@ const serviceOverview = computed<OverviewRow[]>(() => {
     ),
     // 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：总览不再列示
     row(
-      'L3 特征模型',
+      '快速定案（特征模型）',
       '外部服务',
       l3Enabled.value
         ? l3Endpoint.value.trim()
@@ -540,11 +540,11 @@ const serviceOverview = computed<OverviewRow[]>(() => {
       l3Enabled.value ? 'success' : 'info',
       'l3',
     ),
-    row('LLM', '外部服务', llmEnabled.value ? '已配置' : '未配置', llmEnabled.value ? 'success' : 'warning', 'llm'),
+    row('AI 复查（LLM）', '外部服务', llmEnabled.value ? '已配置' : '未配置', llmEnabled.value ? 'success' : 'warning', 'llm'),
     row(
-      '嵌入引擎',
+      '知识查询（向量检索）',
       '外部服务',
-      embeddingEndpoint.value.trim() ? '已配置' : '未配置（召回跳过）',
+      embeddingEndpoint.value.trim() ? '已配置' : '未配置（知识查询停用）',
       embeddingEndpoint.value.trim() ? 'success' : 'info',
       'embedding',
     ),
@@ -605,7 +605,7 @@ async function runTest(target: SettingsTestTarget) {
       <div class="cap-row">
         <div>
           <b>语言学习</b>
-          <div class="sub">「练习与复习」入口、学习者档案（母语 / CEFR 个性化讲解）</div>
+          <div class="sub">「练习与复习」入口、学习者档案（按母语与语言水平个性化讲解）</div>
         </div>
         <el-switch :model-value="store.caps.learning" @update:model-value="(v: boolean) => onCapToggle('learning', v)" />
       </div>
@@ -619,7 +619,7 @@ async function runTest(target: SettingsTestTarget) {
       <div class="cap-row">
         <div>
           <b>平台运营</b>
-          <div class="sub">规则管理、知识维护、进化中心，以及决策模型 / 特征模型等高级设置（面向平台维护者）</div>
+          <div class="sub">规则管理、知识维护、进化中心，以及检测能力的高级设置（面向平台维护者）</div>
         </div>
         <el-switch :model-value="store.caps.ops" @update:model-value="(v: boolean) => onCapToggle('ops', v)" />
       </div>
@@ -645,7 +645,7 @@ async function runTest(target: SettingsTestTarget) {
       <template #header>
         <div class="card-header">
           <span class="card-title">我的档案</span>
-          <span class="sub">母语与自评 CEFR 会注入讲解 prompt：讲解深度、示例语言自动贴合你的水平</span>
+          <span class="sub">讲解时会自动考虑你的母语和语言水平：深度与示例自动贴合</span>
         </div>
       </template>
       <el-form label-width="110px" @submit.prevent>
@@ -662,11 +662,11 @@ async function runTest(target: SettingsTestTarget) {
             <el-option v-for="n in NATIVE_OPTIONS" :key="n" :label="n" :value="n" />
           </el-select>
         </el-form-item>
-        <el-form-item label="自评 CEFR">
+        <el-form-item label="语言水平">
           <el-select
             v-model="profileCefr"
             clearable
-            placeholder="未评估（讲解默认按 A1 档）"
+            placeholder="未评估（讲解默认从最基础的档位开始）"
             style="max-width: 280px"
           >
             <el-option v-for="c in CEFR_LEVELS" :key="c" :label="c" :value="c" />
@@ -687,7 +687,7 @@ async function runTest(target: SettingsTestTarget) {
         <span v-if="profileError" class="apply-err">{{ profileError }}</span>
         <span v-else class="hint">
           档案挂在当前会话（{{ store.sessionId || '保存时自动生成' }}）；
-          讲解请求未显式指定档位时自动采用画像自评 CEFR
+          讲解未指定档位时，自动采用档案里的语言水平
         </span>
       </div>
     </el-card>
@@ -744,8 +744,8 @@ async function runTest(target: SettingsTestTarget) {
     <el-card shadow="never" id="set-nlp" class="settings-card">
       <template #header>
         <div class="card-header">
-          <span class="card-title">NLP 服务（HanLP）</span>
-          <span class="sub">中文 / 英文检测器共用的 NLP 服务（分词 + POS）</span>
+          <span class="card-title">文本处理服务（HanLP）</span>
+          <span class="sub">中文 / 英文检测共用的分词与词性标注服务</span>
         </div>
       </template>
       <el-form label-width="110px">
@@ -758,10 +758,10 @@ async function runTest(target: SettingsTestTarget) {
         </el-form-item>
         <el-form-item label="离线模式">
           <el-switch v-model="offlineMode" />
-          <span class="sub">开启后检测器仅用本地规则词表，不向 NLP 服务发请求</span>
+          <span class="sub">开启后检测只用本地规则词表，不调用该服务（离线可用）</span>
         </el-form-item>
         <el-form-item label="服务测试">
-          <el-button :loading="testing.hanlp" @click="runTest('hanlp')">测试 NLP 服务</el-button>
+          <el-button :loading="testing.hanlp" @click="runTest('hanlp')">测试服务</el-button>
           <span v-if="testResults.hanlp" :class="testResults.hanlp.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.hanlp.message }}
             <span class="sub">（{{ testResults.hanlp.latency_ms }} ms）</span>
@@ -780,18 +780,18 @@ async function runTest(target: SettingsTestTarget) {
     <el-card shadow="never" id="set-embedding" class="settings-card">
       <template #header>
         <div class="card-header">
-          <span class="card-title">嵌入引擎（向量召回）</span>
+          <span class="card-title">知识查询（向量检索）</span>
           <el-tag :type="embeddingEndpoint ? 'success' : 'info'" size="small">
             {{ embeddingEndpoint ? '已配置' : '未配置' }}
           </el-tag>
-          <span class="sub">OpenAI 兼容 /v1/embeddings 接口（知识向量召回 ②.5 层）</span>
+          <span class="sub">OpenAI 兼容接口，用于易错词对与错例的智能检索</span>
         </div>
       </template>
       <el-form label-width="110px">
         <el-form-item label="服务地址">
           <el-input
             v-model="embeddingEndpoint"
-            placeholder="http://127.0.0.1:8080/v1（留空 = 向量召回禁用）"
+            placeholder="http://127.0.0.1:8080/v1（留空 = 停用知识查询）"
             style="width: 420px"
           />
         </el-form-item>
@@ -898,11 +898,11 @@ async function runTest(target: SettingsTestTarget) {
     <el-card shadow="never" id="set-llm" class="settings-card">
       <template #header>
         <div class="card-header">
-          <span class="card-title">LLM 参数</span>
+          <span class="card-title">AI 复查（LLM）</span>
           <el-tag :type="llmEnabled ? 'success' : 'info'" size="small">
             {{ llmEnabled ? '已配置' : '未配置' }}
           </el-tag>
-          <span class="sub">OpenAI 兼容接口（讲解 / 练习生成）</span>
+          <span class="sub">OpenAI 兼容接口，用于智能复核与讲解 / 练习生成</span>
         </div>
       </template>
       <el-alert
@@ -955,7 +955,7 @@ async function runTest(target: SettingsTestTarget) {
           <el-input v-model="llmPromptsDir" placeholder="prompts" style="width: 420px" />
         </el-form-item>
         <el-form-item label="服务测试">
-          <el-button :loading="testing.llm" @click="runTest('llm')">测试 LLM</el-button>
+          <el-button :loading="testing.llm" @click="runTest('llm')">测试</el-button>
           <span v-if="testResults.llm" :class="testResults.llm.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.llm.message }}
             <span class="sub">（{{ testResults.llm.latency_ms }} ms）</span>
@@ -974,11 +974,11 @@ async function runTest(target: SettingsTestTarget) {
     <el-card v-if="store.caps.ops" shadow="never" id="set-l3" class="settings-card">
       <template #header>
         <div class="card-header">
-          <span class="card-title">L3 特征模型</span>
+          <span class="card-title">快速定案（特征模型）</span>
           <el-tag :type="l3Enabled ? 'success' : 'info'" size="small">
             {{ l3Enabled ? '已启用' : '未启用' }}
           </el-tag>
-          <span class="sub">level 3 主力层：特征模型高置信定案，LLM 收缩到纯长尾</span>
+          <span class="sub">深度扫描的主力：本地先确认有把握的，AI 只复核拿不准的少数</span>
         </div>
       </template>
       <el-form label-width="110px">
@@ -1010,7 +1010,7 @@ async function runTest(target: SettingsTestTarget) {
         </el-form-item>
         <el-form-item label="弃权阈值">
           <el-input-number v-model="l3Threshold" :min="0" :max="1" :step="0.05" :precision="2" />
-          <span class="sub">has_error_prob 落在 [0.25, 该值) 灰区视为弃权 → LLM 长尾兜底</span>
+          <span class="sub">把握程度落在某个区间的句子会交给 AI 复核；该值越高，交给 AI 复核的句子越多</span>
         </el-form-item>
         <el-form-item label="服务测试">
           <el-button :loading="testing.l3" @click="runTest('l3')">测试特征服务</el-button>
@@ -1032,10 +1032,10 @@ async function runTest(target: SettingsTestTarget) {
     <el-card v-if="l3Enabled && store.caps.ops" shadow="never" class="settings-card">
       <template #header>
         <div class="card-header">
-          <span class="card-title">L3 训练飞轮</span>
+          <span class="card-title">快速定案 · 训练飞轮</span>
           <el-tag v-if="flywheelStatus?.retrain_ready" type="warning" size="small">建议重训练</el-tag>
           <el-tag v-else type="info" size="small">积累中</el-tag>
-          <span class="sub">确认采纳的 LLM 检测结果持续汇入训练集，特征模型随使用变强</span>
+          <span class="sub">你确认采纳的纠错会持续汇入训练集，模型随使用变强</span>
         </div>
       </template>
       <el-form label-width="110px" v-if="flywheelStatus">
@@ -1047,7 +1047,7 @@ async function runTest(target: SettingsTestTarget) {
         </el-form-item>
         <el-form-item label="确认样本">
           <b>{{ flywheelStatus.samples }}</b> 条
-          <span class="sub">（采纳 LLM 错误 = 正样本；LLM 复查确认干净的句子 = 负样本；按文本去重，上限 5000）</span>
+          <span class="sub">（你采纳的纠错 = 正面样本；AI 复查确认没问题的句子 = 反面样本；按文本去重，上限 5000）</span>
         </el-form-item>
         <el-form-item label="当前模型">
           <template v-if="flywheelStatus.service_available">
@@ -1081,8 +1081,8 @@ async function runTest(target: SettingsTestTarget) {
         飞轮状态不可用（feature-model 服务未启动或加载失败）
       </div>
       <div class="hint">
-        采集来源：① 检测页「采纳」LLM 检出的错误（正样本，自动汇入）；
-        ② 检测未产出错误（含 LLM 复查确认干净）时原文句子自动汇入（负样本）。
+        采集来源：① 你在检测页「采纳」的 AI 检出的错误（正面样本，自动汇入）；
+        ② 检测没发现错误（含 AI 复查确认没问题）时的原句自动汇入（反面样本）。
         提醒条件：上次重训练后新增 ≥ 10 条（从未训练过则累计 ≥ 30）且距上次重训练 ≥ 7 天。
       </div>
     </el-card>

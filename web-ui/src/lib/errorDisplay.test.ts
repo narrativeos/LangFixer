@@ -22,21 +22,21 @@ function mk(over: Partial<ErrorItem>): ErrorItem {
 
 describe('confBand', () => {
   it('LLM 来源单独标注（数值无校准可比）', () => {
-    expect(confBand(mk({ source: 'llm', confidence: 0.99 }))).toEqual({ label: 'LLM 判断', type: 'info' })
+    expect(confBand(mk({ source: 'llm', confidence: 0.99 }))).toEqual({ label: 'AI 复查判断', type: 'info' })
   })
   it('按阈值分高/中/低', () => {
-    expect(confBand(mk({ confidence: 0.8 })).label).toBe('高置信')
-    expect(confBand(mk({ confidence: 0.55 })).label).toBe('中置信')
-    expect(confBand(mk({ confidence: 0.54 })).label).toBe('低置信')
+    expect(confBand(mk({ confidence: 0.8 })).label).toBe('把握大')
+    expect(confBand(mk({ confidence: 0.55 })).label).toBe('把握中等')
+    expect(confBand(mk({ confidence: 0.54 })).label).toBe('把握较小')
   })
 })
 
 describe('consensusText', () => {
   it('source + also_found_by 汉化拼接', () => {
-    expect(consensusText(mk({ source: 'rule', also_found_by: ['llm'] }))).toBe('规则 / LLM 兜底')
+    expect(consensusText(mk({ source: 'rule', also_found_by: ['llm'] }))).toBe('本地检查 / AI 复查')
   })
   it('未知层代码回落原文', () => {
-    expect(consensusText(mk({ source: 'rule', also_found_by: ['future_layer'] }))).toBe('规则 / future_layer')
+    expect(consensusText(mk({ source: 'rule', also_found_by: ['future_layer'] }))).toBe('本地检查 / future_layer')
   })
 })
 

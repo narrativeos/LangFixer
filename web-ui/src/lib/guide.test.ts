@@ -11,7 +11,7 @@ describe('guideFor（常见错误 → 修复指引）', () => {
   it('feature-model 服务错误（L3 / 测评共用）→ 指向「设置 → L3 特征模型」', () => {
     const g = guideFor('feature-model 不可达：timeout')
     expect(g?.view).toBe('settings')
-    expect(g?.text).toContain('L3 特征模型')
+    expect(g?.text).toContain('特征模型')
     const g2 = guideFor('特征模型服务返回 500')
     expect(g2?.view).toBe('settings')
   })
@@ -19,7 +19,7 @@ describe('guideFor（常见错误 → 修复指引）', () => {
   it('LLM 类错误 → 指向「设置 → LLM 参数」', () => {
     const g = guideFor('LLM 调用失败：401 invalid api key')
     expect(g?.view).toBe('settings')
-    expect(g?.text).toContain('LLM 参数')
+    expect(g?.text).toContain('AI 复查')
   })
 
   it('HanLP / NLP 错误 → 指向「设置 → NLP 服务」并提示离线模式', () => {
@@ -31,7 +31,7 @@ describe('guideFor（常见错误 → 修复指引）', () => {
   it('嵌入引擎错误 → 指向「设置 → 嵌入引擎」', () => {
     const g = guideFor('嵌入引擎 embedding 未响应')
     expect(g?.view).toBe('settings')
-    expect(g?.text).toContain('嵌入引擎')
+    expect(g?.text).toContain('知识查询')
   })
 
   it('关键字大小写不敏感', () => {

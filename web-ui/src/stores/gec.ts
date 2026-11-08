@@ -149,6 +149,8 @@ export const useGecStore = defineStore('gec', {
     explainNonce: 0,
     /** 设置页锚点（PipelineStatus 点击 → 设置页滚动定位并高亮对应卡片） */
     settingsAnchor: '',
+    /** 「替换为修正文本」应用前的文本快照（撤销用；null = 无可撤销动作） */
+    applySnapshot: null as string | null,
     }
   },
   getters: {
@@ -364,6 +366,14 @@ export const useGecStore = defineStore('gec', {
     focusError(index: number) {
       this.focusErrorIndex = index
       this.focusErrorNonce += 1
+    },
+    /** 撤销「替换为修正文本」：恢复应用前快照（Edit 菜单「撤销应用全部修正」⌥⌘Z /
+     *  非编辑区全局 ⌘Z）。无快照 = false（调用方据此提示） */
+    undoApply(): boolean {
+      if (this.applySnapshot === null) return false
+      this.text = this.applySnapshot
+      this.applySnapshot = null
+      return true
     },
     /** 反思流程导航：请求切换到指定顶层视图（检测工作区 / 规则管理 / 设置 / 进化中心）；
      *  anchor 仅对 settings 有效：设置页滚动定位并高亮对应卡片（PipelineStatus 点击直达） */

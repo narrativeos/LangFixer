@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useGecStore } from '../stores/gec'
 import { useErrorFeedback } from '../composables/useErrorFeedback'
+import { api } from '../api/client'
 import {
   CAT_LABELS,
   CAT_TYPES,
@@ -34,6 +36,27 @@ const visible = computed(() =>
 )
 function toggleCategory(k: string) {
   store.categoryFilter = store.categoryFilter === k ? '' : k
+}
+
+// ── 桌面规范（macOS HIG）：错误条目右键菜单（原生弹出；Web 形态 no-op） ──
+async function onItemContext(i: number) {
+  const action = await api.showContextMenu('error')
+  if (!action) return
+  if (action === 'ctx:error:locate') store.focusError(i)
+  else if (action === 'ctx:error:copy-original') void copyErrorText(store.errors[i]?.original ?? '')
+  else if (action === 'ctx:error:copy-correction') void copyErrorText(store.errors[i]?.correction ?? '')
+}
+async function copyErrorText(t: string) {
+  if (!t) {
+    ElMessage.info('该条目没有可复制的文本')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(t)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.warning('复制失败：请手动选择文本复制（浏览器权限限制）')
+  }
 }
 
 // 合并同类开关：开 = 相同实例并卡（×N）；关 = 逐条平铺（原有卡片形态）。默认开，偏好记入 localStorage
@@ -134,15 +157,15 @@ watch(
 <template>
   <div v-if="store.decisionAbstained" class="abstain-banner">
     <span class="abstain-icon">⚠</span>
-    <span>决策模型弃权 → LLM 兜底已触发</span>
+    <span>部分句子本地拿不准，已由 AI 自动复核</span>
   </div>
   <el-empty
     v-if="store.errors.length === 0"
     :description="
       store.detectCompleted
         ? store.llmConfirmedClean
-          ? '检测完成 — LLM 复查确认无错误 ✓'
-          : '检测完成 — 未发现语法错误 ✓（仅本次参与的检测层覆盖范围，见下方检测路径）'
+          ? '检测完成 — AI 复查确认没有错误 ✓'
+          : '检测完成 — 未发现错误 ✓（仅本次参与的检测能力范围，见下方「检测方式」）'
         : '暂无检测结果 — 在左侧输入文本，点击「检测 + 归因」或「仅检测」开始'
     "
     :image-size="80"
@@ -214,6 +237,7 @@ watch(
         { merged: g.items.length > 1, flash: flashIdx === g.first.i },
       ]"
       :data-idx="g.first.i"
+      @contextmenu.prevent="onItemContext(g.first.i)"
     >
       <div class="line">
         <template v-if="g.items.length > 1">
@@ -254,7 +278,7 @@ watch(
         </el-tooltip>
         <el-tooltip
           v-if="g.first.e.also_found_by?.length"
-          :content="`多层共识：该错误被 ${consensusText(g.first.e)} 独立检出——多个层一致确认，可信度更高`"
+          :content="`多个检测能力都发现了它：${consensusText(g.first.e)}——一致确认，更可信`"
           placement="top"
         >
           <el-tag type="success" effect="dark" size="small">
@@ -262,7 +286,7 @@ watch(
           </el-tag>
         </el-tooltip>
         <el-tooltip
-          :content="`置信度：${confBand(g.first.e).label}（原始数值 ${g.first.e.confidence.toFixed(2)}；各层口径不同，不可直接比较）`"
+          :content="`把握程度：${confBand(g.first.e).label}（参考值 ${g.first.e.confidence.toFixed(2)}；不同检测能力的参考值口径不同，不能直接比较）`"
           placement="top"
         >
           <el-tag :type="confBand(g.first.e).type" effect="plain" size="small">
@@ -451,7 +475,7 @@ watch(
             </div>
             <div v-if="knowledgeKept[g.first.i]" class="adopt-knowledge-kept">
               <el-tag type="success" size="small">已保留（#{{ knowledgeKept[g.first.i] }}）</el-tag>
-              <span class="recall-test-note">已写入知识存储：重检测相似文本时 ②.5 知识召回将直接命中</span>
+              <span class="recall-test-note">已存入你的错词库：以后检测相似文本时会自动参考</span>
             </div>
             <div v-else class="adopt-knowledge-actions">
               <el-button size="small" type="success" :loading="knowledgeSaving === g.first.i" @click="keepKnowledge(g.first.i)"

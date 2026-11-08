@@ -178,9 +178,9 @@ describe('rowKey / buildReportBody', () => {
 describe('badges / blockers', () => {
   it('多层共识把徽章转成醒目色（rule 单独命中 = 中性）', () => {
     const solo = { ...ann(1, { region: 'unlocated' }).error }
-    expect(detectorBadge(solo)).toEqual({ text: '规则', type: 'info' })
+    expect(detectorBadge(solo)).toEqual({ text: '本地检查', type: 'info' })
     expect(detectorBadge({ ...solo, also_found_by: ['llm'] }).type).toBe('success')
-    expect(detectorBadge({ ...solo, source: 'llm' })).toEqual({ text: 'LLM 兜底', type: 'warning' })
+    expect(detectorBadge({ ...solo, source: 'llm' })).toEqual({ text: 'AI 复查', type: 'warning' })
   })
 
   it('探测未就绪要变成人话阻塞项（不能让用户对着空画布猜）', () => {

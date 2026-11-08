@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { errMsg } from '../lib/err'
-import { errorTypeLabel } from '../lib/labels'
+import { errorTypeLabel, plainLayerLabel } from '../lib/labels'
 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
@@ -29,19 +29,12 @@ const PAGE_SIZES = [20, 50, 100, 200]
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 历史详情的层级贡献摘要文案（与 ResultsPanel「检测路径」同词表） */
-const LAYER_LABELS: Record<string, string> = {
-  rule: '规则',
-  decision: '决策模型',
-  knowledge: '知识召回',
-  feature: '特征模型',
-  llm: 'LLM',
-  statistical: '统计模型',
-}
 function histLayerText(l: LayerReport): string {
-  const base = LAYER_LABELS[l.layer] ?? l.layer
+  // 展示名走统一人话词表（labels.ts plainLayerLabel）
+  const base = plainLayerLabel(l.layer)
   if (l.status === 'ran') return l.found > 0 ? `${base} ${l.found} 条` : `${base} 未命中`
   if (l.status === 'decided') return l.found > 0 ? `${base} 定案 ${l.found} 条` : `${base} 定案（无错）`
-  if (l.status === 'abstained') return `${base} 弃权`
+  if (l.status === 'abstained') return `${base} 未定`
   if (l.status === 'unavailable') return `${base} 不可用`
   return `${base} 未触发`
 }
@@ -58,9 +51,10 @@ function paramsLabel(item: { params_json?: string | null }): string {
       rules_fingerprint?: string
     }
     const parts: string[] = []
-    if (p.force_llm) parts.push('强制 LLM')
-    else if (p.level && p.level > 1) parts.push(`L${p.level}`)
-    else parts.push('L1')
+    if (p.force_llm) parts.push('全文 AI 复查')
+    else if (p.level && p.level > 2) parts.push('深度扫描')
+    else if (p.level && p.level > 1) parts.push('标准检查')
+    else parts.push('快速检查')
     if (p.category) parts.push(p.category)
     if (p.model_version) parts.push(`模型 ${p.model_version}`)
     return parts.join(' · ')
@@ -206,7 +200,22 @@ async function clearAll() {
   }
 }
 
-onMounted(load)
+// ── 桌面规范（macOS HIG）：⌘F 聚焦搜索 + 行右键菜单（原生弹出，Web 形态 no-op） ──
+const searchRef = ref<{ focus?: () => void } | null>(null)
+const onFocusSearch = () => searchRef.value?.focus?.()
+
+async function onRowContextMenu(row: HistoryListItem, _col: unknown, ev: MouseEvent) {
+  ev.preventDefault()
+  const action = await api.showContextMenu('history')
+  if (action === 'ctx:history:load') void loadToWorkspace(row.id)
+  else if (action === 'ctx:history:delete') void remove(row.id)
+}
+
+onMounted(() => {
+  void load()
+  window.addEventListener('langfixer:focus-history-search', onFocusSearch)
+})
+onBeforeUnmount(() => window.removeEventListener('langfixer:focus-history-search', onFocusSearch))
 
 // 关键词防抖重查（服务端搜索）：输入停顿 300ms 后回到第 1 页重新拉取
 watch(keyword, () => {
@@ -245,6 +254,7 @@ watch(
         <span class="sub">共 {{ total }} 条检测记录</span>
         <span class="spacer"></span>
         <el-input
+          ref="searchRef"
           v-model="keyword"
           size="small"
           placeholder="搜索全文…"
@@ -267,6 +277,7 @@ watch(
     <el-table
       v-else
       :data="items"
+      @row-contextmenu="onRowContextMenu"
       :empty-text="
         keyword.trim()
           ? `未找到匹配「${keyword.trim()}」的检测记录`
@@ -301,12 +312,12 @@ watch(
                 size="small"
                 :type="detailTimings.nlp_warmup_ms != null ? 'warning' : 'info'"
               >
-                NLP {{ detailTimings.nlp_ms }} ms<template v-if="detailTimings.nlp_warmup_ms != null">（含预热 {{ detailTimings.nlp_warmup_ms }} ms）</template>
+                文本处理 {{ detailTimings.nlp_ms }} ms<template v-if="detailTimings.nlp_warmup_ms != null">（含首次准备 {{ detailTimings.nlp_warmup_ms }} ms）</template>
               </el-tag>
-              <el-tag v-if="detailTimings.decision_ms != null" size="small">决策 {{ detailTimings.decision_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.l3_ms != null" size="small">L3 {{ detailTimings.l3_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.recall_ms != null" size="small">召回 {{ detailTimings.recall_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.llm_ms != null" size="small">LLM {{ detailTimings.llm_ms }} ms</el-tag>
+              <el-tag v-if="detailTimings.decision_ms != null" size="small">快速定案 {{ detailTimings.decision_ms }} ms</el-tag>
+              <el-tag v-if="detailTimings.l3_ms != null" size="small">快速定案 {{ detailTimings.l3_ms }} ms</el-tag>
+              <el-tag v-if="detailTimings.recall_ms != null" size="small">知识查询 {{ detailTimings.recall_ms }} ms</el-tag>
+              <el-tag v-if="detailTimings.llm_ms != null" size="small">AI 复查 {{ detailTimings.llm_ms }} ms</el-tag>
             </div>
             <div v-if="detailLayers.length" class="detail-timings">
               <el-tag v-for="l in detailLayers" :key="l.layer" size="small" effect="plain" type="info">

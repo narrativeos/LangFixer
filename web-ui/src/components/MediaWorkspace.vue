@@ -16,7 +16,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import { CAT_LABELS, CAT_TYPES, confBand } from '../lib/errorDisplay'
-import { layerStatusLabel } from '../lib/labels'
+import { layerStatusLabel, plainLayerLabel } from '../lib/labels'
 import {
   advancedBlockNote,
   buildReportBody,
@@ -135,18 +135,10 @@ const drawableIds = computed(() => new Set(overlay.value.boxes.map((b) => b.id))
 const strokeW = computed(() => (size.value ? Math.max(2, size.value.w / 700) : 2))
 const labelSize = computed(() => (size.value ? Math.max(14, size.value.w / 48) : 14))
 
-/** 检测层贡献（与文本检测的 ResultsPanel 同一词表，避免「图上与列表两套叫法」） */
-const LAYER_LABELS: Record<string, string> = {
-  rule: '规则',
-  decision: '决策模型',
-  knowledge: '知识召回',
-  feature: '特征模型',
-  llm: 'LLM 兜底',
-  statistical: '统计模型',
-}
-
+/** 检测层贡献：统一走 labels.ts 人话词表（此前本处与 ResultsPanel 已漂移出
+ *  「LLM 兜底 / LLM」两套叫法——一个概念一个名字，收敛到 plainLayerLabel） */
 function layerText(l: { layer: string; status: string; found: number }): string {
-  const base = LAYER_LABELS[l.layer] ?? l.layer
+  const base = plainLayerLabel(l.layer)
   if (l.status === 'ran') return l.found > 0 ? `${base} ${l.found} 条` : `${base} 未命中`
   return `${base} ${layerStatusLabel(l.status)}`
 }
@@ -341,7 +333,7 @@ function unitConfidence(a: MediaAnnotation): number | null {
 }
 
 function locateReason(a: MediaAnnotation): string {
-  if (a.region.region === 'unlocated') return '未能定位（置信度不足 / 跨单元）'
+  if (a.region.region === 'unlocated') return '未能定位（把握不足 / 跨多个区域）'
   if (a.region.region === 'run_ref') return '文档对象引用（位图上无落点）'
   return '无像素落点（不画框）'
 }
@@ -410,13 +402,70 @@ async function saveReport(format: 'json' | 'md' | 'html' | 'docx') {
   }
 }
 
+// ── 桌面规范（macOS HIG）：菜单导入/导出 + Finder 拖放 + 任务右键菜单 ──
+async function createJobsFromPaths(paths: string[]) {
+  if (busy.value) return
+  // 与「开始审校」同一口径：高档不可用就摊开原因，不静默换档
+  if (modeNote.value) {
+    ElMessage.error(modeNote.value)
+    return
+  }
+  busy.value = true
+  report.value = null
+  try {
+    for (const p of paths) {
+      const name = p.split(/[\\/]/).pop() ?? p
+      statusText.value = `导入 ${name}…`
+      const created = await api.mediaCreateJobFromPath({
+        path: p,
+        apply_mode: applyMode.value,
+        lang: lang.value,
+        level: level.value,
+        force_llm: forceLlm.value,
+        mode: mode.value,
+      })
+      upsertJob(created)
+      await openJob(created.id)
+      const final = await pollUntilDone(created.id)
+      if (final.stage === 'failed') {
+        ElMessage.error(`${name} 审校失败：${final.error ?? '未知原因'}`)
+      }
+    }
+    statusText.value = '拖放导入完成'
+  } catch (e) {
+    statusText.value = ''
+    ElMessage.error(errText(e))
+  } finally {
+    busy.value = false
+  }
+}
+
+async function onJobContext(j: MediaJob) {
+  const action = await api.showContextMenu('media-job')
+  if (action === 'ctx:job:open') void openJob(j.id)
+  else if (action === 'ctx:job:export') {
+    if (activeId.value !== j.id) await openJob(j.id)
+    void exportReport()
+  }
+}
+
+const onMenuImport = () => pickFiles()
+const onMenuExport = () => void exportReport()
+const onMediaDrop = (ev: Event) => void createJobsFromPaths((ev as CustomEvent<string[]>).detail ?? [])
+
 onMounted(() => {
   void loadProbes()
   void loadJobs()
+  window.addEventListener('langfixer:media-import', onMenuImport)
+  window.addEventListener('langfixer:media-export', onMenuExport)
+  window.addEventListener('langfixer:media-drop', onMediaDrop)
 })
 onBeforeUnmount(() => {
   cancelled = true
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  window.removeEventListener('langfixer:media-import', onMenuImport)
+  window.removeEventListener('langfixer:media-export', onMenuExport)
+  window.removeEventListener('langfixer:media-drop', onMediaDrop)
 })
 </script>
 
@@ -522,6 +571,7 @@ onBeforeUnmount(() => {
         size="small"
         :class="{ 'tab-active': j.id === activeId }"
         @click="openJob(j.id)"
+        @contextmenu.prevent="onJobContext(j)"
       >
         {{ labelOf(j) }}
         <el-tag

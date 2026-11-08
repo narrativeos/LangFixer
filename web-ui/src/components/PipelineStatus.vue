@@ -8,6 +8,8 @@
  * 与 Editor 卡片内的「检测管线」提示互补：
  * - 本条 = 系统能力总览（与响应级别无关）；
  * - Editor 行 = 当前所选级别下「本次将走哪些层」。
+ *
+ * `flat` 形态用于桌面端 header popover（去掉条状背景/边框，由 popover 提供容器）。
  */
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -17,6 +19,9 @@ import { useGecStore } from '../stores/gec'
 import type { SettingsTestResult } from '../types'
 
 const store = useGecStore()
+
+/** flat = popover 内嵌形态（桌面端 header chip 点开）；默认 = Web 端整行状态条 */
+defineProps<{ flat?: boolean }>()
 
 interface StatusItem {
   key: string
@@ -31,37 +36,37 @@ interface StatusItem {
 const items = computed<StatusItem[]>(() => [
   {
     key: 'rule',
-    label: '① 本地规则',
+    label: '本地检查',
     state: 'ok',
-    hint: 'ZEN 决策表 + 本地词表，进程内运行，始终可用',
+    hint: '内置规则与词表，即时运行，始终可用',
     anchor: 'dirs',
   },
   // ② 决策模型已退役出产品路径（EVOLUTION.md §13 #10）：状态条不再列示
   {
     key: 'embedding',
-    label: '②.5 知识召回',
+    label: '知识查询',
     state: store.embeddingConfigured ? 'ok' : 'missing',
     hint: store.embeddingConfigured
-      ? '嵌入引擎已配置，知识向量召回生效'
-      : '未配置嵌入引擎：知识向量召回静默跳过（不影响其他层）；设置 → 嵌入引擎',
+      ? '易错词对与错例的检索已就绪'
+      : '未配置：易错词对的智能检索不会生效（不影响其他检查）；可在设置中配置',
     anchor: 'embedding',
   },
   {
     key: 'l3',
-    label: '③-F 特征模型',
+    label: '快速定案',
     state: store.l3Enabled ? 'ok' : 'off',
     hint: store.l3Enabled
-      ? 'feature-model 服务已启用：高置信定案，LLM 收缩到长尾'
-      : '未启用：L3 回退到 LLM 兜底；设置 → L3 特征模型',
+      ? '确定的结果本地先行处理，AI 只复核拿不准的'
+      : '未启用：AI 复查范围更大、更慢；可在设置中开启',
     anchor: 'l3',
   },
   {
     key: 'llm',
-    label: '③ LLM 兜底',
+    label: 'AI 复查',
     state: store.llmEnabled ? 'ok' : 'missing',
     hint: store.llmEnabled
-      ? 'LLM 已配置'
-      : '未配置 LLM：L2/L3 兜底与「LLM 个性化讲解」不可用；设置 → LLM 参数',
+      ? 'AI 复查已就绪'
+      : '未配置：标准 / 深度检查与个性化讲解不可用；可在设置中配置',
     anchor: 'llm',
   },
 ])
@@ -91,8 +96,8 @@ async function testAll() {
 </script>
 
 <template>
-  <div class="pipeline-status" role="status" aria-label="检测管线系统状态">
-    <span class="ps-label">系统状态</span>
+  <div class="pipeline-status" :class="{ 'ps-flat': flat }" role="status" aria-label="检测服务可用情况">
+    <span class="ps-label">检测服务</span>
     <div
       v-for="it in items"
       :key="it.key"
@@ -111,7 +116,7 @@ async function testAll() {
         {{ it.state === 'ok' ? '可用' : it.state === 'off' ? '未启用' : '未配置' }}
       </span>
     </div>
-    <span class="ps-summary">{{ okCount }}/{{ items.length }} 层可用</span>
+    <span class="ps-summary">{{ okCount }}/{{ items.length }} 项可用</span>
     <el-button size="small" :loading="testing" @click="testAll">测试全部</el-button>
     <el-tooltip
       v-if="testResult"
@@ -178,4 +183,6 @@ async function testAll() {
 .ps-latency { color: var(--el-text-color-secondary); }
 .apply-ok { color: var(--el-color-success, #67c23a); }
 .apply-err { color: var(--el-color-danger, #f56c6c); }
+/* popover 内嵌形态：容器样式交给 popover，自身只留布局 */
+.ps-flat { background: transparent; border: none; margin: 0; padding: 2px; }
 </style>

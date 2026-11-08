@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useGecStore } from './stores/gec'
 import Editor from './components/Editor.vue'
 import PreviewPanel from './components/PreviewPanel.vue'
@@ -17,6 +17,8 @@ import MediaWorkspace from './components/MediaWorkspace.vue'
 import LearningPanel from './components/LearningPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { viewAllowed, type AppView } from './lib/caps'
+import { api, isTauri, tauriListen } from './api/client'
+import { ElMessage } from 'element-plus'
 
 const store = useGecStore()
 /** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置。
@@ -47,6 +49,14 @@ function resolveInitialView(): AppView {
 }
 
 const activeView = ref<AppView>(resolveInitialView())
+
+// ── 桌面端 header 系统状态 chip（macOS 惯例：全局状态放工具栏，详情进 popover）──
+// 管线可用性是应用级事实：chip 全视图可见，不再只在检测页内联展示（Web 形态保持原样）
+const psPopover = ref<{ hide?: () => void } | null>(null)
+const psTotal = 4
+const psOk = computed(
+  () => 1 + (store.embeddingConfigured ? 1 : 0) + (store.l3Enabled ? 1 : 0) + (store.llmEnabled ? 1 : 0),
+)
 const rulesSub = ref('tables')
 const knowledgeSub = ref('attribution')
 
@@ -79,6 +89,7 @@ function finishOnboarding() {
 // 切回检测工作区时重新校验检测管线各层启用状态：
 // 设置页保存（或他处变更）后，L2 的状态标签 / 管线提示自动与服务端对齐
 watch(activeView, (v) => {
+  psPopover.value?.hide?.() // 视图切换时收起系统状态 popover（状态条跳设置等动作后不残留）
   if (v === 'workspace') void store.refreshEngineStatus()
   // 进入练习页时徽章保鲜（复习完成数即时反映到导航）
   if (v === 'learning') void store.refreshReviewDue()
@@ -127,29 +138,113 @@ watch(
   },
 )
 
-// ── 全局快捷键：⌘/Ctrl+Enter = 检测 + 归因（仅检测工作区、条件与按钮一致） ──
+// ── 全局快捷键：⌘/Ctrl+Enter = 检测 + 归因（仅检测工作区、条件与按钮一致）；
+//    ⌘/Ctrl+F = 聚焦历史搜索；⌘/Ctrl+Z（非文本编辑区）= 撤销「替换为修正文本」。
+//    注意：⌘, / ⌘1-7 / ⌘O 等由原生菜单栏快捷键处理（menu-action 事件），此处不重复监听 ──
 function onGlobalKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     if (activeView.value !== 'workspace') return
     if (store.loading || !store.text.trim()) return
     e.preventDefault()
     void store.analyze(store.sessionId || undefined)
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+    if (activeView.value !== 'workspace') return
+    e.preventDefault()
+    window.dispatchEvent(new CustomEvent('langfixer:focus-history-search'))
+    return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    // 焦点在可编辑控件时交还原生 textarea 撤销，只兜底「非编辑区」的应用级撤销
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+    if (store.applySnapshot === null) return
+    e.preventDefault()
+    if (store.undoApply()) ElMessage.success('已撤销「替换为修正文本」，恢复应用前文本')
   }
 }
+
+// ── 桌面端（Tauri）：原生菜单栏命令 / 文件拖放事件路由 ──
+let unlistenTauri: Array<() => void> = []
+
+function onMenuAction(payload: unknown) {
+  const id = String(payload ?? '')
+  if (id.startsWith('menu:view:')) {
+    const v = id.slice('menu:view:'.length) as AppView
+    // 能力位门控与 header 导航一致：未解锁视图不硬跳转（菜单项保持可见是 Mac 惯例）
+    if (viewAllowed(v, store.caps)) activeView.value = v
+    return
+  }
+  switch (id) {
+    case 'menu:settings':
+      activeView.value = 'settings'
+      break
+    case 'menu:import':
+      if (!viewAllowed('media', store.caps)) {
+        lockedViewHint.value = 'media'
+        return
+      }
+      activeView.value = 'media'
+      window.dispatchEvent(new CustomEvent('langfixer:media-import'))
+      break
+    case 'menu:export':
+      window.dispatchEvent(new CustomEvent('langfixer:media-export'))
+      break
+    case 'menu:undo-apply':
+      if (store.undoApply()) ElMessage.success('已撤销「替换为修正文本」，恢复应用前文本')
+      else ElMessage.info('没有可撤销的「应用全部修正」操作')
+      break
+    case 'menu:toggle-theme':
+      toggleTheme()
+      break
+    case 'menu:onboarding':
+      showOnboarding.value = true
+      break
+    case 'menu:check-update':
+      void api.checkUpdateNow().catch((e) => ElMessage.error(String((e as Error)?.message ?? e)))
+      break
+  }
+}
+
+/** Finder 拖入窗口（tauri://drag-drop）：载体文件 → 跳载体审校并按路径直接建 job */
+function onDragDrop(payload: unknown) {
+  const paths = (payload as { paths?: string[] })?.paths ?? []
+  const files = paths.filter((p) => /\.(png|jpe?g|webp|gif|bmp|tiff?|pdf|docx)$/i.test(p))
+  if (!files.length) return
+  if (!viewAllowed('media', store.caps)) {
+    lockedViewHint.value = 'media'
+    return
+  }
+  activeView.value = 'media'
+  window.dispatchEvent(new CustomEvent('langfixer:media-drop', { detail: files }))
+}
+
 onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  unlistenTauri.forEach((f) => f())
+  unlistenTauri = []
+})
+if (isTauri) {
+  unlistenTauri.push(tauriListen('menu-action', onMenuAction))
+  unlistenTauri.push(tauriListen('tauri://drag-drop', onDragDrop))
+}
 
 // ── 主题（日/夜）：main.ts 已初始化 html.dark；此处仅切换与持久化 ──
 const isDark = ref(document.documentElement.classList.contains('dark'))
 function toggleTheme() {
   isDark.value = !isDark.value
   document.documentElement.classList.toggle('dark', isDark.value)
+  api.setWindowTheme(isDark.value) // 原生窗口背景色同步（桌面端；Web no-op）
   try {
     localStorage.setItem('langfixer.theme', isDark.value ? 'dark' : 'light')
   } catch {
     /* 忽略 */
   }
 }
+// 启动对齐：手动覆盖过主题时（localStorage ≠ 系统外观），把原生窗口背景色拉齐
+if (isTauri) api.setWindowTheme(isDark.value)
 </script>
 
 <template>
@@ -226,10 +321,32 @@ function toggleTheme() {
       >
         设置
       </el-button>
-      <el-button text :title="isDark ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
+      <!-- 桌面端：系统状态收进 header（chip 常亮，点开 popover 看各层详情 / 测试全部） -->
+      <el-popover
+        v-if="isTauri"
+        ref="psPopover"
+        trigger="click"
+        placement="bottom-end"
+        :width="440"
+        popper-class="ps-popover"
+      >
+        <template #reference>
+          <button
+            class="ps-chip"
+            :class="psOk === psTotal ? 'ps-chip-ok' : 'ps-chip-warn'"
+            :title="`检测服务：${psOk}/${psTotal} 项可用（点击查看明细）`"
+            aria-label="检测服务：查看可用情况"
+          >
+            <i class="ps-chip-dot"></i>
+            检测服务 {{ psOk }}/{{ psTotal }}
+          </button>
+        </template>
+        <PipelineStatus flat />
+      </el-popover>
+      <el-button text :title="isDark ? '切换到浅色主题' : '切换到深色主题'" aria-label="切换浅色/深色主题" @click="toggleTheme">
         <el-icon><Moon v-if="!isDark" /><Sunny v-else /></el-icon>
       </el-button>
-      <el-button text title="查看使用引导" @click="showOnboarding = true">帮助</el-button>
+      <el-button text title="查看使用引导" aria-label="查看使用引导" @click="showOnboarding = true">帮助</el-button>
     </nav>
   </header>
 
@@ -268,8 +385,8 @@ function toggleTheme() {
           到设置调整场景
         </el-button>
       </el-alert>
-      <!-- 系统状态总览（T1-1）：管线各层可用 / 未启用 / 未配置；点项跳设置，可一键测试全部 -->
-      <PipelineStatus />
+      <!-- 系统状态总览（T1-1）：Web 形态保留整行状态条；桌面端已收进 header chip -->
+      <PipelineStatus v-if="!isTauri" />
       <section class="detect-layout">
         <el-card shadow="never" class="input-card">
           <template #header>

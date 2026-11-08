@@ -8,6 +8,7 @@ mod agent_tools;
 mod commands;
 mod knowledge_recall;
 mod media;
+mod menu;
 mod settings;
 mod update;
 mod window_state;
@@ -125,13 +126,29 @@ fn main() {
             media::media_preview,
             media::media_apply,
             media::media_report,
-            media::media_report_file
+            media::media_report_file,
+            // 桌面规范（macOS HIG）：原生菜单栏 / 右键菜单 / 主题背景色 / 手动检查更新
+            media::media_create_job_from_path,
+            menu::show_context_menu,
+            commands::set_window_theme,
+            update::check_update_now
         ])
         .setup(|app| {
+            // 原生菜单栏（macOS HIG：菜单是功能发现第一入口，命令项全部带快捷键）
+            menu::build(app)?;
             // 窗口显示前恢复上次的窗口状态（位置 / 大小 / 最大化）
             if let Some(win) = app.get_webview_window("main") {
                 let window: tauri::Window = win.as_ref().window();
                 window_state::restore(&window);
+                // 原生窗口背景色按当前外观预设：暗色模式冷启动不闪浅色底
+                // （前端挂载后还会经 set_window_theme 对齐「手动覆盖主题」的场景）
+                let dark = matches!(win.theme(), Ok(tauri::Theme::Dark));
+                let color = if dark {
+                    tauri::utils::config::Color(0x14, 0x16, 0x1e, 255)
+                } else {
+                    tauri::utils::config::Color(0xf2, 0xf3, 0xf8, 255)
+                };
+                win.set_background_color(Some(color)).ok();
             }
             // 自动更新：从构建时烧入的发布源自动检查 / 下载 / 安装（见 update.rs）
             #[cfg(desktop)]
@@ -146,6 +163,7 @@ fn main() {
             }
             Ok(())
         })
+        .on_menu_event(|app, event| menu::handle(app, event.id().as_ref()))
         .on_window_event(|window, event| match event {
             // 缩放 / 移动：防抖保存（最多 1 秒一次）
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => window_state::save_debounced(window),

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { summarizeRun } from '../lib/pipeline'
-import { layerStatusLabel } from '../lib/labels'
+import { layerStatusLabel, plainLayerLabel } from '../lib/labels'
 import { useGecStore } from '../stores/gec'
 import type { LayerReport } from '../types'
 import ErrorList from './ErrorList.vue'
@@ -17,17 +17,10 @@ const view = ref<'errors' | 'attribution' | 'llm'>('errors')
 const runLayers = computed(() => (store.timings ? summarizeRun(store.timings) : []))
 
 /** 「检测路径」摘要：优先用后端层级贡献摘要（每层状态 + 检出数），
- *  无 layers（缓存命中 / 旧服务端）时回退 timings 管线行 */
-const LAYER_LABELS: Record<string, string> = {
-  rule: '规则',
-  decision: '决策模型',
-  knowledge: '知识召回',
-  feature: '特征模型',
-  llm: 'LLM',
-  statistical: '统计模型',
-}
+ *  无 layers（缓存命中 / 旧服务端）时回退 timings 管线行。
+ *  展示名走统一人话词表（plainLayerLabel），内部键名只进 tooltip */
 function layerText(l: LayerReport): string {
-  const base = LAYER_LABELS[l.layer] ?? l.layer
+  const base = plainLayerLabel(l.layer)
   if (l.status === 'ran') return l.found > 0 ? `${base} ${l.found} 条` : `${base} 未命中`
   if (l.status === 'decided') return l.found > 0 ? `${base} 定案 ${l.found} 条` : `${base} 定案（无错）`
   return `${base} ${layerStatusLabel(l.status)}`
@@ -74,9 +67,10 @@ async function copyCorrected() {
   }
 }
 function applyCorrected() {
+  store.applySnapshot = store.text
   store.text = store.correctedText
   store.clearResults()
-  ElMessage.success('已替换为修正文本（全部修正已应用；如需回退可用 Ctrl/Cmd+Z）')
+  ElMessage.success('已替换为修正文本（全部修正已应用；可用编辑菜单「撤销应用全部修正」⌥⌘Z 回退）')
 }
 </script>
 
@@ -112,7 +106,7 @@ function applyCorrected() {
       <template v-for="(l, i) in runPath" :key="l.layer">
         <span v-if="i > 0" class="rp-arrow">→</span>
         <el-tooltip
-          :content="`层：${LAYER_LABELS[l.layer] ?? l.layer}，状态：${layerStatusLabel(l.status)}，检出 ${l.found} 条`"
+          :content="`层：${plainLayerLabel(l.layer)}（${l.layer}），状态：${layerStatusLabel(l.status)}，检出 ${l.found} 条`"
           placement="top"
         >
           <el-tag size="small" effect="plain" :type="layerTagType(l)">{{ layerText(l) }}</el-tag>
@@ -120,7 +114,7 @@ function applyCorrected() {
       </template>
     </div>
     <div v-else-if="runLayers.length" class="run-pipeline" aria-label="本次检测管线执行情况">
-      <span class="rp-label">本次管线</span>
+      <span class="rp-label">检测方式</span>
       <el-tag
         v-for="l in runLayers"
         :key="l.no"

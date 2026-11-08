@@ -5,7 +5,9 @@
   "identifier": "com.langfixer.desktop",
   "build": {
     "frontendDist": "../web-ui/dist",
-    "devUrl": "http://localhost:4805"
+    "devUrl": "http://localhost:4805",
+    "beforeDevCommand": "bash ../scripts/ensure-vite.sh",
+    "beforeBuildCommand": "npm --prefix ../web-ui run build"
   },
   "app": {
     "windows": [
@@ -16,7 +18,8 @@
         "minWidth": 960,
         "minHeight": 640,
         "center": true,
-        "backgroundColor": "#f2f3f8"
+        "backgroundColor": "#f2f3f8",
+        "dragDropEnabled": true
       }
     ],
     "security": {

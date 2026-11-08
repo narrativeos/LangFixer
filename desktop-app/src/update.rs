@@ -8,10 +8,12 @@
 //!
 //! 平台差异（插件的 install() 在 Windows 上拉起安装器后会直接 `std::process::exit`
 //! 结束本进程，macOS / Linux 只是在运行进程内替换磁盘文件）：
-//! - macOS / Linux：自动下载 + 安装，装完提示重启生效；「已装好但未重启」的
-//!   版本号持久化到配置目录 `update-pending.txt`，冷启动不再重复下载安装与弹框；
-//! - Windows：必须先征得用户同意再下载并 install()（应用随之退出、由安装器接管）；
-//!   用户选「稍后再说」则不落盘，下次启动仍会询问；同一会话内同一版本只问一次。
+//! - macOS / Linux：**先征得同意**再下载 + 安装（macOS 更新惯例：不装完才问），
+//!   装完提示重启生效；「已装好但未重启」的版本号持久化到配置目录
+//!   `update-pending.txt`，冷启动不再重复下载安装与弹框；用户选「稍后再说」把
+//!   版本号持久化到 `update-skipped.txt`，同一版本不再反复打扰（出现更新版本才再问）；
+//! - Windows：同样先征得用户同意再下载并 install()（应用随之退出、由安装器接管）；
+//!   用户选「稍后再说」同样落盘 skip 记录；同一会话内同一版本只问一次。
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -47,13 +49,23 @@ pub fn spawn(app: AppHandle) {
         let mut asked: Option<String> = None;
         tokio::time::sleep(Duration::from_secs(30)).await;
         loop {
-            check_and_install(&app, &mut asked).await;
+            check_and_install(&app, &mut asked, false).await;
             tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
         }
     });
 }
 
-async fn check_and_install(app: &AppHandle, asked: &mut Option<String>) {
+/// 手动「检查更新…」（帮助菜单）：忽略「稍后再说」跳过记录；已是最新也即时弹框反馈
+#[tauri::command]
+pub async fn check_update_now(app: AppHandle) -> Result<(), String> {
+    let mut asked: Option<String> = None;
+    check_and_install(&app, &mut asked, true).await;
+    Ok(())
+}
+
+/// `force = true`（手动检查）：忽略 skip 记录、无更新也弹「已是最新」反馈。
+/// 发现更新后**任何平台都先弹框征得同意**再下载安装（macOS 更新惯例：用户知情选择）。
+async fn check_and_install(app: &AppHandle, asked: &mut Option<String>, force: bool) {
     let updater = match app
         .updater_builder()
         .endpoints(endpoints())
@@ -69,38 +81,59 @@ async fn check_and_install(app: &AppHandle, asked: &mut Option<String>) {
         Ok(Some(u)) => u,
         Ok(None) => {
             clear_pending(app); // 已是最新（或 pending 标记对应的版本已生效）
+            if force {
+                info_dialog(
+                    app,
+                    format!("当前已是最新版本 {}。", app.package_info().version),
+                );
+            }
             return;
         }
         Err(e) => {
             tracing::warn!("检查更新失败（源: {}）: {e}", release_source());
+            if force {
+                info_dialog(app, format!("检查更新失败：{e}"));
+            }
             return;
         }
     };
     // 已装好、等待重启（macOS / Linux 安装成功后落盘）：不再重复下载安装与弹框
     if pending(app).as_deref() == Some(update.version.as_str()) {
+        if force {
+            info_dialog(
+                app,
+                format!("新版本 {} 已下载安装完成，重启应用后生效。", update.version),
+            );
+        }
+        return;
+    }
+    // 该版本曾被选「稍后再说」（跨会话持久化）：出现更新的版本才会再次询问
+    if !force && skipped(app).as_deref() == Some(update.version.as_str()) {
         return;
     }
     // 本会话已询问过（用户选了「稍后再说」或已提示过）：本轮不再打扰
-    if asked.as_deref() == Some(update.version.as_str()) {
+    if !force && asked.as_deref() == Some(update.version.as_str()) {
+        return;
+    }
+    *asked = Some(update.version.clone());
+
+    // 先征得同意再下载（所有平台一致；Windows install() 会结束进程，更要先问）
+    let agreed = ask(
+        app,
+        format!(
+            "发现新版本 {}，是否立即更新？\n应用将自动下载安装，完成后提示重启生效。",
+            update.version
+        ),
+        "立即更新",
+    )
+    .await;
+    if !agreed {
+        write_skip(app, &update.version); // 落盘：同一版本不再反复打扰
         return;
     }
 
     #[cfg(windows)]
     {
-        *asked = Some(update.version.clone());
-        // 必须先征得同意：install() 拉起安装器后会直接结束本进程
-        let agreed = ask(
-            app,
-            format!(
-                "发现新版本 {}，是否立即更新？\n应用将自动退出并完成安装，随后重新启动。",
-                update.version
-            ),
-            "立即更新",
-        )
-        .await;
-        if !agreed {
-            return; // 不落盘 pending：下次启动仍会询问
-        }
         match update.download(|_, _| {}, || {}).await {
             Ok(bytes) => {
                 if let Err(e) = update.install(&bytes) {
@@ -115,7 +148,7 @@ async fn check_and_install(app: &AppHandle, asked: &mut Option<String>) {
     #[cfg(not(windows))]
     {
         tracing::info!(
-            "发现新版本 {}（源: {}），开始自动下载安装",
+            "用户同意更新到 {}（源: {}），开始下载安装",
             update.version,
             release_source()
         );
@@ -124,7 +157,6 @@ async fn check_and_install(app: &AppHandle, asked: &mut Option<String>) {
                 Ok(()) => {
                     // 先持久化「已装好待重启」再弹框：冷启动不再重复下载安装与提示
                     write_pending(app, &update.version);
-                    *asked = Some(update.version.clone());
                     let restart = ask(
                         app,
                         format!(
@@ -168,6 +200,39 @@ fn pending_path(app: &AppHandle) -> Option<PathBuf> {
         .app_config_dir()
         .ok()
         .map(|dir| dir.join("update-pending.txt"))
+}
+
+/// 「稍后再说」跳过的版本号持久化（同一版本不再反复弹框；出现更新版本才再问）
+fn skipped_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("update-skipped.txt"))
+}
+
+fn skipped(app: &AppHandle) -> Option<String> {
+    let raw = std::fs::read_to_string(skipped_path(app)?).ok()?;
+    let version = raw.trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+fn write_skip(app: &AppHandle, version: &str) {
+    if let Some(path) = skipped_path(app) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, version) {
+            tracing::warn!("写入更新跳过记录失败（{}）: {e}", path.display());
+        }
+    }
+}
+
+/// 单按钮信息弹框（手动检查更新的「已是最新 / 失败」即时反馈）
+fn info_dialog(app: &AppHandle, message: String) {
+    app.dialog()
+        .message(message)
+        .title("LangFixer 更新")
+        .show(|_| {});
 }
 
 fn pending(app: &AppHandle) -> Option<String> {

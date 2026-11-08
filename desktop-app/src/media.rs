@@ -196,6 +196,46 @@ pub async fn media_create_job(
     .map_err(|e| e.to_string())
 }
 
+/// 拖放导入（Finder 拖入窗口）：直接按路径读字节建 job，
+/// 省掉前端读文件 + base64 往返（大 PDF / docx 尤其明显）
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn media_create_job_from_path(
+    core: State<'_, Arc<Core>>,
+    path: String,
+    apply_mode: Option<String>,
+    lang: Option<String>,
+    level: Option<u8>,
+    force_llm: Option<bool>,
+    category: Option<String>,
+    mode: Option<String>,
+) -> Result<MediaJob, String> {
+    let core = core.inner().clone();
+    let ctx = flow_ctx(&core);
+    let p = std::path::Path::new(&path);
+    let filename = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("载体")
+        .to_string();
+    let bytes = std::fs::read(p).map_err(|e| format!("读取文件失败（{path}）: {e}"))?;
+    flow::create_job(
+        &ctx,
+        DesktopDetector::new(core.clone()),
+        &filename,
+        &bytes,
+        JobOptions {
+            apply_mode,
+            lang,
+            level,
+            force_llm,
+            category,
+            mode,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// `GET /gec/media/jobs` 的桌面等价：job 列表（创建时间倒序）
 #[tauri::command]
 pub fn media_jobs(core: State<'_, Arc<Core>>) -> Result<Vec<MediaJob>, String> {
