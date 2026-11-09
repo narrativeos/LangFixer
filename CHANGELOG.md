@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-11-08
+
+桌面端从「能跑」走到「像一台 Mac 应用」：自动更新按发布源烧入更新端点，原生菜单栏 /
+右键菜单 / Finder 拖拽落地，更新流程改为先征同意；用户面信息减负——检测层级的人话词表
+统一到一张表并收拢三处漂移，引擎细节走渐进披露；编辑器补「试一试」示例文本降低首次使用门槛。
+
 ### 新增
 
 - **桌面端自动更新**：编译期按发布源烧入更新端点（`LANGFIXER_RELEASE_SOURCE` = github / gitea / atomgit，默认 github），启动 30 秒后与此后每 6 小时检查一次；macOS / Linux 静默下载安装完成后提示重启（「已装好待重启」版本落盘，冷启动不重复下载与弹框），Windows 先征得同意再下载安装（安装器拉起即退出进程）。配套发布链：`scripts/release.sh` 按源分别打包并断言双源版本号一致、`make_latest_json.py` 由签名生成 `latest.json`、`publish.sh` 多源推送单源失败不中断；前端不调用 updater IPC，故未授予 `updater:default` 权限

@@ -89,7 +89,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api-server"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "attribution-engine",
@@ -224,7 +224,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "attribution-engine"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-app"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "attribution-engine",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "document-parse"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "encoding_rs",
  "pdf-extract",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "gec-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "gec-en"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "gec-core",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "gec-eval"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "gec-en",
  "gec-zh",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "gec-ja"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "gec-core",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "gec-zh"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "gec-core",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "langfixer-llm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "bytes",
@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "lexicon-store"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "fs2",
@@ -3282,7 +3282,7 @@ dependencies = [
 
 [[package]]
 name = "media-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3297,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "media-flow"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5703,7 +5703,7 @@ dependencies = [
 
 [[package]]
 name = "shared-model"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "fsrs",
