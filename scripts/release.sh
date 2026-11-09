@@ -2,6 +2,8 @@
 # LangFixer 发布构建：release 二进制 + 前端产物 + Tauri 桌面安装包
 # 桌面安装包按发布源分别打包：LANGFIXER_RELEASE_SOURCE 在构建时烧入二进制，
 # 用户从哪个源下载安装包，应用就自动从哪个源检查更新并获取新版（desktop-app/src/update.rs）。
+# 注：变量紧跟中文标点时必须写成 ${VAR}——macOS 自带 bash 3.2 会把紧随其后的多字节字节
+# 并入变量名（如 "$TAG）" 被当作变量 TAG）），在 set -u 下直接 unbound variable 退出。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,7 +15,7 @@ TAG="v$VERSION"
 # version：两者一旦不一致，装好新版的用户会永远认为自己落后，反复下载安装。
 CONF_VERSION="$(python3 -c 'import json;print(json.load(open("desktop-app/tauri.conf.json"))["version"])')"
 if [[ "$VERSION" != "$CONF_VERSION" ]]; then
-    echo "!! 版本号不一致: Cargo.toml=$VERSION, tauri.conf.json=$CONF_VERSION——发布前请先同步两处版本"
+    echo "!! 版本号不一致: Cargo.toml=$VERSION, tauri.conf.json=${CONF_VERSION}——发布前请先同步两处版本"
     exit 1
 fi
 
@@ -34,16 +36,20 @@ KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.config/langfixer/updater.key}"
 BUILD_ARGS=()
 if [[ -f "$KEY" ]]; then
     export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+    # tauri-cli 2.12 的 build 只读 TAURI_SIGNING_PRIVATE_KEY（密钥内容），不认 _PATH：
+    # 只导出路径会得到「A public key has been found, but no private key」——
+    # 安装包能正常产出，唯独没有 .sig，latest.json 也就无从生成（v1.1.0 发布实测）。
+    export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
     export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 else
-    echo "!! 缺少更新签名密钥（$KEY）：本次不产出自动更新产物"
+    echo "!! 缺少更新签名密钥（${KEY}）：本次不产出自动更新产物"
     echo "   生成: cargo tauri signer generate -w $KEY --password ''（公钥需与 tauri.conf.json 一致）"
     BUILD_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
 
 failed=()
 for src in "${SOURCES[@]}"; do
-    echo "==> tauri build（源=$src $TAG）"
+    echo "==> tauri build（源=$src ${TAG}）"
     # 先清空 bundle 目录：否则上一版本残留的安装包/.sig 会被混进本次 dist 与 latest.json
     rm -rf target/release/bundle
     if ! LANGFIXER_RELEASE_SOURCE="$src" cargo tauri build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}; then
@@ -54,7 +60,7 @@ for src in "${SOURCES[@]}"; do
     out="dist/$src/$TAG"
     rm -rf "$out"; mkdir -p "$out"
     find target/release/bundle -type f \
-        \( -name '*.dmg' -o -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.sig' \) \
+        \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.sig' \) \
         -exec cp -p {} "$out/" \;
     python3 scripts/make_latest_json.py "$src" "$TAG" "$out"
     echo "==> 源 $src 产物就绪: $out"

@@ -24,12 +24,26 @@ if SOURCE not in BASES:
     sys.exit(f"!! 未知发布源: {SOURCE!r}（可选: {', '.join(BASES)}）")
 
 
+def darwin_arch():
+    """macOS 的更新产物 LangFixer.app.tar.gz 文件名不带架构，从同目录的 dmg 名推断。"""
+    for f in sorted(os.listdir(DIR)):
+        if re.search(r"_aarch64\.dmg$", f):
+            return "aarch64"
+        if re.search(r"_x86_64\.dmg$", f):
+            return "x86_64"
+    return None
+
+
 def platform_of(sig_name: str):
     name = sig_name.removesuffix(".sig")
     if re.search(r"_aarch64\.dmg$", name):
         return "darwin-aarch64"
     if re.search(r"_x86_64\.dmg$", name):
         return "darwin-x86_64"
+    if name.endswith(".app.tar.gz"):
+        # tauri 在 macOS 上签的是 .app.tar.gz（updater 下载的就是它），dmg 只是人肉安装用
+        arch = darwin_arch()
+        return f"darwin-{arch}" if arch else None
     if name.endswith(".AppImage"):
         return "linux-x86_64"
     if re.search(r"_x64-setup\.exe$", name):
