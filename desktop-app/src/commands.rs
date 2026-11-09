@@ -6999,7 +6999,9 @@ pub fn set_window_theme(window: tauri::Window, dark: bool) -> Result<(), String>
     } else {
         tauri::utils::config::Color(0xf2, 0xf3, 0xf8, 255)
     };
-    window.set_background_color(Some(color)).map_err(|e| e.to_string())
+    window
+        .set_background_color(Some(color))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

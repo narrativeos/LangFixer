@@ -19,13 +19,14 @@ static CTX_TX: Mutex<Option<oneshot::Sender<String>>> = Mutex::new(None);
 /// - `menu:settings` ⌘, / `menu:import` ⌘O / `menu:export` ⇧⌘E / `menu:undo-apply` ⌥⌘Z
 /// - `menu:toggle-theme` ⌥⌘T / `menu:onboarding` 使用引导 / `menu:check-update` 检查更新
 pub fn build<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
-    let item = |id: &str, title: &str, accel: Option<&str>| -> tauri::Result<tauri::menu::MenuItem<R>> {
-        let mut b = MenuItemBuilder::with_id(id, title);
-        if let Some(a) = accel {
-            b = b.accelerator(a);
-        }
-        b.build(app)
-    };
+    let item =
+        |id: &str, title: &str, accel: Option<&str>| -> tauri::Result<tauri::menu::MenuItem<R>> {
+            let mut b = MenuItemBuilder::with_id(id, title);
+            if let Some(a) = accel {
+                b = b.accelerator(a);
+            }
+            b.build(app)
+        };
 
     let settings = item("menu:settings", "设置…", Some("CmdOrCtrl+,"))?;
 
@@ -41,7 +42,11 @@ pub fn build<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     let v_knowledge = item("menu:view:knowledge", "知识维护", Some("Cmd+5"))?;
     let v_evolution = item("menu:view:evolution", "进化中心", Some("Cmd+6"))?;
     let v_settings = item("menu:view:settings", "设置", Some("Cmd+7"))?;
-    let theme = item("menu:toggle-theme", "切换浅色 / 深色主题", Some("Cmd+Alt+T"))?;
+    let theme = item(
+        "menu:toggle-theme",
+        "切换浅色 / 深色主题",
+        Some("Cmd+Alt+T"),
+    )?;
 
     let onboarding = item("menu:onboarding", "使用引导", None)?;
     let check_update = item("menu:check-update", "检查更新…", None)?;
@@ -101,12 +106,22 @@ pub fn build<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     window_menu.set_as_windows_menu_for_nsapp()?;
 
-    let help_menu = SubmenuBuilder::new(app, "帮助").item(&onboarding).item(&check_update).build()?;
+    let help_menu = SubmenuBuilder::new(app, "帮助")
+        .item(&onboarding)
+        .item(&check_update)
+        .build()?;
     #[cfg(target_os = "macos")]
     help_menu.set_as_help_menu_for_nsapp()?;
 
     let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+        .items(&[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ])
         .build()?;
     app.set_menu(menu).map(|_| ())
 }
@@ -140,12 +155,19 @@ pub async fn show_context_menu(
             ("ctx:error:copy-original", "复制原文"),
             ("ctx:error:copy-correction", "复制修正文本"),
         ],
-        "media-job" => &[("ctx:job:open", "打开载体"), ("ctx:job:export", "导出正误表")],
+        "media-job" => &[
+            ("ctx:job:open", "打开载体"),
+            ("ctx:job:export", "导出正误表"),
+        ],
         other => return Err(format!("未知右键菜单类型: {other}")),
     };
     let mut builder = MenuBuilder::new(&app);
     for (id, title) in items {
-        builder = builder.item(&MenuItemBuilder::with_id(*id, *title).build(&app).map_err(|e| e.to_string())?);
+        builder = builder.item(
+            &MenuItemBuilder::with_id(*id, *title)
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        );
     }
     let menu = builder.build().map_err(|e| e.to_string())?;
 

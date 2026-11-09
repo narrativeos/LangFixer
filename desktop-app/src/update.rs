@@ -159,10 +159,7 @@ async fn check_and_install(app: &AppHandle, asked: &mut Option<String>, force: b
                     write_pending(app, &update.version);
                     let restart = ask(
                         app,
-                        format!(
-                            "新版本 {} 已安装完成，是否立即重启生效？",
-                            update.version
-                        ),
+                        format!("新版本 {} 已安装完成，是否立即重启生效？", update.version),
                         "立即重启",
                     )
                     .await;
@@ -244,10 +241,10 @@ fn pending(app: &AppHandle) -> Option<String> {
 /// 仅 macOS / Linux 使用：Windows 的 install() 直接由安装器接管，无需此标记
 #[cfg(not(windows))]
 fn write_pending(app: &AppHandle, version: &str) {
-    if let Some(path) = pending_path(app) {
-        if let Err(e) = std::fs::write(&path, version) {
-            tracing::warn!("写入更新待重启标记失败（{}）: {e}", path.display());
-        }
+    if let Some(path) = pending_path(app)
+        && let Err(e) = std::fs::write(&path, version)
+    {
+        tracing::warn!("写入更新待重启标记失败（{}）: {e}", path.display());
     }
 }
 
