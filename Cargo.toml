@@ -71,3 +71,11 @@ yoagent = "0.25"
 regex = "1"
 once_cell = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# 发布构建定点绕过（v1.1.0 发布期实测）：release 默认 strip=debuginfo 会把
+# rquickjs-macro 的 proc-macro dylib 的 LINKEDIT 字符串池弄错位（Apple ld 21），
+# 表现为 error[E0463]: can't find crate for `rquickjs_macro`（dlopen 失败），
+# 依赖链 zen-engine → attribution-engine 上唯一受影响的一个，其余 proc-macro 正常。
+# 仅对该包关掉 strip；最终产物体积不受影响。
+[profile.release.package.rquickjs-macro]
+strip = false
