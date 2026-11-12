@@ -41,6 +41,8 @@ done
 [ "$MODE" != "--help" ] || { usage && exit 0; }
 
 # 上次铺的是哪个提交 → 这次带来什么。没有记录就老实说无法比较。
+# 注意：所有可能以非零收尾的尾行都要 `|| true`——调用处是 `f || step ...`，
+# 函数体尾命令的失败会先触发 ERR trap，step 兜底根本没机会跑。
 diff_since_deploy() { # $1 = 上次 SHA  $2 = 标签
   local n
   [ -n "$1" ] || { say "$2：这次按全量铺（没有可比的上次部署点）"; return 0; }
@@ -52,7 +54,7 @@ diff_since_deploy() { # $1 = 上次 SHA  $2 = 标签
   else
     say "$2 → $HEAD_SHA 共 $n 个提交："
     git -C "$REPO_ROOT" log --oneline "$1..HEAD" | head -12 | sed 's/^/      /'
-    [ "$n" -gt 12 ] && say "      …另 $((n - 12)) 个"
+    [ "$n" -gt 12 ] && say "      …另 $((n - 12)) 个" || true
   fi
 }
 
