@@ -1,6 +1,6 @@
 # 评测通道（网关形态）设计
 
-> 状态：D1（身份层）+ D2（owner 隔离 + 配额计量 + 全局视图收口）已落地；N 天自动清理与 Caddy 部署在 D3。
+> 状态：D1（身份层）+ D2（owner 隔离 + 配额计量 + 全局视图收口）+ D3（清理 timer + 公网部署）已落地，评测通道已上线。
 > 目标：大赛评测要求「公网 URL + 免注册测试账号」，产品主体仍是单机形态——
 > 认证只存在于网关形态这一层薄壳，核心引擎一行不动。
 
@@ -68,7 +68,7 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 ## 后续切片
 
 - D2：请求体计入 `quota_chars` 并超限 429；业务查询按 `RequestScope.token_id` 过滤（owner 隔离）；MCP `/mcp` 复用同一 gate。✅（已完成）
-- D3：过期文本 systemd timer 清理；Caddy 站点与部署件（`deploy/gateway/`）。✅（部署件已入库，公网落地见其 README）
+- D3：过期文本 systemd timer 清理；Caddy 站点与部署件（`deploy/gateway/`）。✅（公网已上线验证：https://langfixer.jiulu.ltd，web/MCP 同一令牌；LLM 兜底经 litellm 隧道接 Qwen3.8；中文分词由 narrative-operator-nlp sidecar 提供）
 
 ## 公网部署形态（deploy/gateway/）
 
