@@ -53,11 +53,29 @@
 
    明文只在响应里出现一次，填入参赛材料「测试账号」栏；吊销即连踢会话。
 
+## 中文 NLP sidecar（narrative-operator-nlp）
+
+中文检测管线的分词走 `HANLP_ENDPOINT`，由 narrative-operator-nlp 容器提供：
+
+```sh
+docker run -d --name narrative-operator-nlp --network dnmp_default \
+  -p 172.18.0.1:8000:8000 -v narrative-operator-nlp-models:/root/.hanlp \
+  -e HF_ENDPOINT=https://hf-mirror.com -e HANLP_MODEL_SET=MTL \
+  --restart unless-stopped narrative-operator-nlp:latest fastapi
+```
+
+- 同样只绑网桥宿主侧地址，不出公网；LangFixer env 配
+  `HANLP_ENDPOINT=http://172.18.0.1:8000`、`GEC_OFFLINE=0`；
+- 模型卷需预置（`file.hankcs.com` 在云服务器上可能不可达）：从已有环境
+  `docker run --rm -v <src-vol>:/d alpine tar cf - -C /d .` 管道搬运；
+- 该容器异常时 LangFixer 不瘫痪：zh 管线自动退化为纯规则离线模式。
+
 ## 冒烟清单（公网）
 
 - `GET https://<host>/` → 200，web-ui 可打开；
 - 无凭证 `POST /gec/detect` → 401；`POST /mcp initialize` 带评审 Bearer → 200；
-- 评审 cookie 免注册：`POST /auth/session` 带 Bearer → Set-Cookie → 后续免头可用；
+- 评审 cookie 免注册：`POST /auth/session`（body `{"token":"lf_..."}`）→ Set-Cookie → 后续免头可用；
+  logout 带 cookie 调用即失效（whoami 401）；
 - A 令牌的会话看不到 B 令牌历史（跨账号 403/404）；
 - 超管 `GET /admin/stats` 正常，评审令牌访问 `/admin/*` → 403；
 - 配额：同令牌 web+MCP 合计越线 → 429。
