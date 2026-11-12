@@ -9,6 +9,8 @@
 import { ref } from 'vue'
 import { api, isTauri, type Whoami } from '../api/client'
 
+export type { Whoami } from '../api/client'
+
 /** 本次会话使用的密钥（超管或评审）：仅 sessionStorage，供「我的接入」生成 MCP 配置 */
 const ACCESS_KEY = 'langfixer.access.key'
 
@@ -23,6 +25,33 @@ export const identity = ref<Whoami>({
 export const gateReady = ref(false)
 /** 当前身份的人类可读标签（登录响应里的 label；超管为「管理员」） */
 export const identityLabel = ref('')
+
+/**
+ * 把一次 `whoami` 快照（和可选的登录响应）合成身份视图。
+ *
+ * 存在的理由：这个视图靠逐字段手写字面量重建过两次，**新加的可选字段必然被丢掉**
+ * （实测：`?token=` 直链登录后「密钥分发」上看不到密钥来源与指纹，而直接
+ * `fetch('/auth/whoami')` 有）。统一走这里，字段只在一处列举。
+ *
+ * - `login` 给了 = 刚刚用这枚密钥换到会话：`admin/token_id` 以登录响应为准，
+ *   `authenticated` 恒 true（老服务端 whoami 失败也不影响「已登录」这个事实）；
+ * - 密钥来源与指纹**只取本次 `whoami`**：换了一台实例时不得留着上一台那把的指纹。
+ */
+export function mergeIdentity(
+  prev: Whoami,
+  me: Whoami | null,
+  login?: { admin: boolean; token_id: string | null },
+): Whoami {
+  return {
+    gateway: me?.gateway ?? prev.gateway,
+    admin: login ? login.admin : (me?.admin ?? prev.admin),
+    token_id: login ? login.token_id : (me?.token_id ?? prev.token_id),
+    authenticated: login ? true : (me?.authenticated ?? prev.authenticated),
+    locked: me?.locked ?? prev.locked,
+    admin_token_source: me?.admin_token_source,
+    admin_token_fp: me?.admin_token_fp ?? null,
+  }
+}
 
 export function accessKey(): string | null {
   try {
@@ -84,13 +113,10 @@ export async function loginWithKey(key: string): Promise<void> {
   } catch {
     /* 老版本服务端：按「已锁定」保守处理 */
   }
-  identity.value = {
-    gateway: me?.gateway ?? identity.value.gateway,
+  identity.value = mergeIdentity(identity.value, me, {
     admin: r.admin,
     token_id: r.token_id,
-    authenticated: true,
-    locked: me?.locked ?? true,
-  }
+  })
 }
 
 /**
@@ -147,7 +173,15 @@ export async function signOut(): Promise<void> {
     await api.logout()
   } finally {
     clearAccessKey()
-    identity.value = { ...identity.value, authenticated: false, admin: false, token_id: null }
+    // 密钥来源与指纹一并清掉：退出后就不再是「已验证超管」，留着上一把的指纹会误导
+    identity.value = {
+      ...identity.value,
+      authenticated: false,
+      admin: false,
+      token_id: null,
+      admin_token_source: undefined,
+      admin_token_fp: null,
+    }
     identityLabel.value = ''
   }
 }
