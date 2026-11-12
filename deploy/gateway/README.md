@@ -3,6 +3,39 @@
 公网评测入口的落地件：systemd 单元 + 数据保留清理 + Caddy 站点片段。
 设计红线与身份模型见 [`docs/GATEWAY_AUTH.md`](../../docs/GATEWAY_AUTH.md)。
 
+## 日常就用两条命令
+
+```sh
+./setup.sh local   # 本机首次：网关后端 :4801 + Vite :4805，密钥与隔离库落在 .dev/
+./update.sh local  # 本机日常：重编译 + 重启后端（Vite 不动，HMR 自己跟上）
+
+./setup.sh server  # 服务器首次：铺齐 /srv/langfixer 并 enable --now langfixer
+./update.sh server # 服务器日常：二进制 + 前端 dist + 运行时资产全同步，失败自动回滚
+```
+
+`./update.sh server --dry-run` 只报「这次会带来什么 + 哪些运行时资产与 HEAD 有差异」，
+不动任何东西；`--no-web` / `--no-assets` 用于出问题时缩小范围。共用件在
+`scripts/deploy-common.sh`，可覆盖的目标用 `LF_SSH / LF_URL / LF_DIR / LF_SRC / LF_WEB_ROOT /
+LF_SERVICE / LF_PORT` 传入。
+
+脚本刻意**不做**的三件事，都是显式决定：
+
+- **不换密钥**。`systemctl restart` 永远复用同一把（优先级 env → `gw_meta.admin_token`）。
+  换钥匙是显式动作：env 持有就改 `/srv/langfixer/langfixer.env` 再重启（此时 rotate 端点回
+  409），`gw_meta` 持有就 `POST /admin/admin-token/rotate`。首装脚本会打印一次明文密钥，
+  此后所有输出只给来源与指纹。
+- **不动反向代理与外部容器**。Caddy 站点片段见下方「步骤 5」，中文分词 sidecar 见
+  「中文 NLP sidecar」；不起 sidecar 时 zh 管线自动退化为纯规则离线模式。
+- **不覆盖已有落地件**。已存在的 `langfixer.env` 与 `/etc/systemd/system/*.service` 一律不改；
+  单元确实要按仓库覆写时显式 `LF_FORCE_UNITS=1`。
+
+两条实现上的坑写在这里，免得下次再踩：编译判据只用日志哨兵（`tail` 编译日志找
+`Finished .*profile` / 行首 `error`），**不能**用 `pgrep`/`pkill -f "cargo build --release"`——
+那条命令自身的命令行里就含这串字，会匹配到自己；`git archive | ssh 'tar -x && cargo build &'`
+会把整条管道一起后台化导致 tar 被截断，必须分两步。
+
+## 手工步骤（脚本失败或第一次装机时的兜底）
+
 ## 布局约定
 
 | 路径 | 内容 | 备注 |

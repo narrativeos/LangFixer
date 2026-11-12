@@ -66,3 +66,6 @@ dist/
 
 # gate 评测 vendor 服务与模型权重（外部仓库副本，体量 GB 级，不入库）
 decision-model/vendor/
+
+# 本机 dev 实例的密钥 / 隔离库 / 日志（setup.sh local 产出，绝不入库）
+.dev/

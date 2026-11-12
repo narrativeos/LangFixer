@@ -27,6 +27,23 @@
   `WARN` 指明库里那枚不会被使用。`docs/GATEWAY_AUTH.md`「轮换超级管理员密钥」按来源写清泄露处置。
   HTTP 层验收：`api-server/tests/gateway_admin_api.rs`（confirm 必填 / 旧钥匙与旧会话即刻失效 /
   评审密钥不受波及 / env 模式 409 且不写库 / 评审密钥 403 / 匿名看不到来源）
+- **根目录部署脚本 `./setup.sh` / `./update.sh`**（共用件 `scripts/deploy-common.sh`；约定见
+  `deploy/gateway/README.md`「日常就用两条命令」）：都带 `local|server`，首次安装与日常更新各一条，
+  幂等——已存在的密钥、`langfixer.env`、systemd 单元一律不覆盖。`update.sh server` 一次跑完
+  「铺源码 → 服务器后台编译 release（期间服务不动）→ 换二进制并留 `api-server.prev` → 重启 →
+  探活 → 铺前端 dist（`index.html` 用 `mv` 原子替换）→ 同步运行时资产」，探活不过**自动回滚**
+  二进制并重启。探活不是只看 200：绕开 Caddy 直连网关读 `whoami`、无凭证打管理面应 401、
+  带超管密钥真实跑一次 `detect`。`--dry-run` 只报差异不动手，`--no-web` / `--no-assets` 缩范围。
+  运行时资产（`decision-tables` / `lexicons` / `prompts`）铺之前先按 git 清单比指纹再留档——规则
+  开关与决策表 PUT 会被服务**写回**这些 JSON，无脑覆盖等于静默抹掉运维在界面上做的改动；自上次
+  部署被删除的文件按 git diff 清理，`lexicons/.lexicon-seed.lock` 这类未跟踪锁文件不碰。三条红线：
+  脚本只报密钥来源与指纹、绝不打印明文（首装那一次例外）；脚本永不换钥匙（`systemctl restart`
+  永远复用同一把）；密钥文件、数据库与 `langfixer-settings.json` 永不出现在任何同步路径里。
+  本机实例强制 `.dev/{auth.db,core.db}` 隔离库（缺省会落仓库根的真实产品库，而
+  `DELETE /gec/history` 是真删）；4805 已被旧 Vite 占用时沿用不重复起（Vite 会静默换端口到 4806，
+  反代与文档全都对不上）。两个已踩过的坑写进 README：编译判据只用日志哨兵（`pgrep`/`pkill -f
+  "cargo build --release"` 会匹配到执行它的命令自身），铺源码与启动编译必须分两步（`git archive |
+  ssh 'tar -x && cargo build &'` 会把整条管道一起后台化，tar 被截断）
 
 ### 修复
 

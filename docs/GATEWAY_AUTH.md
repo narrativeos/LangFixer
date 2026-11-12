@@ -125,6 +125,8 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
    `lf_<40hex>` 并持久化到 auth.db `gw_meta.admin_token`——**重启复用不漂移**（否则用户手上
    那把会失效），明文只在生成那一次的启动日志出现一次；env 设了则以 env 为准
    （设了但 <32 字符仍按配置错误拒绝启动）。库里其余凭证只有摘要。
+    `./setup.sh server` 首装时在服务器的 `langfixer.env` 里生成 64 hex 并打印一次明文——即这把
+    归 **env** 管（轮换端点会回 409）；若刻意删掉该变量再重启，才回到上面的启动自动生成路径。
    **换钥匙是显式动作**：`POST /admin/admin-token/rotate`（`confirm:"ROTATE"` 必填）只在
    `gw_meta` 来源可用，env 来源回 409；`whoami` 对已验证超管回 `admin_token_source` /
    `admin_token_fp` 指明这把归谁、活的是哪把。详见「轮换超级管理员密钥」。
