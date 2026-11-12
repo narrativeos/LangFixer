@@ -157,15 +157,26 @@ pub trait GecEngine: Send + Sync {
                 )
             })?;
             let t_llm = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
-            llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
-            layers.push(LayerReport::new(
-                shared_model::sources::LLM,
-                "ran",
-                extra.len(),
-            ));
-            merge_errors(&mut errors, extra);
+            // LLM 层运行时失败（超时/排队耗尽/熔断开断）→ 降级：保留规则层结果，
+            // 层记 `unavailable`（与定向复查、L3 失败同一先例），不把整次 detect 打回 502。
+            // 未配置 LLM 仍走上面的 LlmNotConfigured——那是要人改设置，不是运行时故障。
+            match llm.detect(text).await {
+                Ok(extra) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = extra.is_empty();
+                    layers.push(LayerReport::new(
+                        shared_model::sources::LLM,
+                        "ran",
+                        extra.len(),
+                    ));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    layers.push(LayerReport::new(shared_model::sources::LLM, "unavailable", 0));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则层结果（本轮 LLM 未参与）");
+                }
+            }
         }
         Ok(DetectOutcome {
             errors,
@@ -793,12 +804,21 @@ impl GecEngine for CascadeDetector {
                 )
             })?;
             let t = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
-            llm_ms = Some(t.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
-            llm_ran = true;
-            layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
-            merge_errors(&mut errors, extra);
+            // 同默认实现：运行时失败降级保留规则/L3 结果，层记 `unavailable`
+            match llm.detect(text).await {
+                Ok(extra) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = extra.is_empty();
+                    llm_ran = true;
+                    layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则/L3 结果（本轮 LLM 未参与）");
+                }
+            }
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
             // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）
@@ -2534,4 +2554,55 @@ mod tests {
             "决策层耗时应计入总耗时"
         );
     }
+
+    #[tokio::test]
+    async fn level3_llm_runtime_failure_degrades_to_rule_results() {
+        // 演练立场（2026-11）：LLM 层运行时失败不能把整次 detect 打回 502——
+        // 规则结果必须保留，层记 `unavailable`；未配置 LLM 则仍是明确报错
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let llm = LlmGecEngine::new(
+            "zh",
+            LlmDetectConfig::from_parts(
+                format!("http://{addr}/v1"),
+                "sk-test",
+                "mock-llm",
+                5,
+                "system",
+                "user {{text}}",
+            )
+            .with_retry(Vec::new(), 0),
+        );
+        let fake = Arc::new(FakeRule {
+            lang: "zh",
+            fail: false,
+        });
+        let outcome = fake
+            .detect_level("他昨天报复很大。", 3, false, Some(&llm))
+            .await
+            .expect("LLM 运行时失败必须降级 Ok，不得打回 Err");
+        assert_eq!(outcome.errors.len(), 1, "规则层结果必须保留");
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == "llm" && l.status == "unavailable"),
+            "llm 层应记 unavailable：{:?}",
+            outcome.layers
+        );
+        // 未配置 ≠ 运行时失败：仍然明确报错（要人改设置）
+        let e = fake
+            .detect_level("他昨天报复很大。", 3, false, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, DetectorError::LlmNotConfigured(_)), "{e:?}");
+    }
+
 }

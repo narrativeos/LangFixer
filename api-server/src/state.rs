@@ -71,6 +71,9 @@ pub struct AppState {
     pub lexicon_hash: RwLock<String>,
     /// 决策表版本历史（SQLite 持久化，支持回滚）
     pub table_history: TableHistoryStore,
+    /// LLM 网关进程级熔断（与决策 / L3 / 嵌入客户端同款；本形态 LLM 引擎**每次现构建**，
+    /// 必须共享这一只才谈得上「连续失败开断」——各请求自带新熔断器 = 永不开断）
+    pub llm_breaker: Arc<gec_core::CircuitBreaker>,
     /// 学习知识存储（向量召回用；SQLite 持久化，与 lexicon_store 共用同一 db 文件）
     pub learned_knowledge: Arc<LearnedKnowledgeStore>,
     /// 嵌入引擎（调用 LLM /v1/embeddings 端点；未配置时为 None；
@@ -394,6 +397,7 @@ impl AppState {
             settings: RwLock::new(settings),
             media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             settings_path,
+            llm_breaker: Arc::new(gec_core::CircuitBreaker::default()),
             llm_templates,
             model_registry,
             zh_base_cfg: zh_cfg,
@@ -482,7 +486,7 @@ impl AppState {
                 0,
             ),
         };
-        Some(Arc::new(LlmGecEngine::new(
+        Some(Arc::new(LlmGecEngine::with_breaker(
             lang,
             LlmDetectConfig::from_parts(
                 base_url,
@@ -494,6 +498,7 @@ impl AppState {
             )
             .with_output_format(output_format)
             .with_max_tokens(max_tokens),
+            self.llm_breaker.clone(),
         )))
     }
 
