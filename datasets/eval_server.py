@@ -380,8 +380,11 @@ def abl_fp(ablation) -> str:
     return "+".join(parts) or "none"
 
 
-def cache_path(benchmark: str, split: str | None, arm: str, ablation, mode: str) -> Path:
-    name = f"{benchmark}" + (f"_{split}" if split else "") + f"_{arm}_{abl_fp(ablation)}_{mode}"
+def cache_path(benchmark: str, split: str | None, arm: str, ablation, mode: str,
+               subset: int | None = None) -> Path:
+    # subset 是抽样冒烟档：若与全量共用缓存路径，--fresh 会把正式定版缓存整份清掉
+    name = (f"{benchmark}" + (f"_{split}" if split else "") + f"_{arm}_{abl_fp(ablation)}_{mode}"
+            + (f"_subset{subset}" if subset else ""))
     return CACHE_DIR / f"{name}.jsonl"
 
 
@@ -467,7 +470,7 @@ def run_eval_job(job: dict, server: str, cfg: dict):
     except Exception as e:  # noqa: BLE001
         return fail(f"设置应用失败: {e}")
 
-    cpath = cache_path(benchmark, split, arm, ablation, mode)
+    cpath = cache_path(benchmark, split, arm, ablation, mode, subset)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if fresh:
         if cpath.exists():
