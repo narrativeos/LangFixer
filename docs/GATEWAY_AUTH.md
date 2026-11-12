@@ -67,5 +67,19 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 
 ## 后续切片
 
-- D2：请求体计入 `quota_chars` 并超限 429；业务查询按 `RequestScope.token_id` 过滤（owner 隔离）；MCP `/mcp` 复用同一 gate。
+- D2：请求体计入 `quota_chars` 并超限 429；业务查询按 `RequestScope.token_id` 过滤（owner 隔离）；MCP `/mcp` 复用同一 gate。✅（已完成）
 - D3：过期文本 cron 清理；Caddyfile 与部署脚本。
+
+## MCP 面（`POST /mcp`）
+
+JSON-RPC 2.0 无状态形态（`initialize` / `tools/list` / `tools/call` / `ping`），与 web 面
+同一道 gate、同一套 token、同一本配额账：
+
+- **工具集** = `proofread` / `explain`（检测管线）+ `agent_tools.rs` 全量 ManagedTool
+  （规则库 / 知识 / 导入草稿 / 反馈统计与写档），单机形态全部直接执行；
+- **网关形态档位纪律**：只读白名单（`proofread` `explain` `list_rules` `get_rule`
+  `search_knowledge` `feedback_stats`）直接执行，**写档一律返回提案不执行**
+  （`structuredContent.executed:false` + `[confirm-required]` 前缀，与 web 侧 Confirm gate 同源叙事）
+  ——评审令牌共享同一份产品状态，写没有账号隔离，执行权属于产品界面里的用户；
+- 配额与 web 共用（已实测：MCP 用 55 + web 8 > 60 → 429）；超管不占配额；
+- 网关形态 `tools/list` 的写档描述自动标注「评测通道：调用时返回提案不执行」。

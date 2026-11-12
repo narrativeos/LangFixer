@@ -30,6 +30,7 @@ async fn main() {
     let app = routes::router(state.clone())
         .merge(routes::auth::router(gateway.clone()))
         .merge(routes::admin::router(gateway.clone()))
+        .merge(routes::mcp::router(state.clone()))
         .layer(axum::middleware::from_fn_with_state(
             gateway.clone(),
             middleware::auth::gate,

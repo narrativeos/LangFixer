@@ -16,6 +16,7 @@ pub mod l3;
 pub mod languages;
 pub mod learned_knowledge;
 pub mod llm_feedback;
+pub mod mcp;
 pub mod media;
 pub mod optimization;
 pub mod reflection_center;

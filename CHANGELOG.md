@@ -7,6 +7,7 @@
 ### 新增
 
 - **评测通道 owner 隔离与配额（D2）**：网关形态下会话首次使用即绑定评审账号（跨账号 403），检测历史按账号伪会话 `s_gw:<token>` 归户（列表过滤 / 详情与删除跨账号 404），detect / analyze 按字符数日配额计量（越线 429，`quota_chars=0` 只记账）；清空全部 / 按语言批删 / 全局错题本等跨账号端点网关形态一律 403；网关形态跳过历史复用与进程级缓存保证每账号归属完整。单机形态全部行为零变化
+- **MCP 面（`POST /mcp`，`docs/GATEWAY_AUTH.md`）**：JSON-RPC 2.0 无状态形态（initialize / tools/list / tools/call / ping），工具集 = proofread / explain 检测管线 + agent 工具集全量；与 web 面同一道 gate、同一套 token、同一本字符配额账。网关形态只读工具直执行、写档一律返回提案不执行（executed:false + [confirm-required]，与 web 侧 Confirm gate 同源叙事）；单机形态全部直执行
 - **评测通道（网关形态）身份层**（`docs/GATEWAY_AUTH.md`）：`LANGFIXER_GATEWAY=1` 启用，单机形态行为零变化。评审令牌（明文一次、摘要入库、吊销连会话即断）+ 免注册会话 cookie + 管理面 `/admin/tokens|stats`；超级管理员令牌只来自 `.env`（`LANGFIXER_ADMIN_TOKEN`，≥32 字符，内存留摘要、不落库、不发 cookie、独占 admin 面）。为 web 与 MCP 共用一套 token 的接入形态打好同一身份底座
 
 ## [v1.1.0] - 2026-11-08
