@@ -141,7 +141,7 @@ fn tool_specs(state: &Arc<AppState>) -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {
                 "text": {"type": "string"},
                 "lang": {"type": "string", "description": "zh / en / ja，默认 zh"},
-                "level": {"type": "integer", "description": "1=规则+决策模型（默认）；2/3=启用 LLM 兜底"}
+                "level": {"type": "integer", "description": "1=规则层（默认，毫秒级）；2=L3特征模型门控触发LLM；3=无条件LLM兜底（错别字类需 3）"}
             }, "required": ["text"]}
         }),
         json!({
@@ -237,8 +237,12 @@ async fn gec(
 }
 
 /// explain：检测 → 对第一处错误生成讲解（无错误则直接说明）
+/// 规则层无检出且 LLM 可用时升 level 3 复检（错别字类只有 LLM 兜底能发现）
 async fn explain_text(state: Arc<AppState>, lang: &str, text: &str) -> Result<Value, String> {
-    let (outcome, _) = gec(state.clone(), lang, text, 1).await?;
+    let (mut outcome, _) = gec(state.clone(), lang, text, 1).await?;
+    if outcome.errors.is_empty() && state.llm_service().is_available() {
+        outcome = gec(state.clone(), lang, text, 3).await?.0;
+    }
     let Some(first) = outcome.errors.first() else {
         return Ok(tool_text("未检出错误，无需讲解。"));
     };
