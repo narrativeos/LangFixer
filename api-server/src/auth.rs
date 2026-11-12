@@ -185,7 +185,15 @@ pub struct TokenStore {
 
 impl TokenStore {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
+        Self::from_conn(rusqlite::Connection::open(path).map_err(|e| e.to_string())?)
+    }
+
+    /// 内存令牌库：集成测试与「把 api-server 当库用」的宿主用，不落 auth.db。
+    pub fn in_memory() -> Result<Self, String> {
+        Self::from_conn(rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?)
+    }
+
+    fn from_conn(conn: rusqlite::Connection) -> Result<Self, String> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS access_tokens(
                  id          TEXT PRIMARY KEY,
@@ -615,12 +623,28 @@ impl GatewayConfig {
         dotenv: &HashMap<String, String>,
         db_path: &Path,
     ) -> Result<Self, GatewayConfigError> {
+        let store = TokenStore::open(db_path).map_err(GatewayConfigError::Store)?;
+        Self::build_with_store(dotenv, store)
+    }
+
+    /// 单机形态的直通配置（库嵌入 / 集成测试装配用，见 `middleware::auth::with_standalone_tenant`）：
+    /// `enabled = false`（不拒任何请求、不落调用日志）+ 内存令牌库（owner 未认领，
+    /// 因此 `guard_settings_write` 恒通过）。语义与 `gate` 在单机形态注入的一致。
+    pub fn standalone() -> Self {
+        let store = TokenStore::in_memory().expect("内存令牌库不可用");
+        // 内存库没有 admin_token：build_with_store 会生成一枚（单机形态用不到它）
+        Self::build_with_store(&HashMap::new(), store).expect("单机形态配置不应失败")
+    }
+
+    fn build_with_store(
+        dotenv: &HashMap<String, String>,
+        store: TokenStore,
+    ) -> Result<Self, GatewayConfigError> {
         let enabled = lookup(dotenv, "LANGFIXER_GATEWAY").is_some_and(|v| v == "1");
         let env_admin = lookup(dotenv, "LANGFIXER_ADMIN_TOKEN");
         if env_admin.as_deref().is_some_and(|t| t.len() < 32) {
             return Err(GatewayConfigError::MissingAdminToken);
         }
-        let store = TokenStore::open(db_path).map_err(GatewayConfigError::Store)?;
         // 库里那枚（安装时生成的）无论 env 是否给出都要读出来：一是判断来源，
         // 二是两者同时有值时必须 WARN——否则「改了 gw_meta 却没生效」无声发生。
         let stored_admin = store
@@ -777,6 +801,16 @@ pub struct Tenant {
 }
 
 impl Tenant {
+    /// 单机形态的直通身份：不隔离、不计量、不持网关配置句柄（各守卫恒通过）。
+    ///
+    /// 生产路径由 `middleware::auth::gate` 注入（两种形态都注入）；绕开 `main.rs`
+    /// 直接组装 `routes::router` 的调用方（集成测试 / 把 api-server 当库用）走这里。
+    pub fn standalone() -> Self {
+        Self {
+            token_id: None,
+            gw: None,
+        }
+    }
     /// 网关形态且为评审身份（非超管）时生效。
     pub fn gateway_active(&self) -> bool {
         self.token_id.is_some()

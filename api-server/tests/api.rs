@@ -112,7 +112,8 @@ async fn build_server_locked(
         )))
     });
     let state = Arc::new(AppState::from_env(Some(&tables_dir), db_file.as_deref()));
-    let app = routes::router(state).layer(middleware::cors::cors_layer());
+    let app = middleware::auth::with_standalone_tenant(routes::router(state))
+        .layer(middleware::cors::cors_layer());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());
@@ -1898,14 +1899,21 @@ async fn send_text(
             rb = rb.json(b);
         }
         match rb.send().await {
-            Ok(r) => match r.text().await {
-                Ok(t) => return t,
-                Err(e) if is_transport_err(&e) && attempt < 2 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
+            Ok(r) => {
+                let st = r.status();
+                match r.text().await {
+                    Ok(t) if t.is_empty() => {
+                        println!("PROBE empty status={st} {url}");
+                        return t;
+                    }
+                    Ok(t) => return t,
+                    Err(e) if is_transport_err(&e) && attempt < 2 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Err(e) => panic!("读取响应失败: {e}"),
                 }
-                Err(e) => panic!("读取响应失败: {e}"),
-            },
+            }
             Err(e) if is_transport_err(&e) && attempt < 2 => {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;

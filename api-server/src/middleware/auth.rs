@@ -52,8 +52,9 @@ pub async fn gate(State(cfg): State<Arc<GatewayConfig>>, mut req: Request, next:
     }
 
     let path = req.uri().path().to_string();
+    let method = req.method().clone();
     let started = std::time::Instant::now();
-    let (log_token, resp) = decide(&cfg, req, next, bearer, sid, &path).await;
+    let (log_token, resp) = decide(&cfg, req, next, bearer, sid, &method, &path).await;
     // 调用级日志：放行与拒绝都记一行（隐私口径见 TokenStore::log_call）
     cfg.store.log_call(
         log_token.as_deref(),
@@ -73,6 +74,7 @@ async fn decide(
     next: Next,
     bearer: Option<String>,
     sid: Option<String>,
+    method: &axum::http::Method,
     path: &str,
 ) -> (Option<String>, Response) {
     if let Some(token) = &bearer {
@@ -95,6 +97,9 @@ async fn decide(
         }
         if let Some(scope) = token_or_none(cfg, token) {
             let tid = scope.token_id.clone();
+            if let Some(deny) = review_denied(method, path) {
+                return (tid, forbidden(deny));
+            }
             admit(&mut req, cfg, scope, true);
             return (tid, next.run(req).await);
         }
@@ -115,6 +120,9 @@ async fn decide(
             }
             if path.starts_with("/admin") {
                 return (Some(tid), axum::http::StatusCode::FORBIDDEN.into_response());
+            }
+            if let Some(deny) = review_denied(method, path) {
+                return (Some(tid.clone()), forbidden(deny));
             }
             admit(
                 &mut req,
@@ -145,6 +153,94 @@ async fn decide(
     }
 
     (None, axum::http::StatusCode::UNAUTHORIZED.into_response())
+}
+
+/// 评审身份的可达面（网关形态，**fail-closed 白名单**）。
+///
+/// 为什么是白名单而不是逐端点加守卫：参赛密钥是**共享**身份，全体评委共用一枚，
+/// 一次误触就是全体评委的现场。11-12 走查实测评审密钥可直接打通 `POST
+/// /gec/l3/retrain`（重训模型）、`POST /gec/agent/run`（带自主档写工具的 agent
+/// 跑批）、`POST /gec/eval/run`（长跑占满 LLM 网关）、`POST /gec/llm-feedback`
+/// （`adopt` 分支 `adopt_as_rule` 直接改写共享规则库）、`POST /gec/ops/unlock`
+/// （未设 `GEC_TABLES_UPDATE_TOKEN` 时直接回 `unlocked:true`，等于把「平台运营」
+/// 面连同规则管理 / 进化中心一起交给评委）。逐端点补漏已经证明会漏，所以这里
+/// 一次性把评测通道面钉死，其余一律 403 + 说明。
+///
+/// 放行的是「检测 + 本人历史 + 只读说明」，**不放开改写共享状态**——与
+/// `routes/mcp.rs` 把写档工具改成提案信封同一个立场（写不隔离共享状态）：
+/// - `/auth/*`：门禁页与会话（whoami / session / logout）；
+/// - `POST /gec/detect`、`POST /gec/:lang/detect`、`POST /gec/analyze`、
+///   `POST /gec/explain`(`/stream`)：检测与讲解本体，按字符数计配额（D2）；
+/// - `/gec/history*`、`/gec/sessions*`：本人历史与练习会话，跨账号可见性由
+///   `Tenant` 归属守卫负责（这里不再判归属）；
+/// - `GET /gec/settings`、`GET /gec/languages`：只读的配置与语言列表；
+/// - `/mcp*`：工具面自带分档——只读工具直跑，写档工具回提案信封。
+///
+/// 超管与单机形态不经过这里（admin 恒直通，单机零变化）。
+fn review_denied(method: &axum::http::Method, path: &str) -> Option<&'static str> {
+    const MSG: &str = "评测通道仅开放检测与本人历史；改写共享规则库 / 模型训练 / 长跑评测属产品运营面，需运营凭证";
+    if path.starts_with("/auth/") || path == "/mcp" || path.starts_with("/mcp/") {
+        return None;
+    }
+    if path.starts_with("/gec/history") || path.starts_with("/gec/sessions") {
+        return None;
+    }
+    let m = method.as_str();
+    // POST /gec/<lang>/detect（语言在路径里，见 routes/mod.rs 的 /gec/:lang/detect）
+    if m == "POST"
+        && path
+            .strip_prefix("/gec/")
+            .is_some_and(|rest| rest.ends_with("/detect") && rest.matches('/').count() == 1)
+    {
+        return None;
+    }
+    if m == "GET" && matches!(path, "/gec/settings" | "/gec/languages") {
+        return None;
+    }
+    if m == "POST"
+        && matches!(
+            path,
+            "/gec/detect" | "/gec/analyze" | "/gec/explain" | "/gec/explain/stream"
+        )
+    {
+        return None;
+    }
+    Some(MSG)
+}
+
+/// 与 `ApiError::Forbidden` 同形状的 403 体（前端 `errMsg` 直接取 `error`）。
+fn forbidden(msg: &str) -> Response {
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({ "error": msg })),
+    )
+        .into_response()
+}
+
+/// 库嵌入 / 测试装配用：不挂鉴权门也注入单机形态的直通 `Tenant`。
+///
+/// `routes::router` 的业务 handler 以 `Extension<Tenant>` 取归属守卫，而生产入口
+/// （`main.rs`）恒挂 `gate`，两种形态都会注入该扩展。直接组装 router 的调用方
+/// 缺这个扩展会得到 500（`Extension` 缺失）——语义等价于单机直通，所以在这里
+/// 一行补齐，别在每个装配点各写一遍（见 `Tenant::standalone`）。
+pub fn with_standalone_tenant(app: axum::Router) -> axum::Router {
+    let cfg = std::sync::Arc::new(crate::auth::GatewayConfig::standalone());
+    app.layer(axum::middleware::from_fn(
+        move |mut req: Request, next: Next| {
+            let cfg = cfg.clone();
+            async move {
+                req.extensions_mut().insert(cfg);
+                req.extensions_mut()
+                    .insert(crate::auth::Tenant::standalone());
+                req.extensions_mut().insert(crate::auth::AuthContext {
+                    gateway: false,
+                    admin: true,
+                    authed: false,
+                });
+                next.run(req).await
+            }
+        },
+    ))
 }
 
 /// 放行：注入身份双扩展与身份上下文（admin / 单机形态的 Tenant.token_id 恒 None = 不隔离不计量）。

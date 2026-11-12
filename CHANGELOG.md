@@ -22,6 +22,23 @@
 
 ### 修复
 
+- **评审密钥可以改写共享规则库、重训模型、起长跑**（网关形态可达面没收住，11-12
+  评委体验走查发现）：`/gec/l3/retrain`、`/gec/agent/run`（带自主档写工具）、
+  `/gec/eval/run`、`/gec/llm-feedback`（`adopt` → `adopt_as_rule`）、
+  `/gec/ops/unlock`（无 `GEC_TABLES_UPDATE_TOKEN` 时直接 `unlocked:true`）对评审身份
+  全部敞开——参赛密钥是全体评委共享的一枚，一次误触就是全体评委的现场。改为鉴权门
+  上的 **fail-closed 白名单**（`review_denied`）：只放行「检测 + 本人历史 + 只读说明」，
+  其余 403 + 说明文案；界面同步收起评审身份下必然 403 的「测试全部」。立场与 MCP
+  写档工具改提案信封一致：**共享身份不得改写共享状态**。验收
+  `api-server/tests/gateway_review_surface.rs`，口径见 `docs/GATEWAY_AUTH.md` D2。
+- **不挂鉴权门装配 `routes::router` 时，业务端点一律 500**（`Missing request
+  extension: Tenant / AuthContext / Arc<GatewayConfig>`）：这三样由 `gate` 注入，
+  生产 `main.rs` 恒挂门所以线上无恙，但集成测试与「把 api-server 当库用」的宿主
+  绕开门装配就全线报错——`api-server` 测试套件因此已经红了很久（`tests/api.rs`
+  51 项里 32 项失败，症状是空响应体 / 500，很容易被误读成业务坏了）。新增
+  `middleware::auth::with_standalone_tenant()`（注入与门在单机形态等价的三件扩展，
+  配 `GatewayConfig::standalone()` + 内存令牌库，不落 `auth.db`），13 个测试装配点
+  统一改走它。现在 `-p api-server` 全套绿。
 - **LLM 网关失败演练暴露的三个坑**（2026-11 演练，隔离实例黑洞网关实测）：
   ① **卡死网关把整次 level 3 检测挂 6 分钟**——重试预算原来只累加退避睡眠，
   每次尝试自身烧满超时不记账：30s 超时 × 3 次尝试 + 25s 退避实测 115s，按线上

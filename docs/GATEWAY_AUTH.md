@@ -118,6 +118,19 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
   令牌 `quota_chars > 0` 且本次越线 → **429**（不进引擎、不计入用量），`0` = 只记账不限速；
 - **网关形态收口的端点**（403 + 说明文案）：清空全部历史、按语言批量删会话、
   全局错题本 / 复习队列 / 学习统计 / 全局画像——评测通道按账号隔离；
+- **评审身份可达面 = fail-closed 白名单**（`middleware::auth::review_denied`，在鉴权门
+  生效，早于任何业务 handler）：只放行「检测 + 本人历史 + 只读说明」——
+  `/auth/*`、`/mcp*`、`POST /gec/detect`、`POST /gec/:lang/detect`、`POST /gec/analyze`、
+  `POST /gec/explain`(`/stream`)、`/gec/history*`、`/gec/sessions*`、
+  `GET /gec/settings`、`GET /gec/languages`；其余一律 403。为什么不是逐端点补守卫：
+  11-12 走查实测评审密钥原先可直接打通 `POST /gec/l3/retrain`（重训模型）、
+  `POST /gec/agent/run`（自主档写工具跑批）、`POST /gec/eval/run`（长跑打满 LLM 网关）、
+  `POST /gec/llm-feedback`（`adopt` → `adopt_as_rule` 改写共享规则库）、
+  `POST /gec/ops/unlock`（未设 `GEC_TABLES_UPDATE_TOKEN` 时直接回 `unlocked:true`，
+  等于把规则管理 / 知识维护 / 进化中心整面交给评委）。参赛密钥是**全体评委共享**的
+  一枚，共享身份不得改写共享状态——与 MCP 把写档工具改成提案信封同一个立场。
+  界面侧随之收起评审身份下必然 403 的「测试全部」按钮（`PipelineStatus`）；
+  验收 `api-server/tests/gateway_review_surface.rs`；
 - **跨账号确定性旁路封堵**：网关形态跳过进程级 LRU 缓存与历史复用
   （`GATEWAY_MODE` 进程闸；单机形态复用链零变化）——否则 B 复用 A 的同文本记录会
   「复用即不写新历史」，在 B 的归属账上留下空洞。

@@ -13,7 +13,7 @@ use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use api_server::{media_report, routes, state::AppState};
+use api_server::{media_report, middleware, routes, state::AppState};
 use media_core::{
     ApplyMode, CarrierReplay, CarrierSource, CarrierSpans, Case, CaseBase, ExtractSource, GoldItem,
     MatchKind, Region, ReportFile, ReportMeta, ReportRow, RuleVia, Stitched, TextUnit, attach_gold,
@@ -232,7 +232,7 @@ async fn start_detect_server() -> String {
         Some(&manifest_dir().join("../decision-tables")),
         Some(&db),
     ));
-    let app = routes::router(state);
+    let app = middleware::auth::with_standalone_tenant(routes::router(state));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());
@@ -810,7 +810,7 @@ async fn start_media_server(workdir: &std::path::Path) -> String {
         Some(&manifest_dir().join("../decision-tables")),
         Some(&db),
     ));
-    let app = routes::router(state);
+    let app = middleware::auth::with_standalone_tenant(routes::router(state));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());

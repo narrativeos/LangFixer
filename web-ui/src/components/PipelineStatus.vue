@@ -16,12 +16,21 @@ import { ElMessage } from 'element-plus'
 import { errMsg } from '../lib/err'
 import { api } from '../api/client'
 import { useGecStore } from '../stores/gec'
+import { identity } from '../lib/auth'
 import type { SettingsTestResult } from '../types'
 
 const store = useGecStore()
 
 /** flat = popover 内嵌形态（桌面端 header chip 点开）；默认 = Web 端整行状态条 */
 defineProps<{ flat?: boolean }>()
+
+/**
+ * 「测试全部」= 用服务端已配置的地址做一次外部探测，属运营侧动作：网关形态下
+ * 评审密钥的可达面是「检测 + 本人历史」（`middleware::auth::review_denied`），
+ * 按钮随之收起，免得点出 403 让人以为是产品坏了。状态点本身仍来自 detect 响应，
+ * 与身份无关。
+ */
+const canTest = computed(() => !identity.value.gateway || identity.value.admin)
 
 interface StatusItem {
   key: string
@@ -117,7 +126,7 @@ async function testAll() {
       </span>
     </div>
     <span class="ps-summary">{{ okCount }}/{{ items.length }} 项可用</span>
-    <el-button size="small" :loading="testing" @click="testAll">测试全部</el-button>
+    <el-button v-if="canTest" size="small" :loading="testing" @click="testAll">测试全部</el-button>
     <el-tooltip
       v-if="testResult"
       :content="testResult.message"
