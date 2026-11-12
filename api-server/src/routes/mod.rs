@@ -1,6 +1,8 @@
+pub mod admin;
 pub mod agent;
 pub mod analyze;
 pub mod attribute;
+pub mod auth;
 pub mod custom_words;
 pub mod detect;
 pub mod eval;

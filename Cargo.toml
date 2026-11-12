@@ -48,6 +48,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 axum = "0.7"
+sha2 = "0.10"
+rand = "0.8"
 http = "1"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }

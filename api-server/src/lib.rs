@@ -4,6 +4,7 @@
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod agent_tools;
+pub mod auth;
 pub mod cache;
 pub mod custom_words;
 pub mod detect_history;

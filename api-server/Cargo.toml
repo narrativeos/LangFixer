@@ -28,6 +28,8 @@ langfixer-llm = { workspace = true }
 async-trait = { workspace = true }
 lexicon-store = { workspace = true }
 axum = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
 http = { workspace = true }
 futures-util = { workspace = true }
 tower = { workspace = true }
