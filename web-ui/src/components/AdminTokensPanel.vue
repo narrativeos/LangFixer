@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
 import { errMsg } from '../lib/err'
@@ -15,9 +15,23 @@ interface TokenRow {
   label: string
   quota_chars: number
   revoked: boolean
+  used_today: number
+  used_retained: number
+  days_used: number
+  last_day: number | null
+}
+
+interface Stats {
+  tokens_total: number
+  tokens_active: number
+  active_sessions: number
+  chars_today: number
+  chars_retained: number
+  retention_days: number
 }
 
 const rows = ref<TokenRow[]>([])
+const stats = ref<Stats | null>(null)
 const loading = ref(false)
 const error = ref('')
 const label = ref('')
@@ -25,6 +39,28 @@ const quotaWan = ref(200) // 万字/日：评审日测够用的默认档
 const issuing = ref(false)
 /** 刚签发的一枚：{token} 只存在于这里，关掉就再也取不到 */
 const fresh = ref<{ id: string; label: string; token: string } | null>(null)
+
+/** 字符数量级人话：万位起折算 */
+function chars(n: number): string {
+  if (!n) return '0'
+  return n >= 10000 ? `${(n / 10000).toFixed(n >= 100000 ? 0 : 1)} 万字` : `${n} 字`
+}
+
+/** 日账的 day 是 UTC 日序（epoch 天数） */
+function dayText(d: number | null): string {
+  return d ? new Date(d * 86400000).toISOString().slice(0, 10) : '—'
+}
+
+/** 今日剩余配额：不限配额回 null */
+function remainToday(row: TokenRow): number | null {
+  return row.quota_chars > 0 ? Math.max(0, row.quota_chars - row.used_today) : null
+}
+
+/** 今日配额已用百分比（进度条；越线由服务端回 429，这里只到 100） */
+function pct(row: TokenRow): number {
+  if (row.quota_chars <= 0) return 0
+  return Math.min(100, Math.round((row.used_today / row.quota_chars) * 100))
+}
 
 async function load() {
   loading.value = true
@@ -35,6 +71,12 @@ async function load() {
     error.value = errMsg(e)
   } finally {
     loading.value = false
+  }
+  // 概览是第二个端点：老服务端没有它不该影响签发与列表，单独吞错
+  try {
+    stats.value = await api.adminStats()
+  } catch {
+    stats.value = null
   }
 }
 onMounted(load)
@@ -96,6 +138,10 @@ async function copy(text: string, what: string) {
 }
 
 const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日` : '不限')
+
+/** 概览拿不到时退回逐令牌求和（同一日账的两个读法，口径一致）；账窗默认与清理周期同值 */
+const totalRetained = computed(() => rows.value.reduce((s, r) => s + r.used_retained, 0))
+const windowDays = computed(() => stats.value?.retention_days ?? 7)
 </script>
 
 <template>
@@ -104,10 +150,11 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
       <div class="card-header">
         <span class="card-title">密钥分发</span>
         <span class="card-sub">
-          {{ identity.token_id ?? '超管会话' }} · 共 {{ rows.length }} 枚（{{
+          共 {{ rows.length }} 枚（{{
             rows.filter((r) => !r.revoked).length
           }}
-          枚有效）
+          枚有效）· 在途会话 {{ stats ? stats.active_sessions : '—' }} · 近 {{ windowDays }}
+          天已测 {{ chars(stats ? stats.chars_retained : totalRetained) }}
         </span>
         <span class="spacer"></span>
         <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
@@ -126,7 +173,9 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
       <el-button type="primary" size="large" :loading="issuing" @click="issue">签发</el-button>
     </div>
     <p class="keys-tip">
-      配额按自然日累计字符数，超限回 429；填 0 = 不限。<br />
+      配额按自然日累计字符数（web 与 MCP 同一本账），超限回 429；填 0 = 不限。<br />
+      用量来自按天聚合的日账，只保留 {{ windowDays }} 天（与文本清理同周期），
+      所以「累计」是<strong>保留期内</strong>合计，不是历史总量；要查某人测过什么看检测历史，同样 7 天。<br />
       密钥明文<strong>只在签发表单里出现一次</strong>——列表与后续接口都取不回来，忘了只能重发。
     </p>
 
@@ -165,8 +214,29 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="日配额" width="110">
-        <template #default="{ row }">{{ quotaText(row.quota_chars) }}</template>
+      <el-table-column label="今日用量" min-width="170">
+        <template #default="{ row }">
+          <div class="keys-usage">
+            <span>{{ chars(row.used_today) }}</span>
+            <span class="keys-usage-sub">{{ quotaText(row.quota_chars) }}</span>
+          </div>
+          <el-progress
+            v-if="row.quota_chars > 0 && !row.revoked"
+            :percentage="pct(row)"
+            :stroke-width="4"
+            :show-text="false"
+            :status="pct(row) >= 90 ? 'exception' : undefined"
+          />
+          <div v-if="remainToday(row as TokenRow) !== null" class="keys-usage-sub">
+            今日剩 {{ chars(remainToday(row as TokenRow) as number) }}
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="累计 / 最近" min-width="140">
+        <template #default="{ row }">
+          <div>{{ chars(row.used_retained) }}</div>
+          <div class="keys-usage-sub">{{ dayText(row.last_day) }}</div>
+        </template>
       </el-table-column>
       <el-table-column prop="id" label="密钥 id" min-width="180">
         <template #default="{ row }"><code class="keys-id">{{ row.id }}</code></template>
@@ -268,6 +338,15 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
   margin-top: 14px;
 }
 .keys-id {
+  font-size: 12px;
+  color: var(--muted);
+}
+.keys-usage {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.keys-usage-sub {
   font-size: 12px;
   color: var(--muted);
 }

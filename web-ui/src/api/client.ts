@@ -289,15 +289,55 @@ export const api = {
     return http.post('/auth/logout').then(() => undefined)
   },
 
-  /** GET /admin/tokens — 密钥清单（仅超管；明文不回，只回 id/标签/配额/是否吊销） */
+  /** GET /admin/tokens — 密钥清单 + 用量（仅超管；明文不回）。
+   *  用量取自日账 `gw_usage`：`used_retained` 是**保留期内**累计（旧账由清理任务删除） */
   adminTokens(): Promise<
-    { id: string; label: string; quota_chars: number; revoked: boolean }[]
+    {
+      id: string
+      label: string
+      quota_chars: number
+      revoked: boolean
+      used_today: number
+      used_retained: number
+      days_used: number
+      last_day: number | null
+    }[]
   > {
     return http
-      .get<{ tokens: { id: string; label: string; quota_chars: number; revoked: boolean }[] }>(
-        '/admin/tokens',
-      )
+      .get<{
+        tokens: {
+          id: string
+          label: string
+          quota_chars: number
+          revoked: boolean
+          used_today: number
+          used_retained: number
+          days_used: number
+          last_day: number | null
+        }[];
+      }>('/admin/tokens')
       .then((r) => r.data.tokens)
+  },
+
+  /** GET /admin/stats — 概览：密钥数 / 在途会话 / 用量合计与保留天数 */
+  adminStats(): Promise<{
+    tokens_total: number
+    tokens_active: number
+    active_sessions: number
+    chars_today: number
+    chars_retained: number
+    retention_days: number
+  }> {
+    return http
+      .get<{
+        tokens_total: number
+        tokens_active: number
+        active_sessions: number
+        chars_today: number
+        chars_retained: number
+        retention_days: number
+      }>('/admin/stats')
+      .then((r) => r.data)
   },
 
   /** POST /admin/tokens — 签发一枚评审密钥（明文只在这一次响应里出现） */
