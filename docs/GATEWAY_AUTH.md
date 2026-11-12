@@ -68,7 +68,18 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 ## 后续切片
 
 - D2：请求体计入 `quota_chars` 并超限 429；业务查询按 `RequestScope.token_id` 过滤（owner 隔离）；MCP `/mcp` 复用同一 gate。✅（已完成）
-- D3：过期文本 cron 清理；Caddyfile 与部署脚本。
+- D3：过期文本 systemd timer 清理；Caddy 站点与部署件（`deploy/gateway/`）。✅（部署件已入库，公网落地见其 README）
+
+## 公网部署形态（deploy/gateway/）
+
+- 二进制在**服务器本机编译**（x86_64-unknown-linux-gnu；zig 交叉编译路径因 edition-2024
+  工具链兼容性废弃）；运行时不依赖 `models/` gguf（`GEC_OFFLINE=1`、`GEC_DEC_ENABLED=0`）；
+- api-server 绑 **docker 网桥宿主侧地址**（`LANGFIXER_BIND=172.18.0.1:4801`）：只有同网桥的
+  Caddy 容器可达，公网与宿主其他进程不可见；公网入口只由 Caddy(443) 持有；
+- **源码、`.env`、数据库一律放 `/srv/langfixer`**——`/dnmp/www` 被 Caddy 挂载为 web 根，
+  只放 `web-ui/dist`，任何敏感件不得入内；
+- 数据保留：`langfixer-retention.timer` 每日删除 N 天（默认 7）前的检测文本与配额日账，
+  并收敛已吊销令牌的会话归属行。
 
 ## MCP 面（`POST /mcp`）
 
