@@ -102,11 +102,16 @@ def api_put(server: str, path: str, body: dict, timeout: float = 30.0):
 
 
 def detect(server: str, lang: str, text: str, force_llm: bool,
-          level: int = 1, timeout: float = 180.0, attempts: int = 3) -> dict:
+           level: int = 1, timeout: float = 960.0, attempts: int = 2) -> dict:
     """POST /gec/detect；5xx / 连接错误退避重试，4xx 立即失败（同 eval_llm_mucgec）。
 
     `level` 恒显式下发（服务端缺省 1 = 纯规则：不传 level 时 funnel 模式会
-    静默退化成「只测规则层」，LLM / L3 层结构性为 0，报告失真）。"""
+    静默退化成「只测规则层」，LLM / L3 层结构性为 0，报告失真）。
+
+    **超时必须大于服务端自己的挂钟预算**（评测实例 `LLM_RETRY_BUDGET_SECS=900`）：
+    客户端在服务端仍在等网关时弃单重投，等于凭空给网关加一路并发——11-12 定版
+    跑到后半程就是被这个 180s×3 的客户端档打崩的（超时→重投→排队更长→更多超时）。
+    所以默认 960s 等待、只重试一次（那次是为隧道断连准备，不是为慢句准备）。"""
     body = json.dumps(
         {"lang": lang, "text": text, "force_llm": force_llm, "level": level}
     ).encode("utf-8")
