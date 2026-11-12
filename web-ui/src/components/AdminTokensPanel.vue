@@ -19,6 +19,9 @@ interface TokenRow {
   used_retained: number
   days_used: number
   last_day: number | null
+  /** 调用级日志（gw_call_log）口径，含被拒请求；老服务端无此字段 */
+  calls_today?: number
+  calls_retained?: number
 }
 
 interface Stats {
@@ -27,6 +30,8 @@ interface Stats {
   active_sessions: number
   chars_today: number
   chars_retained: number
+  calls_today?: number
+  calls_retained?: number
   retention_days: number
 }
 
@@ -143,6 +148,18 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
 const totalRetained = computed(() => rows.value.reduce((s, r) => s + r.used_retained, 0))
 const windowDays = computed(() => stats.value?.retention_days ?? 7)
 
+/** 调用次数：与「字」不同单位；无字段（老服务端）如实回「—」，不假装是 0 */
+function calls(n?: number): string {
+  if (n === undefined) return '—'
+  return n >= 10000 ? `${(n / 10000).toFixed(n >= 100000 ? 0 : 1)} 万次` : `${n} 次`
+}
+
+const totalCalls = computed(() => {
+  if (stats.value?.calls_retained !== undefined) return stats.value.calls_retained
+  if (rows.value.every((r) => r.calls_retained === undefined)) return undefined
+  return rows.value.reduce((s, r) => s + (r.calls_retained ?? 0), 0)
+})
+
 /**
  * 超级管理员密钥的来源（whoami 只对已验证的超管回这两个字段；桌面端 invoke 不带 = 整段不显示）。
  * 目的是让运维看清「这把钥匙归谁管」——env 持有的那把轮换端点不接管，只能改文件。
@@ -169,7 +186,8 @@ const keyOrigin = computed(() => {
             rows.filter((r) => !r.revoked).length
           }}
           枚有效）· 在途会话 {{ stats ? stats.active_sessions : '—' }} · 近 {{ windowDays }}
-          天已测 {{ chars(stats ? stats.chars_retained : totalRetained) }}
+          天已测 {{ chars(stats ? stats.chars_retained : totalRetained) }} · 调用
+          {{ calls(totalCalls) }}（含被拒）
         </span>
         <span class="spacer"></span>
         <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
@@ -262,6 +280,12 @@ const keyOrigin = computed(() => {
         <template #default="{ row }">
           <div>{{ chars(row.used_retained) }}</div>
           <div class="keys-usage-sub">{{ dayText(row.last_day) }}</div>
+        </template>
+      </el-table-column>
+      <el-table-column label="调用次数" min-width="120">
+        <template #default="{ row }">
+          <div>{{ calls((row as TokenRow).calls_today) }}</div>
+          <div class="keys-usage-sub">累计 {{ calls((row as TokenRow).calls_retained) }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="id" label="密钥 id" min-width="180">

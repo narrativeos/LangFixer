@@ -306,6 +306,9 @@ export const api = {
       used_retained: number
       days_used: number
       last_day: number | null
+      /** 调用级日志口径（含被拒请求）；老服务端无此字段 */
+      calls_today?: number
+      calls_retained?: number
     }[]
   > {
     return http
@@ -319,18 +322,22 @@ export const api = {
           used_retained: number
           days_used: number
           last_day: number | null
+          calls_today?: number
+          calls_retained?: number
         }[];
       }>('/admin/tokens')
       .then((r) => r.data.tokens)
   },
 
-  /** GET /admin/stats — 概览：密钥数 / 在途会话 / 用量合计与保留天数 */
+  /** GET /admin/stats — 概览：密钥数 / 在途会话 / 用量与调用合计 / 保留天数 */
   adminStats(): Promise<{
     tokens_total: number
     tokens_active: number
     active_sessions: number
     chars_today: number
     chars_retained: number
+    calls_today?: number
+    calls_retained?: number
     retention_days: number
   }> {
     return http
@@ -340,6 +347,8 @@ export const api = {
         active_sessions: number
         chars_today: number
         chars_retained: number
+        calls_today?: number
+        calls_retained?: number
         retention_days: number
       }>('/admin/stats')
       .then((r) => r.data)

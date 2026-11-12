@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **调用级日志（`gw_call_log`）**：网关形态下每个经过鉴权门的请求记一行
+  （`ts / token_id / endpoint / status / latency_ms`）——「谁在几点调了哪个端点、
+  被拒的 401/403 尝试」从此可查（D1 遗留项落地）。立场与红线：
+  ① **放行与拒绝都记**，核验成功的评审令牌即使越权被拒也记本人，不洗成匿名；
+  ② **只存路径**——query string 可能含用户文本（`?text=`）、请求体更是绝不落，
+  header 不落；`token_id` 是身份不是凭证；③ 单机形态**不落**（零新增写盘，不把
+  私人使用记成「调用」）；④ 记账失败只 warn，日志是运维资料不是事务参与方；
+  ⑤ 保留期与日账同源（retention timer 一并删超期行）。读端点：`/admin/stats` 带
+  `calls_today / calls_retained`（进行中的请求完成后才入账，读到的永远是此前全部），
+  `/admin/tokens` 逐令牌带同口径计数；「密钥分发」界面加「调用次数」列与概览合计。
+  验收 `api-server/tests/gateway_call_log.rs`（放行/拒绝/越权逐行对齐 + query 不落 +
+  合计与逐行一致）。`docs/GATEWAY_AUTH.md` D1 段与 `deploy/gateway/langfixer-retention.sh`
+  同步。
+
 ### 修复
 
 - **LLM 网关失败演练暴露的三个坑**（2026-11 演练，隔离实例黑洞网关实测）：

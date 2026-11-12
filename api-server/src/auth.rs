@@ -172,6 +172,10 @@ pub struct TokenWithUsage {
     pub days_used: i64,
     /// 最近有记账的一天（UTC 日序；从未用过为 None）
     pub last_day: Option<i64>,
+    /// 当日（UTC）调用次数——调用级日志口径，**含被拒请求**（401/403/429 也是调用）
+    pub calls_today: i64,
+    /// 保留期内累计调用次数（含被拒请求）
+    pub calls_retained: i64,
 }
 
 /// 评审令牌 + 会话存储（独立 `auth.db`，与产品数据 `langfixer.db` 分离）。
@@ -206,11 +210,20 @@ impl TokenStore {
                  chars    INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(token_id, day)
              );
+             CREATE TABLE IF NOT EXISTS gw_call_log(
+                 id         INTEGER PRIMARY KEY,
+                 ts         INTEGER NOT NULL,
+                 token_id   TEXT,
+                 endpoint   TEXT NOT NULL,
+                 status     INTEGER NOT NULL,
+                 latency_ms INTEGER NOT NULL DEFAULT 0
+             );
              CREATE TABLE IF NOT EXISTS gw_meta(
                   key   TEXT PRIMARY KEY,
                   value TEXT NOT NULL
               );
-              CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);",
+              CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);
+              CREATE INDEX IF NOT EXISTS idx_call_ts ON gw_call_log(ts);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -418,12 +431,17 @@ impl TokenStore {
                         COALESCE((SELECT COUNT(1) FROM gw_usage u
                                    WHERE u.token_id = t.id), 0),
                         (SELECT MAX(CAST(day AS INTEGER)) FROM gw_usage u
-                                   WHERE u.token_id = t.id)
+                                   WHERE u.token_id = t.id),
+                        COALESCE((SELECT COUNT(1) FROM gw_call_log c
+                                   WHERE c.token_id = t.id AND c.ts >= ?2), 0),
+                        COALESCE((SELECT COUNT(1) FROM gw_call_log c
+                                   WHERE c.token_id = t.id), 0)
                  FROM access_tokens t ORDER BY t.created_at",
             )
             .map_err(|e| e.to_string())?;
+        let day_start = (now_secs() / 86400) * 86400;
         let rows = stmt
-            .query_map([Self::today()], |r| {
+            .query_map(rusqlite::params![Self::today(), day_start], |r| {
                 Ok(TokenWithUsage {
                     id: r.get(0)?,
                     label: r.get(1)?,
@@ -433,6 +451,8 @@ impl TokenStore {
                     used_retained: r.get(5)?,
                     days_used: r.get(6)?,
                     last_day: r.get(7)?,
+                    calls_today: r.get(8)?,
+                    calls_retained: r.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -467,6 +487,51 @@ impl TokenStore {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// 调用级记账（网关形态）：每个经过鉴权门的请求一行，含被拒的 401/403/429。
+    ///
+    /// **隐私口径**（docs/GATEWAY_AUTH.md「数据红线」同源）：只存路径，不带 query
+    /// string——查询串可能含用户文本（如 `?text=`），请求体更是绝不落这里；
+    /// 身份只存 token_id（匿名与超管为 NULL）。记账失败绝不影响请求本身，
+    /// 只留 warn 日志——调用日志是运维资料，不是事务参与方。
+    pub fn log_call(&self, token_id: Option<&str>, endpoint: &str, status: u16, latency_ms: u64) {
+        let endpoint: String = endpoint.chars().take(160).collect();
+        match self.conn.lock() {
+            Ok(conn) => {
+                if let Err(e) = conn.execute(
+                    "INSERT INTO gw_call_log(ts, token_id, endpoint, status, latency_ms)
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        now_secs(),
+                        token_id,
+                        endpoint,
+                        status as i64,
+                        latency_ms.min(i64::MAX as u64) as i64
+                    ],
+                ) {
+                    tracing::warn!(error = %e, "调用级日志写入失败（不影响请求）");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "调用级日志锁失败（不影响请求）"),
+        }
+    }
+
+    /// 调用级总账（管理面概览）：保留期内合计与今日（UTC）合计。
+    pub fn call_totals(&self) -> Result<(i64, i64), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let day_start = (now_secs() / 86400) * 86400;
+        let retained = conn
+            .query_row("SELECT COUNT(1) FROM gw_call_log", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let today: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM gw_call_log WHERE ts >= ?1",
+                [day_start],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok((retained, today))
     }
 
     pub fn quota(&self, token_id: &str) -> Result<i64, String> {

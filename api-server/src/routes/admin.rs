@@ -92,6 +92,8 @@ async fn stats(State(cfg): State<Arc<GatewayConfig>>) -> Result<Json<serde_json:
     let sessions = cfg.store.active_sessions().map_err(ApiError::Internal)?;
     let tokens = cfg.store.list().map_err(ApiError::Internal)?;
     let (today, retained) = cfg.store.usage_totals().map_err(ApiError::Internal)?;
+    // 调用级合计：含被拒请求（401/403/429 也是有人敲过门），口径与 gw_call_log 同源
+    let (calls_retained, calls_today) = cfg.store.call_totals().map_err(ApiError::Internal)?;
     Ok(Json(serde_json::json!({
         "tokens_total": tokens.len(),
         "tokens_active": tokens.iter().filter(|r| r.3.is_none()).count(),
@@ -99,6 +101,8 @@ async fn stats(State(cfg): State<Arc<GatewayConfig>>) -> Result<Json<serde_json:
         // 用量口径与清理 timer 同源：账只保留 LANGFIXER_RETENTION_DAYS 天（默认 7）
         "chars_today": today,
         "chars_retained": retained,
+        "calls_today": calls_today,
+        "calls_retained": calls_retained,
         "retention_days": std::env::var("LANGFIXER_RETENTION_DAYS")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())

@@ -91,10 +91,15 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
 | `used_retained` | **保留期内**累计（`gw_usage` 还在的日账之和）——清理 timer 按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）删旧账，**不是历史总量**，界面按此如实标注 |
 | `days_used` / `last_day` | 有记账的天数 / 最近一天（`gw_usage.day` 是 UTC 日序，读出时 `CAST` 成整数） |
 | `chars_today` / `chars_retained` / `retention_days` | `/admin/stats` 的实例级合计与账窗，老服务端无这三个字段时界面退回逐令牌求和 |
+| `calls_today` / `calls_retained` | **调用级日志**（`gw_call_log`）口径的次数：当日（UTC）与保留期内。含被拒请求——401/403/429 也是有人敲过门；越权尝试记在核验成功的令牌名下，不洗成匿名 |
+| `calls_today` / `calls_retained`（stats） | `/admin/stats` 的实例级调用合计（含匿名与超管调用：`token_id` 为空的行计入合计、不计入任何令牌行） |
 
-只有**字符数日账**，没有调用级日志：谁在几点调了哪个端点、被拒的 401/403 尝试，
-当前既无 api-server 请求日志也未开 Caddy access log——要补就是「Caddy 加 `log` 一行」或
-「新表 `gw_call_log` + admin 读端点 + 界面列」两档，后者必须同时进 retention 与隐私声明。
+调用级日志已落地（`gw_call_log`，auth.db）：鉴权门对每个网关请求记一行
+`ts / token_id / endpoint / status / latency_ms`——谁在几点调了哪个端点、被拒的
+401/403 尝试从此可查。**隐私红线**：只存路径本身，不带 query string（查询串可能
+含用户文本）、不带请求体、不带 header；`token_id` 是身份不是凭证。保留期与日账
+同源，`langfixer-retention.timer` 一并删除超期行。单机形态不落调用日志（零新增
+写盘，也不把私人使用记成「调用」）。Caddy access log 仍不开——网关侧已自足。
 
 ## D2：owner 隔离与配额（已落地）
 

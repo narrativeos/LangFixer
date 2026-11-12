@@ -19,6 +19,7 @@ if [ -f "$AUTH_DB" ]; then
     sqlite3 "$AUTH_DB" "
       PRAGMA wal_checkpoint(TRUNCATE);
       DELETE FROM gw_usage WHERE day < date('now', '-$DAYS day');
+      DELETE FROM gw_call_log WHERE ts < strftime('%s', 'now', '-$DAYS day');
       DELETE FROM gw_session_owner
         WHERE token_id NOT IN (SELECT id FROM access_tokens);
       DELETE FROM gw_sessions WHERE expires_at <= strftime('%s','now');
