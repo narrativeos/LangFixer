@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **登录后 whoami 的可选字段在界面上消失**（`web-ui/src/lib/auth.ts`）：`loginWithKey` 用
+  逐字段字面量重建身份视图，后端每加一个可选字段就在这条路径上被静默丢掉（`?token=` 直链登录后
+  「密钥分发」看不到密钥来源与指纹，而同一页面直接 `fetch('/auth/whoami')` 带着它们）。
+  现抽出纯函数 `mergeIdentity(prev, me, login?)`，字段只在一处列举；来源与指纹只取本次 whoami
+  （换实例不得留上一台的指纹），`signOut` 一并清掉。`web-ui/src/lib/auth.test.ts` 锁住语义。
+
 ### 新增
 
 - **显式轮换超级管理员密钥**（`POST /admin/admin-token/rotate`）：换钥匙从此是一个动作，
