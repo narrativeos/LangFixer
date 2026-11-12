@@ -247,9 +247,77 @@ function toHistoryListItem(h: HistoryDetail): HistoryListItem {
   }
 }
 
+/** 验证机制身份视图（GET /auth/whoami）：门禁页与面板收口都读它 */
+export interface Whoami {
+  /** 网关形态（`LANGFIXER_GATEWAY=1`）；单机形态 false */
+  gateway: boolean
+  /** 超管（超管密钥或其会话） */
+  admin: boolean
+  /** 当前评审令牌 id（超管 / 未登录为 null） */
+  token_id: string | null
+  /** 凭证已验证：false 时产品界面不展示（先过门禁页） */
+  authenticated: boolean
+  /** 产品界面是否需要验证：网关形态恒真；单机形态看 owner 是否已激活（未激活 = 零变化） */
+  locked: boolean
+}
+
 export const api = {
-  /** GET /gec/languages — 语言 / 引擎元信息（桌面端：invoke('languages')）
-   *  前端语言切换器据此展示真实引擎信息 */
+  // ── 验证机制：token 门禁 / 免注册会话 / 管理面密钥 ──────────────────────
+  /** GET /auth/whoami — 身份探测（未登录也回 200，供门禁页判断，不抛 401）；
+   *  桌面端 invoke 不走 HTTP、无门禁，恒为已验证超管 */
+  whoami(): Promise<Whoami> {
+    if (inTauri)
+      return Promise.resolve({
+        gateway: false,
+        admin: true,
+        token_id: null,
+        authenticated: true,
+        locked: false,
+      })
+    return http.get<Whoami>('/auth/whoami').then((r) => r.data)
+  },
+
+  /** POST /auth/session — 一枚密钥（评审或超管）换短时效会话 cookie（body `{"token":...}`） */
+  login(token: string): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
+    return http.post('/auth/session', { token }).then((r) => r.data)
+  },
+
+  /** POST /auth/logout — 结束当前会话（服务端即刻失效） */
+  logout(): Promise<void> {
+    if (inTauri) return Promise.resolve()
+    return http.post('/auth/logout').then(() => undefined)
+  },
+
+  /** GET /admin/tokens — 密钥清单（仅超管；明文不回，只回 id/标签/配额/是否吊销） */
+  adminTokens(): Promise<
+    { id: string; label: string; quota_chars: number; revoked: boolean }[]
+  > {
+    return http
+      .get<{ tokens: { id: string; label: string; quota_chars: number; revoked: boolean }[] }>(
+        '/admin/tokens',
+      )
+      .then((r) => r.data.tokens)
+  },
+
+  /** POST /admin/tokens — 签发一枚评审密钥（明文只在这一次响应里出现） */
+  adminIssueToken(label: string, quotaChars: number): Promise<{ id: string; token: string }> {
+    return http
+      .post<{ id: string; token: string }>('/admin/tokens', {
+        label,
+        quota_chars: quotaChars,
+      })
+      .then((r) => r.data)
+  },
+
+  /** POST /admin/tokens/:id/revoke — 吊销（在途会话即刻失效） */
+  adminRevokeToken(id: string): Promise<void> {
+    return http
+      .post(`/admin/tokens/${encodeURIComponent(id)}/revoke`)
+      .then(() => undefined)
+  },
+
+
   listLanguages(): Promise<LanguageInfo[]> {
     if (inTauri) return tauri!.invoke('languages').then((r) => r as LanguageInfo[])
     return http.get<LanguageInfo[]>('/gec/languages').then((r) => r.data)

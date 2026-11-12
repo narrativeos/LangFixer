@@ -97,13 +97,26 @@ async fn logout(
 }
 
 async fn whoami(
+    State(cfg): State<Arc<GatewayConfig>>,
     Extension(ctx): Extension<AuthContext>,
     Extension(scope): Extension<RequestScope>,
 ) -> impl IntoResponse {
+    // locked = 产品界面是否需要验证：网关形态恒真；单机形态看 owner 是否已激活
+    // （未激活 = 刚装完的本机用户，界面照常敞开，与设置写入零变化同口径）
+    let mut locked = cfg.enabled;
+    if !locked {
+        locked = cfg
+            .store
+            .meta_get(crate::auth::META_OWNER_CLAIMED)
+            .ok()
+            .flatten()
+            .is_some();
+    }
     Json(serde_json::json!({
         "gateway": ctx.gateway,
         "admin": ctx.admin,
         "token_id": scope.token_id,
         "authenticated": ctx.authed,
+        "locked": locked,
     }))
 }

@@ -58,6 +58,7 @@ export type AppView =
   | 'media'
   | 'rules'
   | 'knowledge'
+  | 'access'
   | 'evolution'
   | 'settings'
 
