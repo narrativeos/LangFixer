@@ -142,6 +142,21 @@ const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日`
 /** 概览拿不到时退回逐令牌求和（同一日账的两个读法，口径一致）；账窗默认与清理周期同值 */
 const totalRetained = computed(() => rows.value.reduce((s, r) => s + r.used_retained, 0))
 const windowDays = computed(() => stats.value?.retention_days ?? 7)
+
+/**
+ * 超级管理员密钥的来源（whoami 只对已验证的超管回这两个字段；桌面端 invoke 不带 = 整段不显示）。
+ * 目的是让运维看清「这把钥匙归谁管」——env 持有的那把轮换端点不接管，只能改文件。
+ */
+const keyOrigin = computed(() => {
+  const src = identity.value.admin_token_source
+  if (!src) return null
+  return src === 'env'
+    ? {
+        holder: 'LANGFIXER_ADMIN_TOKEN（进程环境 / .env）',
+        howto: '；这把钥匙该端点会回 409 拒接，换法只有改 env 里的值再重启',
+      }
+    : { holder: 'gw_meta（安装时自动生成）', howto: '' }
+})
 </script>
 
 <template>
@@ -177,6 +192,17 @@ const windowDays = computed(() => stats.value?.retention_days ?? 7)
       用量来自按天聚合的日账，只保留 {{ windowDays }} 天（与文本清理同周期），
       所以「累计」是<strong>保留期内</strong>合计，不是历史总量；要查某人测过什么看检测历史，同样 7 天。<br />
       密钥明文<strong>只在签发表单里出现一次</strong>——列表与后续接口都取不回来，忘了只能重发。
+    </p>
+
+    <p v-if="keyOrigin" class="keys-tip">
+      本实例的超级管理员密钥由 <strong>{{ keyOrigin.holder }}</strong> 持有<template
+        v-if="identity.admin_token_fp"
+        > · 指纹 <code>{{ identity.admin_token_fp }}</code></template
+      ><br />
+      重启服务<strong>不会</strong>换钥匙。换钥匙是显式动作：<code>POST /admin/admin-token/rotate</code>
+      带 <code>{"confirm":"ROTATE"}</code>（新明文只回一次，旧密钥与其会话即刻失效）{{
+        keyOrigin.howto
+      }}。
     </p>
 
     <div v-if="fresh" class="keys-fresh">

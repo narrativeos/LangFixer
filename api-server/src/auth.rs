@@ -3,12 +3,15 @@
 //! 原则：
 //! - **单机形态零变化**：`LANGFIXER_GATEWAY` 未开启时全部端点保持原有免鉴权行为；
 //! - **一张令牌表 = 唯一身份原语**：web 会话与未来 MCP 面共用同一 Bearer 校验与配额；
-//! - **超级管理员令牌只活在上游进程环境 / `.env`**：内存里只留 SHA-256 摘要，
-//!   绝不写入数据库，也不是可签发的评审令牌——`/admin/*` 只认它。
+//! - **超级管理员密钥**：env 给了 `LANGFIXER_ADMIN_TOKEN` 就以 env 为准（内存里只留
+//!   SHA-256 摘要）；env 没给则安装时生成一枚落 `gw_meta.admin_token` 并复用。
+//!   它不是可签发的评审令牌——`/admin/*` 只认它。**重启永不换钥匙**，换钥匙是显式动作
+//!   （`POST /admin/admin-token/rotate`，仅 `gw_meta` 来源可用；env 来源拒绝，见
+//!   `GatewayConfig::rotate_admin_token`）。
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
@@ -86,24 +89,57 @@ fn digest_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 }
 
 /// 超级管理员凭证：仅存摘要。
+///
+/// 摘要是**内部可变**的：显式轮换（`GatewayConfig::rotate_admin_token`）换掉的
+/// 就是这一份，旧密钥即刻不再匹配，不需要重启进程。`Clone` 与原对象共享同一份
+/// 摘要（`Arc`），因此已注入各路由扩展的 `GatewayConfig` 会一起认新钥匙。
 #[derive(Clone)]
 pub struct AdminCred {
-    digest: Option<[u8; 32]>,
+    digest: Arc<RwLock<Option<[u8; 32]>>>,
 }
 
 impl AdminCred {
     pub fn from_token(token: Option<String>) -> Self {
         Self {
-            digest: token.filter(|t| !t.is_empty()).map(|t| sha256(&t)),
+            digest: Arc::new(RwLock::new(
+                token.filter(|t| !t.is_empty()).map(|t| sha256(&t)),
+            )),
         }
     }
 
     pub fn matches(&self, presented: &str) -> bool {
-        match &self.digest {
+        let digest = self.digest.read().unwrap_or_else(|e| e.into_inner());
+        match &*digest {
             Some(expected) => digest_eq(expected, &sha256(presented)),
             None => false,
         }
     }
+
+    /// 换成新密钥（进程内立刻生效）。调用方负责**先落库再调用**：库写失败时
+    /// 不会留下「内存是新的、库里是旧的」这种重启即回退的分裂状态。
+    pub fn swap(&self, token: &str) {
+        *self.digest.write().unwrap_or_else(|e| e.into_inner()) = Some(sha256(token));
+    }
+
+    /// 当前活着的密钥指纹（SHA-256 前 8 位 hex）。用来核对「这台实例用的是哪把」，
+    /// 不回显明文——运维比对指纹即可，无需把密钥再念一遍。
+    pub fn fingerprint(&self) -> Option<String> {
+        let digest = self.digest.read().unwrap_or_else(|e| e.into_inner());
+        digest.map(|bytes| hex(&bytes[..4]))
+    }
+}
+
+/// 超管密钥的**来源**，决定「怎么换钥匙」这件事归谁：
+/// - `Env`：由 `LANGFIXER_ADMIN_TOKEN`（进程环境 / `.env`）持有 → 换钥匙只能改那个文件；
+///   轮换取会**拒绝**（库里换一把只会造成「`gw_meta` 新值被 env 无声覆盖」的分裂）。
+/// - `Generated`：安装时自动生成并落 `gw_meta.admin_token` → 换钥匙走显式轮换端点。
+///
+/// 两种来源都是「重启不换钥匙」：重启只重读同一份来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminTokenSource {
+    Env,
+    Generated,
 }
 
 /// 签发结果：`token` 明文只在签发响应里出现一次，库中只存摘要。
@@ -249,6 +285,15 @@ impl TokenStore {
     pub fn end_session(&self, sid: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM gw_sessions WHERE id = ?1", [sid])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 清掉某个身份的全部在途会话（不换密钥时不用；轮换超管密钥时用——
+    /// 那些 cookie 是旧钥匙换来的，留着等于旧钥匙仍有效）。
+    pub fn clear_sessions(&self, token_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM gw_sessions WHERE token_id = ?1", [token_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -485,6 +530,8 @@ pub struct GatewayConfig {
     pub admin: AdminCred,
     pub store: TokenStore,
     pub cookie_secure: bool,
+    /// 当前超管密钥来自 env 还是安装生成的 `gw_meta`（决定轮换是否可用）。
+    pub admin_source: AdminTokenSource,
 }
 
 #[derive(Debug)]
@@ -509,12 +556,31 @@ impl GatewayConfig {
             return Err(GatewayConfigError::MissingAdminToken);
         }
         let store = TokenStore::open(db_path).map_err(GatewayConfigError::Store)?;
+        // 库里那枚（安装时生成的）无论 env 是否给出都要读出来：一是判断来源，
+        // 二是两者同时有值时必须 WARN——否则「改了 gw_meta 却没生效」无声发生。
+        let stored_admin = store
+            .meta_get(META_ADMIN_TOKEN)
+            .map_err(GatewayConfigError::Store)?;
+        if env_admin.is_some() && stored_admin.is_some() {
+            let fp = stored_admin
+                .as_deref()
+                .map(|t| hex(&sha256(t)[..4]))
+                .unwrap_or_default();
+            tracing::warn!(
+                stored_fingerprint = %fp,
+                "LANGFIXER_ADMIN_TOKEN 与 gw_meta.admin_token 同时有值：以 env 为准，\
+                 库里那枚（指纹 {fp}）不会被使用。若要改用轮换端点管理，先从 env 删掉 \
+                 LANGFIXER_ADMIN_TOKEN 再重启"
+            );
+        }
+        let admin_source = if env_admin.is_some() {
+            AdminTokenSource::Env
+        } else {
+            AdminTokenSource::Generated
+        };
         let admin_token = match env_admin {
             Some(t) => Some(t),
-            None => match store
-                .meta_get(META_ADMIN_TOKEN)
-                .map_err(GatewayConfigError::Store)?
-            {
+            None => match stored_admin {
                 Some(t) => Some(t),
                 None => {
                     let mut buf = [0u8; 20];
@@ -539,7 +605,38 @@ impl GatewayConfig {
             admin: AdminCred::from_token(admin_token),
             store,
             cookie_secure,
+            admin_source,
         })
+    }
+
+    /// **显式**轮换超级管理员密钥：换钥匙是一个动作，不是重启 / 改文件的副作用。
+    ///
+    /// - 来源为 `Env` 时拒绝（`RotateError::EnvOwned`）：那把由部署环境持有，
+    ///   在库里换一把只会被 env 无声覆盖，制造「两把都说自己活着」的分裂。
+    /// - 顺序是先落库再换内存摘要：库写失败时内存不动，重启后仍是原来那把。
+    /// - 连带清掉超管会话（`gw_sessions.token_id = "~admin"`）：那些 cookie 是用旧钥匙
+    ///   换的，留着等于给旧钥匙留一条仍有效的后门。评审密钥与其会话不受影响。
+    ///
+    /// 返回新明文，**只在这次响应里出现**；日志只记指纹。
+    pub fn rotate_admin_token(&self) -> Result<String, RotateError> {
+        if self.admin_source == AdminTokenSource::Env {
+            return Err(RotateError::EnvOwned);
+        }
+        let mut buf = [0u8; 20];
+        rand::thread_rng().fill_bytes(&mut buf);
+        let next = format!("lf_{}", hex(&buf));
+        self.store
+            .meta_set(META_ADMIN_TOKEN, &next)
+            .map_err(RotateError::Store)?;
+        self.admin.swap(&next);
+        self.store
+            .clear_sessions(ADMIN_TOKEN_ID)
+            .map_err(RotateError::Store)?;
+        tracing::warn!(
+            fingerprint = %self.admin.fingerprint().unwrap_or_default(),
+            "超级管理员密钥已轮换：旧密钥与其会话即刻失效（密钥来源 gw_meta）"
+        );
+        Ok(next)
     }
 
     pub fn from_env(dotenv: &HashMap<String, String>) -> Self {
@@ -557,6 +654,28 @@ impl GatewayConfig {
                 );
             }
             Err(GatewayConfigError::Store(e)) => panic!("打开 {db:?} 失败: {e}"),
+        }
+    }
+}
+
+/// `rotate_admin_token` 的失败原因。
+#[derive(Debug)]
+pub enum RotateError {
+    /// 当前密钥由 `LANGFIXER_ADMIN_TOKEN` 持有，轮换端点不接管（改 env 是唯一途径）
+    EnvOwned,
+    /// 写 `gw_meta` / 清会话失败
+    Store(String),
+}
+
+impl RotateError {
+    /// 面向运维的中文说明（进 409 / 500 响应体，不含任何密钥内容）。
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::EnvOwned => "当前超级管理员密钥由 LANGFIXER_ADMIN_TOKEN（进程环境 / .env）持有，\
+                               轮换端点不接管：请改该文件后重启服务（重启本身不换钥匙，\
+                               换的正是你写进文件里的新值）。若想让本端点接管，先从 env 删掉该变量再重启。"
+                .to_string(),
+            Self::Store(e) => format!("轮换失败（密钥未变更）: {e}"),
         }
     }
 }
@@ -798,6 +917,24 @@ mod tests {
         assert!(!admin.matches(""));
         let none = AdminCred::from_token(None);
         assert!(!none.matches("anything"));
+        assert!(none.fingerprint().is_none(), "无密钥时不应回出指纹");
+    }
+
+    /// 轮换的底层语义：`swap` 立刻改判，指纹跟着摘要走，且 `Clone` 共享同一份摘要
+    /// （路由扩展里那些已注入的 `GatewayConfig` 句柄必须一起认新钥匙）。
+    #[test]
+    fn admin_cred_swap_is_visible_through_clones() {
+        let cred = AdminCred::from_token(Some("a".repeat(40)));
+        let shared = cred.clone();
+        let before = cred.fingerprint().unwrap();
+        assert_eq!(before.len(), 8, "指纹取 SHA-256 前 4 字节 hex");
+        cred.swap(&"b".repeat(40));
+        assert_ne!(cred.fingerprint().unwrap(), before);
+        assert!(cred.matches(&"b".repeat(40)) && !cred.matches(&"a".repeat(40)));
+        assert!(
+            shared.matches(&"b".repeat(40)),
+            "已注入路由的旧句柄应同一时刻认新钥匙"
+        );
     }
 
     #[test]
@@ -842,6 +979,11 @@ mod tests {
             "{generated}"
         );
         assert!(cfg.admin.matches(&generated));
+        assert_eq!(
+            cfg.admin_source,
+            AdminTokenSource::Generated,
+            "env 未设时来源是 gw_meta（轮换端点接管）"
+        );
         drop(cfg);
         // 重启复用：不漂移（否则用户手上的密钥会失效）
         let again = GatewayConfig::build(&empty, &db).unwrap();
@@ -850,11 +992,12 @@ mod tests {
             Some(generated.as_str())
         );
         assert!(again.admin.matches(&generated));
-        // env 优先于安装生成的那枚
+        // env 优先于安装生成的那枚，且来源要如实标 env（轮换端点据此拒绝接管）
         let env_token = "k".repeat(64);
         let with_env = dotenv(&[("LANGFIXER_ADMIN_TOKEN", &env_token)]);
         let cfg = GatewayConfig::build(&with_env, &db).unwrap();
         assert!(cfg.admin.matches(&env_token) && !cfg.admin.matches(&generated));
+        assert_eq!(cfg.admin_source, AdminTokenSource::Env);
         let _ = std::fs::remove_file(&db);
     }
 

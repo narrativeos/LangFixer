@@ -259,6 +259,11 @@ export interface Whoami {
   authenticated: boolean
   /** 产品界面是否需要验证：网关形态恒真；单机形态看 owner 是否已激活（未激活 = 零变化） */
   locked: boolean
+  /** 超管密钥来源：`env` = `LANGFIXER_ADMIN_TOKEN` 持有；`generated` = 安装时生成落 gw_meta。
+   *  仅对已验证的超管回（匿名探测不带此字段），桌面端 invoke 亦不带 */
+  admin_token_source?: 'env' | 'generated'
+  /** 当前超管密钥指纹（SHA-256 前 8 位 hex），用于核对「这台实例活的是哪把」，非密钥本身 */
+  admin_token_fp?: string | null
 }
 
 export const api = {

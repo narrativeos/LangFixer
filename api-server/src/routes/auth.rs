@@ -112,11 +112,19 @@ async fn whoami(
             .flatten()
             .is_some();
     }
-    Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "gateway": ctx.gateway,
         "admin": ctx.admin,
         "token_id": scope.token_id,
         "authenticated": ctx.authed,
         "locked": locked,
-    }))
+    });
+    // 密钥来源与指纹**只给已验证的超管**：whoami 未登录也回 200（门禁页要探测），
+    // 匿名请求一律不回，避免把「这台实例活的是哪把」的信息白送出去。
+    // 指纹是 SHA-256 前 8 位，用于核对钥匙，不足以据此认证。
+    if ctx.admin && ctx.authed {
+        body["admin_token_source"] = serde_json::json!(cfg.admin_source);
+        body["admin_token_fp"] = serde_json::json!(cfg.admin.fingerprint());
+    }
+    Json(body)
 }

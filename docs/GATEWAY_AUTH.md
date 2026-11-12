@@ -18,14 +18,17 @@
 
 - **评审令牌** `lf_<40hex>`：超管经 `POST /admin/tokens` 签发，**明文只在签发响应出现一次**，库中只存 SHA-256 摘要；Bearer 直连与「换会话 cookie」两条路共用同一校验；未来 MCP 面（D2）挂同一 middleware，即「web 与 MCP 共同一套 token」。
 - **会话**：`POST /auth/session {"token": "…"}` 换 12h httpOnly cookie（免注册、无找回密码、无用户资料）；`/auth/logout` 注销。
-- **超级管理员令牌**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`；
+- **超级管理员密钥**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`；
   **不设则首次启动自动生成 `lf_<40hex>`**，见下节）：
   - **env 设了则全程不进数据库**，内存只留摘要；**自动生成那把必须明文落 `gw_meta.admin_token`**
     （否则重启就换一把，已分发的直链全废）——此时保护边界就是 `auth.db` 的文件权限，
     多用户机器建议显式在 env 里设一把；
-  - 只走 Bearer、**永不下发 cookie**、不占评审归户与配额；
+  - **重启永不换钥匙**：优先级是 env → `gw_meta.admin_token` → 都没有才生成并落库（只生成这一次）。
+    `systemctl restart` 只是重读同一份来源。env 与 `gw_meta` 同时有值时以 env 为准，
+    启动日志 WARN 一句「库里那枚（指纹 xxxx）不会被使用」，避免「改了 gw_meta 却没生效」无声发生；
+  - 只走 Bearer、**永不下发 cookie**（超管登录产生的会话 cookie 除外）、不占评审归户与配额；
   - 是唯一可达 `/admin/*` 的凭证——评审令牌打 admin 一律 403；
-  - 泄露处置 = 改 `.env` 值 + 重启（改后即失效，开关即断）。
+  - **换钥匙是一个显式动作，不是重启 / 改文件的副作用**：见「轮换超级管理员密钥」。
 - **吊销即断**：revoke 一个令牌连带踢掉其全部在途会话（冒烟已验证）。
 
 ## 管理面速查
@@ -43,6 +46,39 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 ```
 
 存储：`auth.db`（独立于产品数据 `langfixer.db`，删文件即重置整条评测通道）。
+
+### 轮换超级管理员密钥（泄露处置按来源分两条）
+
+**先确认这把钥匙归谁**（已登录的超管才回这两个字段；匿名 `whoami` 不带，桌面端 invoke 也不带）：
+
+```bash
+curl -s -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/auth/whoami
+# {"gateway":true,"admin":true,"authenticated":true,"locked":true,
+#  "admin_token_source":"env","admin_token_fp":"5369bceb"}
+```
+
+`admin_token_fp` 是**当前活着的那把**的 SHA-256 前 8 位，用来核对「这台实例用的是哪把钥匙」，
+不是密钥本身——不用再把它念一遍。密钥分发界面上那行「由 …… 持有 · 指纹 ……」就是它。
+
+| 来源 | 换钥匙的办法 | 说明 |
+| --- | --- | --- |
+| `env` | 改 `langfixer.env` 里 `LANGFIXER_ADMIN_TOKEN=` 的新值 → `systemctl restart langfixer` | 重启**不是**换钥匙的动作，换的是你写进文件里的新值；改前 `grep` 一眼确认没打错字符 |
+| `generated` | `POST /admin/admin-token/rotate`（下面这条 curl） | 明文只回一次，旧密钥与其超管会话即刻失效，`gw_meta` 存新值以便重启复用 |
+
+```bash
+# 必须带 confirm —— 换钥匙不接受隐式请求（缺 confirm / 传别的值一律 400）
+curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
+     -H 'content-type: application/json' -d '{"confirm":"ROTATE"}' \
+     http://127.0.0.1:4801/admin/admin-token/rotate
+```
+
+- 来源是 `env` 时该端点回 **409** 并说明改 env 的流程。**故意不做**「库里换一把、env 那把仍然赢」
+  的行为：那样 `gw_meta` 与内存摘要会分裂，下次从 env 删掉变量时突然换成另一把，比不换更糟。
+- 顺序是**先落库再换内存摘要**：库写失败时内存不动（回 500，密钥未变更），不会出现
+  「内存是新的、重启后回退成旧的」。
+- 连带清掉超管会话（`gw_sessions.token_id = '~admin'`）：那些 cookie 是旧钥匙换来的，
+  留着等于旧钥匙仍有一条有效通路。评审密钥与其会话**不受影响**，参赛报名材料里那枚不用动。
+- 日志只记指纹（`tracing::warn!`），不记明文。
 
 ### 用量统计（密钥分发表上那一列）
 
@@ -89,8 +125,12 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
    `lf_<40hex>` 并持久化到 auth.db `gw_meta.admin_token`——**重启复用不漂移**（否则用户手上
    那把会失效），明文只在生成那一次的启动日志出现一次；env 设了则以 env 为准
    （设了但 <32 字符仍按配置错误拒绝启动）。库里其余凭证只有摘要。
+   **换钥匙是显式动作**：`POST /admin/admin-token/rotate`（`confirm:"ROTATE"` 必填）只在
+   `gw_meta` 来源可用，env 来源回 409；`whoami` 对已验证超管回 `admin_token_source` /
+   `admin_token_fp` 指明这把归谁、活的是哪把。详见「轮换超级管理员密钥」。
 2. **验证前不露界面**：`GET /auth/whoami` 匿名可用（不进 gate），回
-   `{gateway, admin, token_id, authenticated, locked}`。`locked` = 界面是否需要验证：
+   `{gateway, admin, token_id, authenticated, locked}`（已验证超管额外带密钥来源与指纹）。
+   `locked` = 界面是否需要验证：
    网关形态恒 `true`；单机形态看 `gw_meta.owner_claimed`。前端 `showGate` / `showApp` 二选一，
    未验证时整个产品界面（header 与主区）不渲染；密钥只进 `sessionStorage`（关标签页即失效，
    不落 localStorage），`?token=` 直链登录后立即从地址栏剥掉。

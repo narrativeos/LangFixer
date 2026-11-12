@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **显式轮换超级管理员密钥**（`POST /admin/admin-token/rotate`）：换钥匙从此是一个动作，
+  不是重启或改文件的副作用。body 必须 `{"confirm":"ROTATE"}`（缺失或别的值 → 400）；
+  密钥来自 `gw_meta`（安装生成）时 200，新明文只在这一次响应出现，旧密钥与其超管会话
+  （`gw_sessions.token_id='~admin'`）即刻失效，评审密钥不受影响，重启复用新值；
+  密钥来自 `LANGFIXER_ADMIN_TOKEN` 时 **409** 并给出改 env 的流程——**故意不做**「库里换一把、
+  env 那把仍然赢」的分裂行为。顺序是先落库再换内存摘要（`AdminCred` 摘要改内部可变并随
+  `Clone` 共享，故已注入各路由的句柄同一时刻认新钥匙），库写失败回 500 且密钥未变更；
+  日志只记指纹。`whoami` 对**已验证的超管**额外回 `admin_token_source`（`env`/`generated`）与
+  `admin_token_fp`（SHA-256 前 8 位，核对用，非密钥），匿名探测与桌面端 invoke 不带这两个字段；
+  「密钥分发」界面据此显示「这把由谁持有 · 指纹 xxxx」。env 与 `gw_meta` 同时有值时启动
+  `WARN` 指明库里那枚不会被使用。`docs/GATEWAY_AUTH.md`「轮换超级管理员密钥」按来源写清泄露处置。
+  HTTP 层验收：`api-server/tests/gateway_admin_api.rs`（confirm 必填 / 旧钥匙与旧会话即刻失效 /
+  评审密钥不受波及 / env 模式 409 且不写库 / 评审密钥 403 / 匿名看不到来源）
+
 ### 修复
 
 - **嵌入服务「Model not exist.」**（`gec-core/src/embedding.rs`）：`.json()` 之后又 `.header("Content-Type", "application/json")` 走的是 reqwest 的**追加**语义，请求实际带两个同名 `content-type`。宽松服务端容忍，严格的 OpenAI 兼容网关（实测阿里云 DashScope compatible-mode）把请求体判成无效并回 `400 {"error":{"message":"Model not exist.","code":"model_not_found"}}`——与模型名无关，配置怎么改都失败。现由 `.json()` 单独设置该头，并补 mock 严格网关回归测试（`embed_sends_exactly_one_content_type`，同名头多于一个即判 400）；`embed` / `embed_batch` 两条路径同修
