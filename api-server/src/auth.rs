@@ -17,6 +17,17 @@ use sha2::{Digest as _, Sha256};
 /// 会话有效期（秒）：评测场景按半天足够，重启即失效由懒清理兜底。
 pub const SESSION_TTL_SECS: i64 = 12 * 3600;
 
+/// 超管会话在 `gw_sessions.token_id` 里的伪 id（不可能与 `tok_*` 冲突）。
+/// 会话解析出它 = 超管身份（不发配额归户，不进 owner 隔离）。
+pub const ADMIN_TOKEN_ID: &str = "~admin";
+
+/// 单机形态「owner 已激活」标记键：超管密钥经登录页创建过首个会话后置 1，
+/// 此后设置写入要求已验证身份（激活前保持本机免鉴权零变化）。
+pub const META_OWNER_CLAIMED: &str = "owner_claimed";
+
+/// 安装时自动生成的超管密钥存储键。
+pub const META_ADMIN_TOKEN: &str = "admin_token";
+
 /// 解析 `.env`（KEY=VALUE，支持注释与引号；不覆盖进程环境已有的变量）。
 ///
 ///  edition 2024 下 `std::env::set_var` 为 unsafe，这里不改改进程环境，
@@ -141,7 +152,11 @@ impl TokenStore {
                  chars    INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(token_id, day)
              );
-             CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);",
+             CREATE TABLE IF NOT EXISTS gw_meta(
+                  key   TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -285,6 +300,27 @@ impl TokenStore {
         Ok(())
     }
 
+    /// 元数据读取（安装生成的超管密钥 / owner 激活标记等单值键）
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Ok(conn
+            .query_row("SELECT value FROM gw_meta WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .ok())
+    }
+
+    pub fn meta_set(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO gw_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn today() -> String {
         (now_secs() / 86400).to_string()
     }
@@ -386,17 +422,41 @@ pub enum GatewayConfigError {
 }
 
 impl GatewayConfig {
-    /// 校验语义单独成函数便于测试：网关开启必须给 ≥32 字符超管令牌。
+    /// 校验语义单独成函数便于测试：env 给了超管令牌但 <32 字符视为配置错误；
+    /// env 完全未设置时**安装时自动生成**并持久化到 `gw_meta`（两形态同规则），
+    /// 明文只在生成那一次的启动日志里出现。
     pub fn build(
         dotenv: &HashMap<String, String>,
         db_path: &Path,
     ) -> Result<Self, GatewayConfigError> {
         let enabled = lookup(dotenv, "LANGFIXER_GATEWAY").is_some_and(|v| v == "1");
-        let admin_token = lookup(dotenv, "LANGFIXER_ADMIN_TOKEN");
-        if enabled && !admin_token.as_deref().is_some_and(|t| t.len() >= 32) {
+        let env_admin = lookup(dotenv, "LANGFIXER_ADMIN_TOKEN");
+        if env_admin.as_deref().is_some_and(|t| t.len() < 32) {
             return Err(GatewayConfigError::MissingAdminToken);
         }
         let store = TokenStore::open(db_path).map_err(GatewayConfigError::Store)?;
+        let admin_token = match env_admin {
+            Some(t) => Some(t),
+            None => match store
+                .meta_get(META_ADMIN_TOKEN)
+                .map_err(GatewayConfigError::Store)?
+            {
+                Some(t) => Some(t),
+                None => {
+                    let mut buf = [0u8; 20];
+                    rand::thread_rng().fill_bytes(&mut buf);
+                    let generated = format!("lf_{}", hex(&buf));
+                    store
+                        .meta_set(META_ADMIN_TOKEN, &generated)
+                        .map_err(GatewayConfigError::Store)?;
+                    tracing::info!(
+                        token = %generated,
+                        "首次安装：自动生成超级管理员密钥（用于登录配置面；只出现这一次，请妥善保存）"
+                    );
+                    Some(generated)
+                }
+            },
+        };
         let cookie_secure = lookup(dotenv, "LANGFIXER_COOKIE_SECURE")
             .map(|v| v != "0")
             .unwrap_or(enabled); // 网关形态默认 Secure（本机明文联调设 0）
@@ -436,6 +496,18 @@ fn hex(bytes: &[u8]) -> String {
 pub struct RequestScope {
     pub token_id: Option<String>,
     pub is_admin: bool,
+}
+
+/// handler 侧一眼可读的身份上下文：gate 对**每个放行的请求**注入（含匿名放行的
+/// 登录入口与门禁页探测），因此业务 handler 用 `Extension<AuthContext>` 取用即可。
+#[derive(Clone, Debug)]
+pub struct AuthContext {
+    /// 网关形态（`LANGFIXER_GATEWAY=1`）
+    pub gateway: bool,
+    /// 超管（超管密钥或其会话；单机形态恒 true，与 RequestScope 同口径）
+    pub admin: bool,
+    /// 携带了有效凭证（网关形态放行即 true；单机形态看是否带了超管凭证/会话）
+    pub authed: bool,
 }
 
 /// 租户提取器：网关形态下的 handler 侧统一入口（单机形态全部为 None = 直通）。
@@ -676,6 +748,61 @@ mod tests {
         let off = dotenv(&[]);
         let cfg = GatewayConfig::build(&off, &db).unwrap();
         assert!(!cfg.enabled && !cfg.cookie_secure);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 验证机制①：安装时初始化超管密钥——env 未给出即自动生成并落 `gw_meta`，
+    /// 二次启动复用同一枚；env 给出则以 env 为准。
+    #[test]
+    fn install_initializes_admin_token_once() {
+        let db = temp_db("autogen");
+        let empty = dotenv(&[]);
+        let cfg = GatewayConfig::build(&empty, &db).unwrap();
+        let generated = cfg
+            .store
+            .meta_get(META_ADMIN_TOKEN)
+            .unwrap()
+            .expect("首次安装应生成超管密钥");
+        assert!(
+            generated.starts_with("lf_") && generated.len() == 43,
+            "{generated}"
+        );
+        assert!(cfg.admin.matches(&generated));
+        drop(cfg);
+        // 重启复用：不漂移（否则用户手上的密钥会失效）
+        let again = GatewayConfig::build(&empty, &db).unwrap();
+        assert_eq!(
+            again.store.meta_get(META_ADMIN_TOKEN).unwrap().as_deref(),
+            Some(generated.as_str())
+        );
+        assert!(again.admin.matches(&generated));
+        // env 优先于安装生成的那枚
+        let env_token = "k".repeat(64);
+        let with_env = dotenv(&[("LANGFIXER_ADMIN_TOKEN", &env_token)]);
+        let cfg = GatewayConfig::build(&with_env, &db).unwrap();
+        assert!(cfg.admin.matches(&env_token) && !cfg.admin.matches(&generated));
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 超管会话用伪 id 入库（可被 resolve 认出为 admin）+ 单机 owner 激活标记可读写。
+    #[test]
+    fn admin_pseudo_session_and_owner_claim_marker() {
+        let db = temp_db("admin-session");
+        let store = TokenStore::open(&db).unwrap();
+        let sid = store.create_session(ADMIN_TOKEN_ID).unwrap();
+        assert_eq!(
+            store.resolve_session(&sid).unwrap().as_deref(),
+            Some(ADMIN_TOKEN_ID)
+        );
+        store.end_session(&sid).unwrap();
+        assert!(store.resolve_session(&sid).unwrap().is_none());
+        // 激活标记：缺省未激活，写一次即持久（此后单机设置写入要求登录态）
+        assert!(store.meta_get(META_OWNER_CLAIMED).unwrap().is_none());
+        store.meta_set(META_OWNER_CLAIMED, "1").unwrap();
+        assert_eq!(
+            store.meta_get(META_OWNER_CLAIMED).unwrap().as_deref(),
+            Some("1")
+        );
         let _ = std::fs::remove_file(&db);
     }
 

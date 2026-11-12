@@ -1,8 +1,9 @@
-//! 免注册登录面：一个评审令牌换一枚短时效会话 cookie，无注册、无找回密码、无用户资料。
+//! 免注册登录面：一枚令牌（评审或超管）换一枚短时效会话 cookie，
+//! 无注册、无找回密码、无用户资料。产品界面在验证通过前不展示（前端门禁页）。
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::header::{HeaderMap, SET_COOKIE};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
@@ -10,7 +11,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::auth::{GatewayConfig, SESSION_TTL_SECS};
+use crate::auth::{
+    ADMIN_TOKEN_ID, AuthContext, GatewayConfig, META_OWNER_CLAIMED, RequestScope, SESSION_TTL_SECS,
+};
 use crate::routes::ApiError;
 
 pub fn router(cfg: Arc<GatewayConfig>) -> Router {
@@ -30,18 +33,30 @@ async fn create_session(
     State(cfg): State<Arc<GatewayConfig>>,
     Json(body): Json<SessionReq>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if !cfg.enabled {
-        return Ok(StatusCode::NO_CONTENT.into_response()); // 单机形态无需会话
-    }
-    let info = cfg
+    let (tid, label, admin) = if cfg.admin.matches(&body.token) {
+        (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
+    } else if let Some(info) = cfg
         .store
         .verify_token(&body.token)
         .map_err(ApiError::Internal)?
-        .ok_or_else(|| ApiError::Unauthorized("令牌无效或已吊销".into()))?;
-    let sid = cfg
-        .store
-        .create_session(&info.id)
-        .map_err(ApiError::Internal)?;
+    {
+        (info.id, info.label, false)
+    } else {
+        return Err(ApiError::Unauthorized("令牌无效或已吊销".into()));
+    };
+    // 单机形态没有评审令牌体系：只有超管密钥能建会话
+    if !cfg.enabled && !admin {
+        return Err(ApiError::Unauthorized(
+            "单机形态仅支持超级管理员密钥".into(),
+        ));
+    }
+    // 单机形态首次超管登录 = owner 激活：设置写入自此要求登录态（此前保持零变化）
+    if admin && !cfg.enabled {
+        cfg.store
+            .meta_set(META_OWNER_CLAIMED, "1")
+            .map_err(ApiError::Internal)?;
+    }
+    let sid = cfg.store.create_session(&tid).map_err(ApiError::Internal)?;
     let secure = if cfg.cookie_secure { "; Secure" } else { "" };
     Ok((
         StatusCode::OK,
@@ -51,7 +66,11 @@ async fn create_session(
                 "lf_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}{secure}"
             ),
         )],
-        Json(serde_json::json!({ "token_id": info.id, "label": info.label })),
+        Json(serde_json::json!({
+            "token_id": if admin { serde_json::Value::Null } else { serde_json::json!(tid) },
+            "label": label,
+            "admin": admin,
+        })),
     )
         .into_response())
 }
@@ -78,15 +97,13 @@ async fn logout(
 }
 
 async fn whoami(
-    State(cfg): State<Arc<GatewayConfig>>,
-    req: axum::extract::Request,
+    Extension(ctx): Extension<AuthContext>,
+    Extension(scope): Extension<RequestScope>,
 ) -> impl IntoResponse {
-    let scope = req.extensions().get::<crate::auth::RequestScope>().cloned();
-    let is_admin = scope.as_ref().is_some_and(|s| s.is_admin);
-    let token_id = scope.and_then(|s| s.token_id);
     Json(serde_json::json!({
-        "gateway": cfg.enabled,
-        "admin": is_admin,
-        "token_id": token_id,
+        "gateway": ctx.gateway,
+        "admin": ctx.admin,
+        "token_id": scope.token_id,
+        "authenticated": ctx.authed,
     }))
 }
