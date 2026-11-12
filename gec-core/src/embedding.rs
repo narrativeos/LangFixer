@@ -100,11 +100,10 @@ impl EmbeddingEngine {
             "model": self.config.model,
             "input": text,
         });
-        let mut req = self
-            .client
-            .post(&url)
-            .json(&body)
-            .header("Content-Type", "application/json");
+        // `.json()` 已经带上 `content-type: application/json`；再 `.header(...)` 走的是
+        // **追加**语义，会发出两个同名头（严格的 OpenAI 兼容网关会把请求体判成无效，
+        // 阿里云 compatible-mode 就回「Model not exist.」）——不要再手工设。
+        let mut req = self.client.post(&url).json(&body);
         if !self.config.api_key.is_empty() {
             req = req.bearer_auth(&self.config.api_key);
         }
@@ -157,11 +156,10 @@ impl EmbeddingEngine {
             "model": self.config.model,
             "input": texts,
         });
-        let mut req = self
-            .client
-            .post(&url)
-            .json(&body)
-            .header("Content-Type", "application/json");
+        // `.json()` 已经带上 `content-type: application/json`；再 `.header(...)` 走的是
+        // **追加**语义，会发出两个同名头（严格的 OpenAI 兼容网关会把请求体判成无效，
+        // 阿里云 compatible-mode 就回「Model not exist.」）——不要再手工设。
+        let mut req = self.client.post(&url).json(&body);
         if !self.config.api_key.is_empty() {
             req = req.bearer_auth(&self.config.api_key);
         }
@@ -330,5 +328,70 @@ mod tests {
             ..Default::default()
         });
         engine.warmup().await.unwrap();
+    }
+
+    /// 严格网关 mock：`content-type` 出现多于一个值就按真实网关的行为回 400
+    /// （阿里云 compatible-mode 对无法解析的请求体正是报「Model not exist.」），
+    /// 用来守住「`.json()` 之后不得再 `.header("Content-Type", …)`」——
+    /// reqwest 的同名 header 是追加语义，宽松服务端容忍、严格网关直接判死。
+    async fn strict_content_type_server() -> String {
+        use axum::extract::Request;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(|req: Request| async move {
+                let values = req
+                    .headers()
+                    .get_all(axum::http::header::CONTENT_TYPE)
+                    .iter()
+                    .count();
+                let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+                    .await
+                    .unwrap_or_default();
+                let req_json: serde_json::Value =
+                    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                let n = req_json["input"].as_array().map_or(1, |a| a.len());
+                if values != 1 {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!({
+                            "error": {
+                                "message": "Model not exist.",
+                                "type": "invalid_request_error",
+                                "code": "model_not_found"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+                let data: Vec<serde_json::Value> = (0..n)
+                    .map(|i| serde_json::json!({ "index": i, "embedding": [1.0, 0.0] }))
+                    .collect();
+                (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({ "data": data })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn embed_sends_exactly_one_content_type() {
+        let endpoint = strict_content_type_server().await;
+        let engine = EmbeddingEngine::new(EmbeddingConfig {
+            endpoint,
+            ..Default::default()
+        });
+        // 单条与批量两条路径都必须只带一个 content-type
+        assert_eq!(engine.embed("测试").await.unwrap(), vec![1.0, 0.0]);
+        assert_eq!(engine.embed_batch(&["a", "b"]).await.unwrap().len(), 2);
     }
 }

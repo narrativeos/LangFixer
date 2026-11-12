@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **嵌入服务「Model not exist.」**（`gec-core/src/embedding.rs`）：`.json()` 之后又 `.header("Content-Type", "application/json")` 走的是 reqwest 的**追加**语义，请求实际带两个同名 `content-type`。宽松服务端容忍，严格的 OpenAI 兼容网关（实测阿里云 DashScope compatible-mode）把请求体判成无效并回 `400 {"error":{"message":"Model not exist.","code":"model_not_found"}}`——与模型名无关，配置怎么改都失败。现由 `.json()` 单独设置该头，并补 mock 严格网关回归测试（`embed_sends_exactly_one_content_type`，同名头多于一个即判 400）；`embed` / `embed_batch` 两条路径同修
+
 ### 新增
 
 - **密钥分发界面用量统计**：`GET /admin/tokens` 一条 SQL 带出每枚密钥的日账读数（`used_today` / `used_retained` / `days_used` / `last_day`），`GET /admin/stats` 增 `chars_today` / `chars_retained` / `retention_days`；「接入 → 密钥分发」表格加「今日用量」（含配额进度条与今日剩）与「累计 / 最近」两列，摘要行显示在途会话与保留期内合计字符数。口径如实标注为**保留期内**累计——日账跟检测文本一起按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）清理，不是历史总量；调用级日志（谁何时调了哪个端点）仍未做，`docs/GATEWAY_AUTH.md` 记录了两档补法
