@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **质量指标定版**（EVOLUTION.md §8「2026-11-12 · 质量指标定版」）：capability
+  全集两份报告（mucgec 1137 句 / jfleg 1501 句，seed 42，按 gold 全集行数收敛，
+  网关健康门下 `llm_ran` 100%）。句级门控 mucgec P/R **0.975/0.850**、jfleg
+  **0.954/0.944**；编辑级严格 Fβ 0.0134 / 0.1038（generic 臂支配，与 §8 P0 的
+  cec3 微调臂不可横向比；3090 新 gec 模型出来后补对比版）。报告
+  `20261112T223729Z_{mucgec,jfleg}_current_capability` 随本条入库。
 - **调用级日志（`gw_call_log`）**：网关形态下每个经过鉴权门的请求记一行
   （`ts / token_id / endpoint / status / latency_ms`）——「谁在几点调了哪个端点、
   被拒的 401/403 尝试」从此可查（D1 遗留项落地）。立场与红线：
@@ -22,6 +28,13 @@
 
 ### 修复
 
+- **jfleg 的 strict 命中恒为 0——量具坐标系错位**（11-12 定版抓到：4489 条预测、
+  0 条严格命中，中文链路数字却正常）：JFLEG gold 按 `make_gold.py` 明文口径「S/D
+  span 含尾随空白、插入锚点取下词起点」，而生产侧 LLM 句级 diff 的预测 span 词界
+  精确（gold `[56,64]` vs 预测 `[56,63]`），strict 键 (op, ref, span) 永远差一个
+  空白位——英文数字是量具问题，不是检测能力。`eval_server.norm_span` 把严格键与
+  重叠判定归一到同一空白不敏感坐标（中文恒等变换，zh 全集数字与修复前逐位一致）；
+  selftest 补英文坐标系用例。修复后 jfleg 严格 P/R/Fβ = 0.1559/0.0444/0.1038。
 - **评审密钥可以改写共享规则库、重训模型、起长跑**（网关形态可达面没收住，11-12
   评委体验走查发现）：`/gec/l3/retrain`、`/gec/agent/run`（带自主档写工具）、
   `/gec/eval/run`、`/gec/llm-feedback`（`adopt` → `adopt_as_rule`）、
