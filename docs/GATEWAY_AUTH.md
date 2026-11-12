@@ -1,6 +1,7 @@
 # 评测通道（网关形态）设计
 
-> 状态：D1（身份层）+ D2（owner 隔离 + 配额计量 + 全局视图收口）+ D3（清理 timer + 公网部署）已落地，评测通道已上线。
+> 状态：D1（身份层）+ D2（owner 隔离 + 配额计量 + 全局视图收口）+ D3（清理 timer + 公网部署）
+> + D4（验证机制：安装初始化超管密钥 + 界面门禁 + 管理面密钥分发）已落地，评测通道已上线。
 > 目标：大赛评测要求「公网 URL + 免注册测试账号」，产品主体仍是单机形态——
 > 认证只存在于网关形态这一层薄壳，核心引擎一行不动。
 
@@ -8,7 +9,7 @@
 
 | 形态 | 触发 | 行为 |
 |---|---|---|
-| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 鉴权整体关闭，与接入前完全一致 |
+| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 鉴权整体关闭，与接入前完全一致；仅「设置写入」在 owner 认领后要求登录态（见下节） |
 | 网关 | `LANGFIXER_GATEWAY=1` | 全部业务端点要求评审令牌；`/admin/*` 只认超管令牌 |
 
 配置见 `.env.example`。进程环境优先于 `.env`；`.env` 不入库（已在 `.gitignore`）。
@@ -17,7 +18,8 @@
 
 - **评审令牌** `lf_<40hex>`：超管经 `POST /admin/tokens` 签发，**明文只在签发响应出现一次**，库中只存 SHA-256 摘要；Bearer 直连与「换会话 cookie」两条路共用同一校验；未来 MCP 面（D2）挂同一 middleware，即「web 与 MCP 共同一套 token」。
 - **会话**：`POST /auth/session {"token": "…"}` 换 12h httpOnly cookie（免注册、无找回密码、无用户资料）；`/auth/logout` 注销。
-- **超级管理员令牌**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`）：
+- **超级管理员令牌**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`；
+  **不设则首次启动自动生成 `lf_<40hex>`**，见下节）：
   - 唯一**不进数据库**的凭证，内存只留摘要；
   - 只走 Bearer、**永不下发 cookie**、不占评审归户与配额；
   - 是唯一可达 `/admin/*` 的凭证——评审令牌打 admin 一律 403；
@@ -57,6 +59,37 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
   （`GATEWAY_MODE` 进程闸；单机形态复用链零变化）——否则 B 复用 A 的同文本记录会
   「复用即不写新历史」，在 B 的归属账上留下空洞。
 
+## D4：验证机制（安装初始化 + 界面门禁，已落地）
+
+产品形态是「装完即用」，参赛要求是「不验证不露界面」，两条都靠这层薄壳守住，核心引擎零改动。
+
+1. **超管密钥安装初始化**：env 未设 `LANGFIXER_ADMIN_TOKEN` 时首次启动自动生成
+   `lf_<40hex>` 并持久化到 auth.db `gw_meta.admin_token`——**重启复用不漂移**（否则用户手上
+   那把会失效），明文只在生成那一次的启动日志出现一次；env 设了则以 env 为准
+   （设了但 <32 字符仍按配置错误拒绝启动）。库里其余凭证只有摘要。
+2. **验证前不露界面**：`GET /auth/whoami` 匿名可用（不进 gate），回
+   `{gateway, admin, token_id, authenticated, locked}`。`locked` = 界面是否需要验证：
+   网关形态恒 `true`；单机形态看 `gw_meta.owner_claimed`。前端 `showGate` / `showApp` 二选一，
+   未验证时整个产品界面（header 与主区）不渲染；密钥只进 `sessionStorage`（关标签页即失效，
+   不落 localStorage），`?token=` 直链登录后立即从地址栏剥掉。
+3. **单机「零变化」口径收窄**：业务端点仍全开放、桌面端 `invoke` 不走 HTTP 完全不受门禁影响；
+   **只有设置写入**（`PUT /gec/settings`、`/gec/settings/test`）在 owner 认领后要求已验证凭证。
+   认领动作 = 超管首次成功换会话时置 `owner_claimed`；单机形态未认领时「接入」页是唯一的
+   「认领并锁定设置」入口（此时界面照常敞开，不增加任何安装摩擦）。
+4. **配置面收口**：网关形态配置写入与探测仅超管可达（其余 **403**）；非超管 `GET /gec/settings`
+   时 LLM / embedding 的 `api_key` 回 `***`（超管读明文，用于自检）。
+5. **两种分发形态**（管理界面 `接入` 页，服务端 `/admin/tokens` 同一张表）：
+   **Web 直链** `https://…/?token=<密钥>` 打开即自动进入；**MCP 配置** JSON
+   （`mcpServers.langfixer = {url: /mcp, headers.Authorization: Bearer …}`）。
+   两者共用同一枚密钥与同一份配额。普通密钥用户只能导出**自己这一枚**的配置——
+   签发入口只对超管出现，服务端同样只认超管进 `/admin/*`。
+6. 超管会话在 `gw_sessions` 用伪 id `~admin`，可进管理面但不发配额、不进 owner 归户；
+   桌面端（Tauri）恒视为已验证超管。
+
+冒烟口径：两形态 17 项（安装生成 + 激活前后设置写入 + 脱敏 + 403/401/403 + 会话与 admin 面）
+见 `docs/GATEWAY_AUTH.md` 提交说明；界面口径见「两形态浏览器实测」——网关未登录只见门禁页、
+评审零 403 零 console error、单机装完即用无门禁。
+
 ## 部署红线
 
 - 冒烟 / 联调必须用 `GEC_DB_FILE=/tmp/….db` 与 `LANGFIXER_AUTH_DB` 隔离两个库——
@@ -69,6 +102,7 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 
 - D2：请求体计入 `quota_chars` 并超限 429；业务查询按 `RequestScope.token_id` 过滤（owner 隔离）；MCP `/mcp` 复用同一 gate。✅（已完成）
 - D3：过期文本 systemd timer 清理；Caddy 站点与部署件（`deploy/gateway/`）。✅（公网已上线验证：https://langfixer.jiulu.ltd，web/MCP 同一令牌；LLM 兜底经 litellm 隧道接 Qwen3.8；中文分词由 narrative-operator-nlp sidecar 提供）
+- D4：验证机制——安装初始化超管密钥、token 门禁页、管理界面密钥分发（Web 直链 + MCP 配置）。✅（见上节）
 
 ## 公网部署形态（deploy/gateway/）
 
