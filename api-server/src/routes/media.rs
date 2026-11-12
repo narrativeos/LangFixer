@@ -84,6 +84,8 @@ fn flow_err_from_api(e: ApiError) -> FlowError {
         ApiError::BadRequest(m) => FlowError::BadRequest(m),
         ApiError::NotFound(m) => FlowError::NotFound(m),
         ApiError::Unauthorized(m) => FlowError::BadRequest(m),
+        // 网关拒绝与配额超限不应由载体编排触发；按内部错误如实上报
+        ApiError::Forbidden(m) | ApiError::TooManyRequests(m) => FlowError::Internal(m),
         ApiError::Upstream(m) => FlowError::Upstream(m),
         ApiError::ServiceUnavailable(m) => FlowError::Unavailable(m),
         ApiError::Internal(m) => FlowError::Internal(m),

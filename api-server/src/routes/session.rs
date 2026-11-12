@@ -11,11 +11,17 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use shared_model::{SessionMeta, SessionRecord};
 
+use crate::auth::Tenant;
 use crate::routes::ApiError;
 use crate::state::AppState;
+
+/// 网关形态拒绝跨会话全局视图/批量操作（语义在 `Tenant::deny_gateway`，全局唯一一份）。
+fn deny_gateway(tenant: &Tenant, what: &str) -> Result<(), ApiError> {
+    tenant.deny_gateway(what)
+}
 
 #[derive(serde::Deserialize)]
 pub struct CreateSessionRequest {
@@ -28,6 +34,7 @@ pub struct CreateSessionRequest {
 /// POST /gec/sessions — 创建会话
 pub async fn create(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionMeta>, ApiError> {
     let local = uuid::Uuid::new_v4().simple().to_string();
@@ -37,14 +44,18 @@ pub async fn create(
     };
     let meta = SessionMeta::new(&session_id, &req.lang);
     state.sessions.get_or_create(&session_id, &req.lang);
+    // 网关形态：新会话即刻绑定当前账号
+    tenant.guard_session(&session_id)?;
     Ok(Json(meta))
 }
 
 /// GET /gec/sessions/:id — 获取会话详情
 pub async fn get(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionRecord>, ApiError> {
+    tenant.guard_session(&id)?;
     let record = state
         .sessions
         .get(&id)
@@ -56,18 +67,22 @@ pub async fn get(
 /// 用户采纳确认的错误，同类型 + 同原文 + 同修正聚合，按最近出现倒序）
 pub async fn mistakes(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
-) -> Json<Vec<shared_model::Mistake>> {
-    Json(state.sessions.list_mistakes(&id))
+) -> Result<Json<Vec<shared_model::Mistake>>, ApiError> {
+    tenant.guard_session(&id)?;
+    Ok(Json(state.sessions.list_mistakes(&id)))
 }
 
 /// GET /gec/sessions/:id/review — 到期复习队列（Phase 2 间隔复习；
 /// 未复习过或已到下次复习时间的错题，已掌握不进入）
 pub async fn review_queue(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
-) -> Json<Vec<shared_model::Mistake>> {
-    Json(state.sessions.list_review_queue(&id))
+) -> Result<Json<Vec<shared_model::Mistake>>, ApiError> {
+    tenant.guard_session(&id)?;
+    Ok(Json(state.sessions.list_review_queue(&id)))
 }
 
 #[derive(serde::Deserialize)]
@@ -98,9 +113,11 @@ impl ReviewRequest {
 /// （FSRS 四键间隔复习调度：间隔按记忆状态与评分个性化递增，到期 ≥30 天已掌握；again → 次日再练）
 pub async fn review_mistake(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path((id, mid)): Path<(String, i64)>,
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tenant.guard_session(&id)?;
     let rating = req.resolve()?;
     let ok = state.sessions.record_review(&id, mid, rating);
     if !ok {
@@ -115,8 +132,10 @@ pub async fn review_mistake(
 /// （还原复习前记忆状态；每卡仅一次，时间窗由 UI 侧把关）
 pub async fn undo_review_mistake(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path((id, mid)): Path<(String, i64)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tenant.guard_session(&id)?;
     if !state.sessions.undo_review(&id, mid) {
         return Err(ApiError::NotFound(format!(
             "mistake#{mid}（session#{id}）无可撤销的复习"
@@ -128,8 +147,10 @@ pub async fn undo_review_mistake(
 /// PUT /gec/sessions/:id/archive — 归档
 pub async fn archive(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tenant.guard_session(&id)?;
     let ok = state.sessions.archive(&id);
     if !ok {
         return Err(ApiError::NotFound(format!("session#{} 不存在", id)));
@@ -142,8 +163,10 @@ pub async fn archive(
 /// PUT /gec/sessions/:id/restore — 恢复
 pub async fn restore(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tenant.guard_session(&id)?;
     let ok = state.sessions.restore(&id);
     if !ok {
         return Err(ApiError::NotFound(format!("session#{} 不存在", id)));
@@ -177,41 +200,53 @@ pub struct SessionProfileRequest {
 
 pub async fn update_profile(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
     Json(req): Json<SessionProfileRequest>,
-) -> Json<SessionRecord> {
+) -> Result<Json<SessionRecord>, ApiError> {
+    tenant.guard_session(&id)?;
     let lang = req.lang.unwrap_or_else(|| "zh".into());
-    Json(
-        state
-            .sessions
-            .set_profile(&id, &lang, req.native_language, req.cefr),
-    )
+    Ok(Json(state.sessions.set_profile(
+        &id,
+        &lang,
+        req.native_language,
+        req.cefr,
+    )))
 }
 
 pub async fn record(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
     Json(req): Json<SessionRecordRequest>,
-) -> Json<SessionRecord> {
+) -> Result<Json<SessionRecord>, ApiError> {
+    tenant.guard_session(&id)?;
     let now = chrono::Utc::now().to_rfc3339();
-    Json(
-        state
-            .sessions
-            .record_error(&id, &req.lang, &req.error_type, &now),
-    )
+    Ok(Json(state.sessions.record_error(
+        &id,
+        &req.lang,
+        &req.error_type,
+        &now,
+    )))
 }
 
 /// DELETE /gec/sessions/:id — 删除单条（级联删除 detect_history）
 pub async fn remove(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tenant.guard_session(&id)?;
     let ok = state.sessions.remove(&id);
     if !ok {
         return Err(ApiError::NotFound(format!("session#{} 不存在", id)));
     }
     // 级联删除该 session 的所有历史记录
     let _ = state.detect_history.remove_by_session(&id);
+    // 解除归属绑定（避免同 ID 幽灵占用；单机形态无操作）
+    if let Some((_, cfg)) = tenant.metered() {
+        let _ = cfg.store.unbind_session(&id);
+    }
     Ok(Json(
         serde_json::json!({ "deleted": true, "session_id": id }),
     ))
@@ -226,8 +261,10 @@ pub struct DeleteAllQuery {
 /// DELETE /gec/sessions?lang= — 批量删除
 pub async fn remove_all(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Query(q): Query<DeleteAllQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    deny_gateway(&tenant, "按语言批量删除（会波及他账号会话）")?;
     // 简化：清空所有 session（后续可按 lang 过滤）
     let _ = q.lang;
     let n = state.sessions.clear();
@@ -253,8 +290,10 @@ use shared_model::profile::{
 /// GET /gec/sessions/:id/analysis — 会话统一错误画像
 pub async fn analysis(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<String>,
 ) -> Result<Json<ErrorProfile>, ApiError> {
+    tenant.guard_session(&id)?;
     let mistakes = state.sessions.list_mistakes(&id);
     if !mistakes.is_empty() {
         let observations = observations_from_mistakes(&mistakes);
@@ -301,8 +340,10 @@ pub async fn analysis(
 /// GET /gec/mistakes — 全局错题本（跨会话聚合；`sessions_seen` = 出现会话数）
 pub async fn global_mistakes(
     State(state): State<Arc<AppState>>,
-) -> Json<Vec<shared_model::Mistake>> {
-    Json(state.sessions.list_global_mistakes())
+    Extension(tenant): Extension<Tenant>,
+) -> Result<Json<Vec<shared_model::Mistake>>, ApiError> {
+    deny_gateway(&tenant, "全局错题本")?;
+    Ok(Json(state.sessions.list_global_mistakes()))
 }
 
 /// GET /gec/stats — 学习统计（D1）：近 N 天逐日采纳/复习计数 + 窗口内评分分布 + 全时累计
@@ -313,24 +354,30 @@ pub struct StatsQuery {
 
 pub async fn learning_stats(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Query(q): Query<StatsQuery>,
-) -> Json<shared_model::session_store::LearningStats> {
-    Json(state.sessions.learning_stats(q.days.unwrap_or(30)))
+) -> Result<Json<shared_model::session_store::LearningStats>, ApiError> {
+    deny_gateway(&tenant, "学习统计")?;
+    Ok(Json(state.sessions.learning_stats(q.days.unwrap_or(30))))
 }
 
 /// GET /gec/review — 全局到期复习队列（跨会话；已掌握不进入）
 pub async fn global_review_queue(
     State(state): State<Arc<AppState>>,
-) -> Json<Vec<shared_model::Mistake>> {
-    Json(state.sessions.list_global_review_queue())
+    Extension(tenant): Extension<Tenant>,
+) -> Result<Json<Vec<shared_model::Mistake>>, ApiError> {
+    deny_gateway(&tenant, "全局复习队列")?;
+    Ok(Json(state.sessions.list_global_review_queue()))
 }
 
 /// POST /gec/mistakes/:gid/review — 全局错题复习结果（FSRS 四键调度挂在错题键上）
 pub async fn review_global_mistake(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(gid): Path<i64>,
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    deny_gateway(&tenant, "全局错题复习")?;
     let rating = req.resolve()?;
     if !state.sessions.record_global_review(gid, rating) {
         return Err(ApiError::NotFound(format!(
@@ -343,8 +390,10 @@ pub async fn review_global_mistake(
 /// POST /gec/mistakes/:gid/review/undo — 撤销全局错题最近一次复习
 pub async fn undo_global_review(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(gid): Path<i64>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    deny_gateway(&tenant, "全局错题撤销")?;
     if !state.sessions.undo_global_review(gid) {
         return Err(ApiError::NotFound(format!(
             "global mistake#{gid} 无可撤销的复习"
@@ -355,14 +404,18 @@ pub async fn undo_global_review(
 
 /// GET /gec/analysis — 全局统一错误画像（确认错误基准，跨会话；
 /// 不回退 detected——全局层面未采纳建议不应污染画像）
-pub async fn global_analysis(State(state): State<Arc<AppState>>) -> Json<ErrorProfile> {
+pub async fn global_analysis(
+    State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
+) -> Result<Json<ErrorProfile>, ApiError> {
+    deny_gateway(&tenant, "全局错误画像")?;
     let mistakes = state.sessions.list_global_mistakes();
     let observations = observations_from_mistakes(&mistakes);
     let summary = mastery_summary_from_mistakes(&mistakes);
-    Json(build_error_profile(
+    Ok(Json(build_error_profile(
         "global",
         BASIS_CONFIRMED,
         &observations,
         Some(summary),
-    ))
+    )))
 }

@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, Query, State};
+use axum::extract::{Extension, Json, Path, Query, State};
 use gec_core::{DetectOutcome, DetectorError};
 use serde::Deserialize;
 use shared_model::{Error, derive_issue_type, error_types, sources};
 
 use crate::APP_VERSION;
+use crate::auth::Tenant;
 use crate::cache::cache_key;
 use crate::routes::ApiError;
 use crate::state::AppState;
@@ -163,10 +164,17 @@ pub(crate) async fn run_detection(
         )));
     }
     let key = cache_key(lang, text);
+    // 网关形态：跳过进程级缓存与历史复用，每账号实时跑并自写历史（归属完整）
+    let gw = crate::auth::gateway_mode();
+    let cached = if gw {
+        None
+    } else {
+        state.as_ref().cache.get(&key)
+    };
 
     // 1. 基础结果（1 级：规则 + 决策模型，若启用）；
     //    level 2/3 或 force_llm 涉及 LLM 兜底（非确定性、不缓存）→ 实时跑完整级联
-    let (mut outcome, from_history) = match (level, force_llm, state.as_ref().cache.get(&key)) {
+    let (mut outcome, from_history) = match (level, force_llm, cached) {
         (1, false, Some(cached)) => (
             DetectOutcome {
                 errors: cached,
@@ -176,9 +184,12 @@ pub(crate) async fn run_detection(
         ),
         (1, false, None) => {
             // 历史复用：LRU 未命中 → 查同文本历史（参数一致 + 无 LLM 的最近记录）
-            if let Some(reused) =
+            let reused = if gw {
+                None
+            } else {
                 try_reuse_history(state.as_ref(), lang, text, category, level).await
-            {
+            };
+            if let Some(reused) = reused {
                 (reused, true)
             } else {
                 // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
@@ -385,9 +396,16 @@ async fn auto_adopt_anomalies(state: &AppState, lang: &str, errors: &[Error]) {
 /// POST /gec/detect — 检测文本中的语法错误（自动持久化到历史）
 pub async fn detect(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Query(q): Query<DetectQuery>,
     Json(req): Json<DetectRequest>,
 ) -> Result<Json<DetectResponse>, ApiError> {
+    // 网关形态：先按字符数计配额（超限 429），历史按账号伪会话归户
+    tenant.charge_chars(req.text.chars().count())?;
+    let gw_tag = tenant.history_tag();
+    if let Some(tag) = &gw_tag {
+        tenant.guard_session(tag)?;
+    }
     let (outcome, from_history) = run_detection(
         state.clone(),
         &req.lang,
@@ -418,7 +436,7 @@ pub async fn detect(
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
         tokio::spawn(async move {
             if let Err(e) = state.detect_history.insert(
-                None,
+                gw_tag.as_deref(),
                 &lang,
                 &text,
                 &errors_json,
@@ -463,10 +481,17 @@ pub struct DetectLangRequest {
 /// POST /gec/:lang/detect — 语言变体检测（lang 来自路径；自动持久化）
 pub async fn detect_lang(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(lang): Path<String>,
     Query(q): Query<DetectQuery>,
     Json(req): Json<DetectLangRequest>,
 ) -> Result<Json<DetectResponse>, ApiError> {
+    // 网关形态：先按字符数计配额（超限 429），历史按账号伪会话归户
+    tenant.charge_chars(req.text.chars().count())?;
+    let gw_tag = tenant.history_tag();
+    if let Some(tag) = &gw_tag {
+        tenant.guard_session(tag)?;
+    }
     let (outcome, from_history) = run_detection(
         state.clone(),
         &lang,
@@ -497,7 +522,7 @@ pub async fn detect_lang(
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
         tokio::spawn(async move {
             if let Err(e) = state.detect_history.insert(
-                None,
+                gw_tag.as_deref(),
                 &lang,
                 &text,
                 &errors_json,

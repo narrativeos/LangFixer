@@ -41,6 +41,10 @@ pub enum ApiError {
     NotFound(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    #[error("quota exceeded: {0}")]
+    TooManyRequests(String),
     #[error("upstream error: {0}")]
     Upstream(String),
     #[error("service unavailable: {0}")]
@@ -55,6 +59,8 @@ impl ApiError {
             ApiError::BadRequest(_) => http::StatusCode::BAD_REQUEST,
             ApiError::NotFound(_) => http::StatusCode::NOT_FOUND,
             ApiError::Unauthorized(_) => http::StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => http::StatusCode::FORBIDDEN,
+            ApiError::TooManyRequests(_) => http::StatusCode::TOO_MANY_REQUESTS,
             ApiError::Upstream(_) => http::StatusCode::BAD_GATEWAY,
             ApiError::ServiceUnavailable(_) => http::StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
