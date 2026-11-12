@@ -58,13 +58,8 @@ async fn issue_token(
 async fn list_tokens(
     State(cfg): State<Arc<GatewayConfig>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let rows = cfg.store.list().map_err(ApiError::Internal)?;
-    let tokens: Vec<_> = rows
-        .into_iter()
-        .map(|(id, label, quota_chars, revoked_at)| {
-            serde_json::json!({ "id": id, "label": label, "quota_chars": quota_chars, "revoked": revoked_at.is_some() })
-        })
-        .collect();
+    // 一条 SQL 带出用量（gw_usage 日账），界面据此显示「已用 / 配额」
+    let tokens = cfg.store.list_with_usage().map_err(ApiError::Internal)?;
     Ok(Json(serde_json::json!({ "tokens": tokens })))
 }
 
@@ -93,9 +88,17 @@ async fn delete_token(
 async fn stats(State(cfg): State<Arc<GatewayConfig>>) -> Result<Json<serde_json::Value>, ApiError> {
     let sessions = cfg.store.active_sessions().map_err(ApiError::Internal)?;
     let tokens = cfg.store.list().map_err(ApiError::Internal)?;
+    let (today, retained) = cfg.store.usage_totals().map_err(ApiError::Internal)?;
     Ok(Json(serde_json::json!({
         "tokens_total": tokens.len(),
         "tokens_active": tokens.iter().filter(|r| r.3.is_none()).count(),
         "active_sessions": sessions,
+        // 用量口径与清理 timer 同源：账只保留 LANGFIXER_RETENTION_DAYS 天（默认 7）
+        "chars_today": today,
+        "chars_retained": retained,
+        "retention_days": std::env::var("LANGFIXER_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(7),
     })))
 }

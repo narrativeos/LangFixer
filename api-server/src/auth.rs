@@ -120,6 +120,24 @@ pub struct TokenInfo {
     pub quota_chars: i64,
 }
 
+/// 管理面「密钥 + 用量」一行。用量取自 `gw_usage` 日账，因此
+/// `used_retained` 是**保留期内**累计（清理 timer 删掉的旧账不在其中）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TokenWithUsage {
+    pub id: String,
+    pub label: String,
+    pub quota_chars: i64,
+    pub revoked: bool,
+    /// 当日（UTC）已用字符数
+    pub used_today: i64,
+    /// 保留期内累计字符数
+    pub used_retained: i64,
+    /// 有用量的天数
+    pub days_used: i64,
+    /// 最近有记账的一天（UTC 日序；从未用过为 None）
+    pub last_day: Option<i64>,
+}
+
 /// 评审令牌 + 会话存储（独立 `auth.db`，与产品数据 `langfixer.db` 分离）。
 pub struct TokenStore {
     conn: Mutex<rusqlite::Connection>,
@@ -337,6 +355,62 @@ impl TokenStore {
             rusqlite::Error::QueryReturnedNoRows => Ok(0),
             other => Err(other.to_string()),
         })
+    }
+
+    /// 管理面用量视图（一条 SQL 出全部密钥，避免 N+1）。
+    ///
+    /// `used_retained` 只含 `gw_usage` 里还在的日账——retention timer 会按保留期删旧账，
+    /// 所以它是「保留期内累计」而不是历史总量（界面须如实标注，别写成总量）。
+    pub fn list_with_usage(&self) -> Result<Vec<TokenWithUsage>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id, t.label, t.quota_chars, t.revoked_at,
+                        COALESCE((SELECT chars FROM gw_usage u
+                                   WHERE u.token_id = t.id AND u.day = ?1), 0),
+                        COALESCE((SELECT SUM(chars) FROM gw_usage u
+                                   WHERE u.token_id = t.id), 0),
+                        COALESCE((SELECT COUNT(1) FROM gw_usage u
+                                   WHERE u.token_id = t.id), 0),
+                        (SELECT MAX(CAST(day AS INTEGER)) FROM gw_usage u
+                                   WHERE u.token_id = t.id)
+                 FROM access_tokens t ORDER BY t.created_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([Self::today()], |r| {
+                Ok(TokenWithUsage {
+                    id: r.get(0)?,
+                    label: r.get(1)?,
+                    quota_chars: r.get(2)?,
+                    revoked: r.get::<_, Option<i64>>(3)?.is_some(),
+                    used_today: r.get(4)?,
+                    used_retained: r.get(5)?,
+                    days_used: r.get(6)?,
+                    last_day: r.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 保留期内的用量总账（管理面概览）：今日合计与在账合计。
+    pub fn usage_totals(&self) -> Result<(i64, i64), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let today: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(chars), 0) FROM gw_usage WHERE day = ?1",
+                [Self::today()],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let retained: i64 = conn
+            .query_row("SELECT COALESCE(SUM(chars), 0) FROM gw_usage", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok((today, retained))
     }
 
     pub fn add_usage(&self, token_id: &str, chars: i64) -> Result<(), String> {
@@ -840,6 +914,35 @@ mod tests {
         assert_eq!(store.usage_today(&issued.id).unwrap(), 70);
         // 未知令牌：配额按 0（不限）读回，不报错
         assert_eq!(store.quota("tok_missing").unwrap(), 0);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 管理面用量视图：列表一次带出「今日 / 保留期内 / 天数 / 最近一天」，
+    /// 吊销位与配额同表读出（界面「密钥分发」的用量列就是它）。
+    #[test]
+    fn list_with_usage_reports_per_token_ledger() {
+        let db = temp_db("usage-list");
+        let store = TokenStore::open(&db).unwrap();
+        let a = store.issue("评审-用过", 200).unwrap();
+        let b = store.issue("评审-没用过", 0).unwrap();
+        store.add_usage(&a.id, 40).unwrap();
+        store.add_usage(&a.id, 30).unwrap();
+        store.revoke(&b.id).unwrap();
+
+        let rows = store.list_with_usage().unwrap();
+        assert_eq!(rows.len(), 2);
+        let ra = rows.iter().find(|r| r.id == a.id).unwrap();
+        assert_eq!((ra.used_today, ra.used_retained, ra.days_used), (70, 70, 1));
+        assert!(ra.last_day.is_some(), "有记账就应读出最近一天");
+        assert!(!ra.revoked);
+        assert_eq!(ra.quota_chars, 200);
+        let rb = rows.iter().find(|r| r.id == b.id).unwrap();
+        assert_eq!((rb.used_today, rb.used_retained, rb.days_used), (0, 0, 0));
+        assert_eq!(rb.last_day, None);
+        assert!(rb.revoked);
+
+        // 概览合计与逐令牌账同源
+        assert_eq!(store.usage_totals().unwrap(), (70, 70));
         let _ = std::fs::remove_file(&db);
     }
 }
