@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **密钥分发界面用量统计**：`GET /admin/tokens` 一条 SQL 带出每枚密钥的日账读数（`used_today` / `used_retained` / `days_used` / `last_day`），`GET /admin/stats` 增 `chars_today` / `chars_retained` / `retention_days`；「接入 → 密钥分发」表格加「今日用量」（含配额进度条与今日剩）与「累计 / 最近」两列，摘要行显示在途会话与保留期内合计字符数。口径如实标注为**保留期内**累计——日账跟检测文本一起按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）清理，不是历史总量；调用级日志（谁何时调了哪个端点）仍未做，`docs/GATEWAY_AUTH.md` 记录了两档补法
 - **验证机制（D4，`docs/GATEWAY_AUTH.md`）**：超管密钥装完即有——env 未设 `LANGFIXER_ADMIN_TOKEN` 时首次启动自动生成 `lf_<40hex>` 落 auth.db `gw_meta`（重启复用不漂移，明文只在生成那一次的启动日志出现一次；env 设了以 env 为准，设了但 <32 字符仍按配置错误拒绝启动）。界面按 `GET /auth/whoami` 的 `locked` 决定是否门禁（网关形态恒锁；单机形态看 owner 是否已认领），未验证前产品界面整体不渲染，密钥只进 `sessionStorage`、`?token=` 直链登录后即从地址栏剥掉。单机「零变化」口径收窄为：业务端点与桌面端 `invoke` 零变化，仅设置写入在 owner 认领后要求登录态（认领入口在「接入」页）。网关形态配置写入与探测仅超管可达（其余 403），非超管读设置时 LLM / embedding 密钥回 `***`。管理界面「接入 + 密钥分发」把一枚密钥变成两种分发形态——Web 直链与 MCP 配置 JSON（同一密钥、同一份配额）；普通密钥用户只能导出自己这一枚，签发与吊销只对超管开放
 - **评测通道 owner 隔离与配额（D2）**：网关形态下会话首次使用即绑定评审账号（跨账号 403），检测历史按账号伪会话 `s_gw:<token>` 归户（列表过滤 / 详情与删除跨账号 404），detect / analyze 按字符数日配额计量（越线 429，`quota_chars=0` 只记账）；清空全部 / 按语言批删 / 全局错题本等跨账号端点网关形态一律 403；网关形态跳过历史复用与进程级缓存保证每账号归属完整。单机形态全部行为零变化
 - **MCP 面（`POST /mcp`，`docs/GATEWAY_AUTH.md`）**：JSON-RPC 2.0 无状态形态（initialize / tools/list / tools/call / ping），工具集 = proofread / explain 检测管线 + agent 工具集全量；与 web 面同一道 gate、同一套 token、同一本字符配额账。网关形态只读工具直执行、写档一律返回提案不执行（executed:false + [confirm-required]，与 web 侧 Confirm gate 同源叙事）；单机形态全部直执行

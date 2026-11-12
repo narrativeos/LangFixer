@@ -20,7 +20,9 @@
 - **会话**：`POST /auth/session {"token": "…"}` 换 12h httpOnly cookie（免注册、无找回密码、无用户资料）；`/auth/logout` 注销。
 - **超级管理员令牌**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`；
   **不设则首次启动自动生成 `lf_<40hex>`**，见下节）：
-  - 唯一**不进数据库**的凭证，内存只留摘要；
+  - **env 设了则全程不进数据库**，内存只留摘要；**自动生成那把必须明文落 `gw_meta.admin_token`**
+    （否则重启就换一把，已分发的直链全废）——此时保护边界就是 `auth.db` 的文件权限，
+    多用户机器建议显式在 env 里设一把；
   - 只走 Bearer、**永不下发 cookie**、不占评审归户与配额；
   - 是唯一可达 `/admin/*` 的凭证——评审令牌打 admin 一律 403；
   - 泄露处置 = 改 `.env` 值 + 重启（改后即失效，开关即断）。
@@ -42,6 +44,22 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 
 存储：`auth.db`（独立于产品数据 `langfixer.db`，删文件即重置整条评测通道）。
 
+### 用量统计（密钥分发表上那一列）
+
+`GET /admin/tokens` 每枚密钥除 `id/label/quota_chars/revoked` 外带出日账读数，
+`GET /admin/stats` 带出合计，界面「密钥分发」直接渲染（今日用量 + 进度条 + 今日剩、累计 / 最近一天）：
+
+| 字段 | 口径 |
+| --- | --- |
+| `used_today` | 该枚密钥当日（UTC 日界）已计字符数，与配额判定同一行账 |
+| `used_retained` | **保留期内**累计（`gw_usage` 还在的日账之和）——清理 timer 按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）删旧账，**不是历史总量**，界面按此如实标注 |
+| `days_used` / `last_day` | 有记账的天数 / 最近一天（`gw_usage.day` 是 UTC 日序，读出时 `CAST` 成整数） |
+| `chars_today` / `chars_retained` / `retention_days` | `/admin/stats` 的实例级合计与账窗，老服务端无这三个字段时界面退回逐令牌求和 |
+
+只有**字符数日账**，没有调用级日志：谁在几点调了哪个端点、被拒的 401/403 尝试，
+当前既无 api-server 请求日志也未开 Caddy access log——要补就是「Caddy 加 `log` 一行」或
+「新表 `gw_call_log` + admin 读端点 + 界面列」两档，后者必须同时进 retention 与隐私声明。
+
 ## D2：owner 隔离与配额（已落地）
 
 - **身份键到业务的两个通道**：gate 为每个放行请求注入 `Tenant`（`Extension<Tenant>`）——
@@ -50,7 +68,11 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
   他人访问同一会话一律 **403**（fail-closed，含伪造他人 session_id 的 detect/analyze 请求体）；
 - **历史归属**：网关形态下 detect / detect_lang 把结果写入账号伪会话 `s_gw:<token_id>`
   （首次自动绑定），历史列表按归属过滤后内存分页，详情 / 删除跨账号一律 404（不泄露存在性）；
-  无归属行 fail-closed 隐藏；
+  无归属行 fail-closed 隐藏。公网实例两枚临时密钥对打实测：B 的历史列表看不到 A 的正文（0 行）、
+  B 拿 A 的 history id 直取详情与删除均 **404**、A 反向同样看不到 B 的正文，落库行归属逐条正确；
+- **超管会话不是评审身份**（`Tenant.token_id = None`）：因此不走归属过滤——「检测历史」对超管是
+  **全局视图**（运维口径，与直接读库等价），而超管自己打的 detect 落 `session_id` 为空的行，
+  对所有评审 fail-closed 隐藏。评审密钥之间严格互不可见；
 - **配额计量**（auth.db `gw_usage` 按 UTC 日聚合）：detect / detect_lang / analyze 在跑引擎前按字符数记账；
   令牌 `quota_chars > 0` 且本次越线 → **429**（不进引擎、不计入用量），`0` = 只记账不限速；
 - **网关形态收口的端点**（403 + 说明文案）：清空全部历史、按语言批量删会话、
