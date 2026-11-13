@@ -8,8 +8,12 @@
 
 - **L3 特征模型公网上线**（EVOLUTION.md §8「2026-11-13 · L3 特征模型公网上线」）：
   公网实例 4806 服务当日从无到有——sklearn 句级模型（45.8 万句训练特征，dev
-  F1 0.549）+ docker（python:3.12-slim）+ systemd `langfixer-l3`，`l3.enabled`
-  开回 true；level 2 恢复「规则 + L3 门控 + LLM 长尾」的真实三级形态。
+  F1 0.549）+ docker（python:3.12-slim）+ systemd `langfixer-l3`，`l3.enabled`  开回 true；level 2 恢复「规则 + L3 门控 + LLM 长尾」的真实三级形态。
+- **level 3 不得被 L3 门控终结全文 LLM**（L3 上线当日公网实测抓到）：③-F 定案
+  分支把 level 3 的 `need_llm` 也置 false，深度扫描退化为门控臂——内置示例
+  3 例有 2 例被句级「判定无错」放行（门控 R≈0.45），「漏报兜底」名存实亡。
+  level 3 定案错误照合并，但全文 LLM 无条件保留；level 2 放行语义不变。
+  反转 `cascade_level3_l3_*_skips_llm` 两用例并改名固化。
 - **质量指标定版**（EVOLUTION.md §8「2026-11-12 · 质量指标定版」）：capability
   全集两份报告（mucgec 1137 句 / jfleg 1501 句，seed 42，按 gold 全集行数收敛，
   网关健康门下 `llm_ran` 100%）。句级门控 mucgec P/R **0.975/0.850**、jfleg

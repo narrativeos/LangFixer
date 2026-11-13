@@ -531,8 +531,8 @@ pub struct CascadeDetector {
     pub decision: Option<Arc<DecisionGecEngine>>,
     /// 知识向量召回（可选；未配置嵌入引擎时为 None，静默跳过）
     pub knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
-    /// L3 特征模型（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
-    /// 未启用时为 None，level 3 回退「无条件 LLM」）
+    /// L3 特征模型（三期门控层：level 2 先跑特征模型，LLM 收缩到纯长尾；
+    /// level 3 定案仍合并但不终结全文 LLM（漏报兜底臂）；未启用时为 None）
     pub l3: Option<Arc<L3FeatureEngine>>,
     /// L3 **配置存在但显式关闭**（`enabled=false`）：level 2 门控视同「门控缺席」
     /// 开闸，回退无条件 LLM（[`crate::l3::L3FeatureConfig`] enabled 字段的文档口径）；
@@ -747,6 +747,8 @@ impl GecEngine for CascadeDetector {
         // 已在上方与 ①② **并行**跑完（`l3_res`）；
         // 高置信判定直接定案（有错 → 合并错误项；明确无错 → 放行），
         // LLM 收缩到纯长尾：仅特征模型弃权 / 服务不可用时才调用。
+        // **level 3 例外**：深度扫描的存在意义就是「漏报」兜底，句级门控
+        // （dev R≈0.45）不得终结全文 LLM——定案仍合并，但 need_llm 保持为真。
         // **部分定案**（`unreviewed_spans` 非空）：定案部分保留，灰区句不再全文
         // 兜底，改由 ③-T 定向 LLM 复查（成本 ≈ 灰区句长度）
         let mut targeted_spans: Vec<[usize; 2]> = Vec::new();
@@ -776,10 +778,10 @@ impl GecEngine for CascadeDetector {
                             tracing::warn!(
                                 "L3 特征模型判「明确无错」但决策模型弃权：模型冲突，保留 LLM 长尾兜底"
                             );
-                        } else {
+                        } else if level <= 2 {
                             need_llm = false;
                         }
-                    } else {
+                    } else if level <= 2 {
                         need_llm = false;
                     }
                 }
@@ -959,7 +961,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 det.l3 = Some(e);
                 tracing::info!(
                     lang,
-                    "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                    "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                 );
             }
             Arc::new(det)
@@ -984,7 +986,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     det.l3 = Some(e);
                     tracing::info!(
                         lang,
-                        "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                        "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                     );
                 }
                 Arc::new(det)
@@ -1004,7 +1006,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                         det.l3 = Some(e);
                         tracing::info!(
                             lang,
-                            "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                            "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                         );
                     }
                     Arc::new(det)
@@ -2107,7 +2109,8 @@ mod tests {
 
     /// L3 特征模型高置信命中 → 直接定案，不调用 LLM
     #[tokio::test]
-    async fn cascade_level3_l3_hit_skips_llm() {
+    async fn cascade_level3_l3_hit_still_runs_llm() {
+        // level 3（深度扫描）= 漏报兜底臂：L3 定案错误照合并，但全文 LLM 仍无条件跑
         let endpoint = mock_decision_service(true, false, 0.3).await;
         let l3ep = mock_l3_service(false, true, 0.9, true).await;
         let cascade = cascade_with_l3(
@@ -2123,25 +2126,29 @@ mod tests {
             .detect_level("他昨天报复很大。", 3, false, Some(&llm))
             .await
             .unwrap();
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "L3 错误 [0,6] 与规则 [0,2] 重叠 → 合并为 1 条: {:?}",
+        assert!(
+            outcome.errors.iter().any(|e| e.source.as_deref() == Some("l3"))
+                || outcome
+                    .layers
+                    .iter()
+                    .any(|l| l.layer == sources::FEATURE && l.status == "decided"),
+            "L3 定案结果应保留: {:?}",
             outcome.errors
         );
         assert!(
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "L3 高置信命中不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "level 3 不得被 L3 门控终结全文 LLM: {:?}",
             outcome.errors
         );
     }
 
-    /// L3 特征模型明确无错 + 决策模型也明确（非弃权）→ 放行，不调用 LLM
+    /// L3 明确无错 + 决策明确：level 3 仍**无条件**跑全文 LLM（漏报兜底）；
+    /// level 2 的放行语义见 cascade_level2_l3_confident_clean_skips_llm
     #[tokio::test]
-    async fn cascade_level3_l3_confident_clean_skips_llm() {
+    async fn cascade_level3_l3_confident_clean_still_runs_llm() {
         let endpoint = mock_decision_service(false, false, 0.1).await;
         let l3ep = mock_l3_service(false, false, 0.05, false).await;
         let cascade = cascade_with_l3(
@@ -2161,8 +2168,8 @@ mod tests {
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "特征模型明确无错且决策模型一致时不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "特征模型明确无错不得终结 level 3 全文 LLM: {:?}",
             outcome.errors
         );
     }

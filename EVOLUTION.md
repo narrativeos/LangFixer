@@ -574,7 +574,10 @@ arm=current / generic 臂 / 网关 Qwen3.8，LLM 触达率均 100%）：
 下午用 `feature-model/l3_data/zh/train.features.jsonl`（45.8 万句）训练真实 sklearn
 句级模型（22 维特征；dev 15000 句 acc 0.627 / P 0.694 / R 0.455 / F1 0.549），以
 docker（python:3.12-slim + scikit-learn==1.9.1）挂 `langfixer-l3.service`  systemd
-单元，绑定 127.0.0.1:4806，`l3.enabled` 原位开回 true。**决策层**同日由「退役」改
+单元，绑定 127.0.0.1:4806，`l3.enabled` 原位开回 true。上线当日公网实测抓到并修复
+一个门控语义洞：**level 3 定案不得终结全文 LLM**（深度扫描=漏报兜底臂，句级门控
+R≈0.45 曾把 3 例内置示例放行 2 例；engine ③-F 加 level 3 例外，level 2 放行不变）。
+**决策层**同日由「退役」改
 「待发布」（§13 #10 注）：线不放弃，待更合适的决策模型。遗留：3090 gec 新模型出来后
 补同载体对比版，并评估是否把 ELECTRA CTC 字级侧车（char_gate）一并上线。
 
