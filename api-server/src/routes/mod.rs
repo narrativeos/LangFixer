@@ -3,6 +3,7 @@ pub mod analyze;
 pub mod attribute;
 pub mod custom_words;
 pub mod detect;
+pub mod doc_jobs;
 pub mod eval;
 pub mod explain;
 pub mod feedback;
@@ -109,6 +110,20 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .route("/jobs/:id/apply", axum::routing::post(media::apply))
                 .route("/report", axum::routing::post(media::report))
                 .route("/reports/:id", axum::routing::get(media::report_file))
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        // ── 文档级审校作业（10 万字+：请求变作业，块级 checkpoint/断点续跑）──
+        .nest(
+            "/gec/doc-jobs",
+            Router::new()
+                .route(
+                    "/",
+                    axum::routing::post(doc_jobs::create).get(doc_jobs::list),
+                )
+                .route("/:id", axum::routing::get(doc_jobs::get))
+                .route("/:id/results", axum::routing::get(doc_jobs::results))
+                .route("/:id/cancel", axum::routing::post(doc_jobs::cancel))
+                .route("/:id/retry", axum::routing::post(doc_jobs::retry))
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/gec/eval/run", axum::routing::post(eval::run))

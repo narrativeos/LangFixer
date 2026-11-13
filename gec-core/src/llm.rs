@@ -293,22 +293,7 @@ impl LlmGecEngine {
                     if pf {
                         parse_failed += 1;
                     }
-                    let owned_len = c.owner[1] - c.owner[0];
-                    for mut err in errors {
-                        let cp = c.context_prefix;
-                        if err.span == [0, 0] {
-                            // 定位失败：落归属块起点零长占位（区别于 [0,0] 的文本开头误撞）
-                            err.span = [c.owner[0], c.owner[0]];
-                        } else if err.span[1] <= cp {
-                            // 完全落在上下文前缀：归上一块所有，丢弃（所有权图契约）
-                            continue;
-                        } else {
-                            let s = err.span[0].saturating_sub(cp).min(owned_len);
-                            let e = err.span[1].saturating_sub(cp).min(owned_len);
-                            err.span = [c.owner[0] + s, c.owner[0] + e];
-                        }
-                        out.push(err);
-                    }
+                    out.extend(remap_chunk_errors(&c, errors));
                 }
                 Err(e) => {
                     failed += 1;
@@ -336,6 +321,33 @@ impl LlmGecEngine {
             parse_failed_chunks: parse_failed,
         })
     }
+}
+
+/// 块结果重映射（所有权图契约，见 [`crate::docchunk`]）：
+/// - 完全落在上下文前缀区 → 丢弃（归上一块所有，结构上消除双报）；
+/// - 归属区内 → 平移回文档字节坐标（钳制在归属区）；
+/// - 定位失败（`[0,0]`）→ 归属块起点零长占位（不参与重叠去重，
+///   message 已带「未能定位」标注）。
+///
+/// `detect_document`（即席全文复查）与 `docjob`（作业编排）共用。
+pub(crate) fn remap_chunk_errors(chunk: &crate::docchunk::DocChunk, errors: Vec<Error>) -> Vec<Error> {
+    let owned_len = chunk.owner[1] - chunk.owner[0];
+    let cp = chunk.context_prefix;
+    errors
+        .into_iter()
+        .filter_map(|mut err| {
+            if err.span == [0, 0] {
+                err.span = [chunk.owner[0], chunk.owner[0]];
+            } else if err.span[1] <= cp {
+                return None;
+            } else {
+                let s = err.span[0].saturating_sub(cp).min(owned_len);
+                let e = err.span[1].saturating_sub(cp).min(owned_len);
+                err.span = [chunk.owner[0] + s, chunk.owner[0] + e];
+            }
+            Some(err)
+        })
+        .collect()
 }
 
 /// reqwest 传输层错误的完整原因链：`Display` 只到「error sending request for url (…)」，

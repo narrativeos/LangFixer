@@ -1,0 +1,597 @@
+//! 文档级审校作业（DocJob）：作业化编排 + 块级 checkpoint / 断点续跑
+//!
+//! 10 万字+ 的产品形态（调研结论：同步请求范式在文档级不成立）：
+//! - **请求变作业**：创建即切块落库（SQLite），后台并行执行，进度/结果随时可查；
+//! - **块是工作单元**：状态 `pending / done / failed / parse_failed` 逐块持久化，
+//!   每块完成即 checkpoint——进程重启 / 网络中断后 `run_doc_job` 只跑 pending 块；
+//! - **覆盖率是一等公民**：`done / total` 即深度复查覆盖率，失败/解析失败块
+//!   如实呈现，可 `reset_failed_chunks` 后重跑；
+//! - 取消：调用方置 `AtomicBool`，未开跑的块保持 pending（作业 `cancelled`）。
+//!
+//! 与 [`crate::llm::LlmGecEngine::detect_document`] 的分工：后者是「即席全文
+//! 复查」（同步、无持久化，供 level 3 / force_llm 路径）；本模块是持久化作业，
+//! 二者共用切块（[`crate::docchunk`]）与所有权重映射（`remap_chunk_errors`）。
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use rusqlite::{Connection, params};
+use shared_model::Error;
+
+use crate::detector::DetectorError;
+use crate::docchunk::{split_document, DocChunk};
+use crate::llm::{remap_chunk_errors, LlmGecEngine};
+
+/// 作业状态机：`created → running → done / cancelled`（`cancelling` 为过渡态）
+#[derive(Debug, Clone)]
+pub struct DocJob {
+    pub id: String,
+    pub lang: String,
+    pub text: String,
+    pub status: String,
+    pub params_json: Option<String>,
+    pub chunk_target: usize,
+    pub created_at: String,
+}
+
+/// 块行（send 文本不落库——切块确定性，由偏移 + 全文重建）
+#[derive(Debug, Clone)]
+pub struct ChunkRow {
+    pub index: usize,
+    pub owner: [usize; 2],
+    pub context_prefix: usize,
+    /// `pending / done / failed / parse_failed`
+    pub status: String,
+    pub result_json: Option<String>,
+    pub error: Option<String>,
+}
+
+impl ChunkRow {
+    fn doc_chunk<'a>(&self, text: &'a str) -> Option<DocChunk> {
+        let start = self.owner[0].checked_sub(self.context_prefix)?;
+        if self.owner[1] > text.len() || start > self.owner[0] {
+            return None;
+        }
+        Some(DocChunk {
+            owner: self.owner,
+            context_prefix: self.context_prefix,
+            send: text[start..self.owner[1]].to_string(),
+        })
+    }
+}
+
+/// 作业进度（覆盖率核算）
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DocJobProgress {
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+    pub parse_failed: usize,
+    pub pending: usize,
+}
+
+impl DocJobProgress {
+    /// 深度复查覆盖率：done / total（failed / parse_failed / pending 均**不算**已复查）
+    pub fn coverage(&self) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        self.done as f64 / self.total as f64
+    }
+}
+
+pub struct DocJobStore {
+    conn: Mutex<Connection>,
+}
+
+impl DocJobStore {
+    pub fn open(path: &Path) -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open(path)?;
+        Self::init(conn)
+    }
+
+    pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(conn: Connection) -> Result<Self, rusqlite::Error> {
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS doc_jobs(
+                 id TEXT PRIMARY KEY,
+                 lang TEXT NOT NULL,
+                 text TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 params_json TEXT,
+                 chunk_target INTEGER NOT NULL,
+                 created_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS doc_chunks(
+                 job_id TEXT NOT NULL,
+                 idx INTEGER NOT NULL,
+                 owner_start INTEGER NOT NULL,
+                 owner_end INTEGER NOT NULL,
+                 context_prefix INTEGER NOT NULL,
+                 status TEXT NOT NULL,
+                 result_json TEXT,
+                 error TEXT,
+                 llm_ms INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (job_id, idx)
+             );",
+        )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// 创建作业并切块落库（全部块 `pending`）。返回块数。
+    pub fn create_job(
+        &self,
+        id: &str,
+        lang: &str,
+        text: &str,
+        params_json: Option<&str>,
+        chunk_target: usize,
+    ) -> Result<usize, rusqlite::Error> {
+        let chunks = split_document(text, chunk_target);
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO doc_jobs(id, lang, text, status, params_json, chunk_target, created_at)
+             VALUES (?1, ?2, ?3, 'created', ?4, ?5, datetime('now'))",
+            params![id, lang, text, params_json, chunk_target as i64],
+        )?;
+        for (i, c) in chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO doc_chunks(job_id, idx, owner_start, owner_end, context_prefix, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+                params![
+                    id,
+                    i as i64,
+                    c.owner[0] as i64,
+                    c.owner[1] as i64,
+                    c.context_prefix as i64
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(chunks.len())
+    }
+
+    pub fn job(&self, id: &str) -> Result<Option<DocJob>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut q = conn
+            .prepare("SELECT id, lang, text, status, params_json, chunk_target, created_at FROM doc_jobs WHERE id = ?1")?;
+        let mut rows = q.query([id])?;
+        match rows.next()? {
+            Some(r) => Ok(Some(DocJob {
+                id: r.get(0)?,
+                lang: r.get(1)?,
+                text: r.get(2)?,
+                status: r.get(3)?,
+                params_json: r.get(4)?,
+                chunk_target: r.get::<_, i64>(5)? as usize,
+                created_at: r.get(6)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_jobs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(DocJobMeta, DocJobProgress)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut out = Vec::new();
+        let metas: Vec<DocJobMeta> = {
+            let mut q = conn
+                .prepare("SELECT id, lang, status, created_at FROM doc_jobs ORDER BY created_at DESC LIMIT ?1")?;
+            let rows = q.query_map([limit as i64], |r| {
+                Ok(DocJobMeta {
+                    id: r.get(0)?,
+                    lang: r.get(1)?,
+                    status: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })?;
+            rows.flatten().collect()
+        };
+        for m in metas {
+            let p = Self::progress_conn(&conn, &m.id)?;
+            out.push((m, p));
+        }
+        Ok(out)
+    }
+
+    pub fn set_status(&self, id: &str, status: &str) -> Result<(), rusqlite::Error> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE doc_jobs SET status = ?2 WHERE id = ?1", params![id, status])?;
+        Ok(())
+    }
+
+    fn progress_conn(conn: &Connection, id: &str) -> Result<DocJobProgress, rusqlite::Error> {
+        let mut q =
+            conn.prepare("SELECT status, COUNT(*) FROM doc_chunks WHERE job_id = ?1 GROUP BY status")?;
+        let mut p = DocJobProgress::default();
+        let rows = q.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        for (s, n) in rows.flatten() {
+            let n = n as usize;
+            p.total += n;
+            match s.as_str() {
+                "done" => p.done = n,
+                "failed" => p.failed = n,
+                "parse_failed" => p.parse_failed = n,
+                _ => p.pending += n,
+            }
+        }
+        Ok(p)
+    }
+
+    pub fn progress(&self, id: &str) -> Result<DocJobProgress, rusqlite::Error> {
+        Self::progress_conn(&self.conn.lock().unwrap(), id)
+    }
+
+    pub fn pending_chunks(&self, id: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
+        self.select_chunks(id, "status = 'pending'")
+    }
+
+    pub fn chunks(&self, id: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
+        self.select_chunks(id, "1 = 1")
+    }
+
+    fn select_chunks(&self, id: &str, cond: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut q = conn.prepare(&format!(
+            "SELECT idx, owner_start, owner_end, context_prefix, status, result_json, error
+             FROM doc_chunks WHERE job_id = ?1 AND {cond} ORDER BY idx"
+        ))?;
+        let rows = q.query_map([id], |r| {
+            Ok(ChunkRow {
+                index: r.get::<_, i64>(0)? as usize,
+                owner: [r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize],
+                context_prefix: r.get::<_, i64>(3)? as usize,
+                status: r.get(4)?,
+                result_json: r.get(5)?,
+                error: r.get(6)?,
+            })
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// 块级 checkpoint：完成一块即持久化（断点续跑的依据）
+    pub fn checkpoint_chunk(
+        &self,
+        id: &str,
+        idx: usize,
+        status: &str,
+        result_json: Option<&str>,
+        error: Option<&str>,
+        llm_ms: u64,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE doc_chunks SET status = ?3, result_json = ?4, error = ?5, llm_ms = ?6
+             WHERE job_id = ?1 AND idx = ?2",
+            params![id, idx as i64, status, result_json, error, llm_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// 把 failed / parse_failed 块重置为 pending（「失败块一键重跑」）
+    pub fn reset_failed_chunks(&self, id: &str) -> Result<usize, rusqlite::Error> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE doc_chunks SET status = 'pending', error = NULL
+             WHERE job_id = ?1 AND status IN ('failed', 'parse_failed')",
+            [id],
+        )?;
+        Ok(n)
+    }
+
+    /// 聚合全部 done 块的错误（文档坐标，按 span 排序）
+    pub fn aggregated_errors(&self, id: &str) -> Result<Vec<Error>, rusqlite::Error> {
+        let rows = self.select_chunks(id, "status = 'done'")?;
+        let mut out = Vec::new();
+        for r in rows {
+            if let Some(j) = r.result_json {
+                if let Ok(v) = serde_json::from_str::<Vec<Error>>(&j) {
+                    out.extend(v);
+                }
+            }
+        }
+        out.sort_by_key(|e| e.span[0]);
+        Ok(out)
+    }
+}
+
+/// 作业列表元数据（列表页不带全文）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DocJobMeta {
+    pub id: String,
+    pub lang: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// 作业默认块大小（`GEC_LLM_CHUNK_TARGET`，与即席分块路径同一环境变量）
+pub fn default_chunk_target() -> usize {
+    std::env::var("GEC_LLM_CHUNK_TARGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(crate::docchunk::DEFAULT_CHUNK_CHARS)
+}
+
+/// 作业默认并发（`GEC_LLM_CONCURRENCY`，默认 8）
+pub fn default_concurrency() -> usize {
+    std::env::var("GEC_LLM_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(8)
+}
+
+/// 运行/续跑作业：只处理 pending 块，每块完成即 checkpoint。
+///
+/// - `cancel`：调用方持有的取消位——置位后**未开跑**的块保持 pending，
+///   作业终态 `cancelled`（已 checkpoint 的结果保留，可续跑）；
+/// - 全部块处理完 → 作业 `done`；
+/// - 返回进度 + 聚合错误（覆盖率 = `progress.coverage()`）。
+pub async fn run_doc_job(
+    store: Arc<DocJobStore>,
+    llm: Arc<LlmGecEngine>,
+    job_id: &str,
+    concurrency: usize,
+    cancel: Arc<AtomicBool>,
+) -> Result<(DocJobProgress, Vec<Error>), DetectorError> {
+    use futures_util::StreamExt;
+    let job = store
+        .job(job_id)
+        .map_err(|e| DetectorError::DetectionFailed(format!("作业读取失败: {e}")))?
+        .ok_or_else(|| DetectorError::DetectionFailed(format!("作业不存在: {job_id}")))?;
+    store
+        .set_status(job_id, "running")
+        .map_err(|e| DetectorError::DetectionFailed(format!("作业状态写入失败: {e}")))?;
+    let pending = store
+        .pending_chunks(job_id)
+        .map_err(|e| DetectorError::DetectionFailed(format!("块读取失败: {e}")))?;
+    let text: Arc<str> = Arc::from(job.text.as_str());
+    let mut stream = futures_util::stream::iter(pending.into_iter().map(|row| {
+        let store = store.clone();
+        let llm = llm.clone();
+        let cancel = cancel.clone();
+        let text = text.clone();
+        let job_id = job_id.to_string();
+        async move {
+            if cancel.load(Ordering::Relaxed) {
+                return; // 保持 pending（可续跑）
+            }
+            let Some(chunk) = row.doc_chunk(&text) else {
+                store
+                    .checkpoint_chunk(&job_id, row.index, "failed", None, Some("块偏移越界"), 0)
+                    .ok();
+                return;
+            };
+            let t = std::time::Instant::now();
+            match llm.detect_anchored(&chunk.send).await {
+                Ok((errors, pf)) => {
+                    let mapped = remap_chunk_errors(&chunk, errors);
+                    let ms = t.elapsed().as_millis() as u64;
+                    if pf {
+                        store
+                            .checkpoint_chunk(
+                                &job_id,
+                                row.index,
+                                "parse_failed",
+                                None,
+                                Some("响应解析失败（该块未复查）"),
+                                ms,
+                            )
+                            .ok();
+                    } else {
+                        let json = serde_json::to_string(&mapped).unwrap_or_else(|_| "[]".into());
+                        store
+                            .checkpoint_chunk(&job_id, row.index, "done", Some(&json), None, ms)
+                            .ok();
+                    }
+                }
+                Err(e) => {
+                    let ms = t.elapsed().as_millis() as u64;
+                    tracing::warn!(error = %e, chunk = row.index, "文档作业块失败（记 failed，可重跑）");
+                    store
+                        .checkpoint_chunk(&job_id, row.index, "failed", None, Some(&e.to_string()), ms)
+                        .ok();
+                }
+            }
+        }
+    }))
+    .buffer_unordered(concurrency.max(1));
+    while stream.next().await.is_some() {}
+    // 终态：仍有 pending（取消）→ cancelled；否则 done
+    let progress = store
+        .progress(job_id)
+
+
+        .map_err(|e| DetectorError::DetectionFailed(format!("进度读取失败: {e}")))?;
+    let final_status = if progress.pending > 0 { "cancelled" } else { "done" };
+    store
+        .set_status(job_id, final_status)
+        .map_err(|e| DetectorError::DetectionFailed(format!("作业状态写入失败: {e}")))?;
+    let errors = store
+        .aggregated_errors(job_id)
+        .map_err(|e| DetectorError::DetectionFailed(format!("结果聚合失败: {e}")))?;
+    Ok((progress, errors))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::LlmDetectConfig;
+    use axum::response::IntoResponse;
+    use std::sync::atomic::AtomicBool;
+
+    fn config(base_url: &str) -> LlmDetectConfig {
+        LlmDetectConfig::from_parts(
+            base_url,
+            "sk-test",
+            "mock-model",
+            5,
+            "你是校对专家",
+            "找出以下文本中的错误：{{text}}",
+        )
+        .with_retry(Vec::new(), 0)
+    }
+
+    /// 动态 mock：`respond(user)` 为 None → HTTP 400（网络层失败臂）
+    async fn mock_server(respond: fn(&str) -> Option<String>) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| async move {
+                let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let user = req["messages"][1]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                match respond(&user) {
+                    Some(content) => {
+                        let resp = serde_json::json!({
+                            "choices": [{ "message": { "content": content } }]
+                        });
+                        (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+                    }
+                    None => axum::http::StatusCode::BAD_REQUEST.into_response(),
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    fn sample_doc() -> String {
+        let p1 = "第一段里有甲错需要检出，其余文字均为干净的叙述内容填充。".repeat(2);
+        let p2 = "第二段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        format!("{p1}\n{p2}\n")
+    }
+
+    #[test]
+    fn create_job_persists_chunks() {
+        let store = DocJobStore::open_in_memory().unwrap();
+        let text = sample_doc();
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        assert!(n >= 2, "应切成多块: {n}");
+        let job = store.job("j1").unwrap().unwrap();
+        assert_eq!(job.status, "created");
+        assert_eq!(job.text, text);
+        let p = store.progress("j1").unwrap();
+        assert_eq!((p.total, p.done, p.pending), (n, 0, n));
+        assert_eq!(p.coverage(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn run_completes_aggregates_and_checkpoints() {
+        // 所有权去重跨块成立：mock 对任何含第一段的请求都报「甲错」，
+        // 聚合结果仍恰好 1 条且为文档字节偏移
+        let respond: fn(&str) -> Option<String> = |user| {
+            if user.contains("第一段") {
+                Some(
+                    r#"[{"error_type":"错别字","confidence":0.9,"original":"甲错","correction":"抱负","message":"音近误用"}]"#
+                        .to_string(),
+                )
+            } else {
+                Some("[]".to_string())
+            }
+        };
+        let endpoint = mock_server(respond).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let text = sample_doc();
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        let (p, errors) = run_doc_job(
+            store.clone(),
+            llm,
+            "j1",
+            4,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.done, n);
+        assert_eq!(p.coverage(), 1.0);
+        assert_eq!(errors.len(), 1, "所有权去重后恰好一条: {}", errors.len());
+        let expect = text.find("甲错").unwrap();
+        assert_eq!(errors[0].span, [expect, expect + "甲错".len()]);
+        assert_eq!(store.job("j1").unwrap().unwrap().status, "done");
+        // checkpoint 已持久化：done 块带 result_json
+        assert!(store.chunks("j1").unwrap().iter().all(|c| c.status == "done"));
+    }
+
+    #[tokio::test]
+    async fn resume_retries_failed_chunks_only() {
+        // 第一轮：含「坏块」的块网络失败（400）→ failed，其余 done
+        let bad: fn(&str) -> Option<String> = |user| {
+            if user.contains("坏块") {
+                None
+            } else {
+                Some("[]".to_string())
+            }
+        };
+        let p_clean = "第一段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p_bad = "第二段包含坏块标记，mock 对它返回失败状态。".repeat(2);
+        let text = format!("{p_clean}\n{p_bad}\n");
+        let endpoint = mock_server(bad).await;
+        let llm_bad = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        let (p, _) = run_doc_job(
+            store.clone(),
+            llm_bad,
+            "j1",
+            4,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.failed, 1, "恰好坏块失败: {p:?}");
+        assert_eq!(p.done, n - 1, "其余块已 checkpoint（不重跑）");
+        assert!(p.coverage() < 1.0);
+        // 第二轮：reset failed → 全部块好 → done
+        let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
+        let endpoint = mock_server(good).await;
+        let llm_good = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let reset = store.reset_failed_chunks("j1").unwrap();
+        assert_eq!(reset, 1);
+        let (p2, _) = run_doc_job(
+            store.clone(),
+            llm_good,
+            "j1",
+            4,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2.done, n);
+        assert_eq!(p2.failed, 0);
+        assert_eq!(p2.coverage(), 1.0);
+        assert_eq!(store.job("j1").unwrap().unwrap().status, "done");
+    }
+
+    #[tokio::test]
+    async fn cancel_keeps_pending_and_status_cancelled() {
+        let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
+        let endpoint = mock_server(good).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let text = sample_doc();
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
+        assert_eq!(p.pending, n, "取消位置位 → 全部块保持 pending");
+        assert_eq!(p.coverage(), 0.0);
+        assert_eq!(store.job("j1").unwrap().unwrap().status, "cancelled");
+    }
+}

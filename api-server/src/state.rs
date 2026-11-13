@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 use attribution_engine::{KnowledgeStore, StagingStore, TableStore};
@@ -87,6 +88,11 @@ pub struct AppState {
     /// 优化轮次（SQLite：轮次提案 + 人工确认门 + 执行结果；P3 进化闭环
     /// 「贡献与轮次」环节；与反馈日志 / 反思中心 / 训练作业共用同一 db 文件）
     pub optimization_round: Arc<OptimizationRoundStore>,
+    /// 文档级审校作业存储（SQLite `doc_jobs`/`doc_chunks`：10 万字+ 文档的
+    /// 作业化编排 + 块级 checkpoint/断点续跑，见 `gec_core::docjob`）
+    pub doc_jobs: Arc<gec_core::DocJobStore>,
+    /// 文档作业取消位（job_id → flag；置位后未开跑的块保持 pending，可续跑）
+    pub doc_job_cancel: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
     /// 决策表目录（资源包导入/删除写回决策表与 aux 数据文件；
     /// `RwLock`：设置界面变更 `tables_dir` 时同步更新）
     pub tables_dir: RwLock<std::path::PathBuf>,
@@ -382,6 +388,15 @@ impl AppState {
             }
         };
 
+        // 文档级审校作业存储（SQLite doc_jobs/doc_chunks，共用同一 db 文件）
+        let doc_jobs = Arc::new(match gec_core::DocJobStore::open(&db_path) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(error = %e, "文档作业存储初始化失败，将使用内存存储");
+                gec_core::DocJobStore::open_in_memory().expect("无法打开内存文档作业存储")
+            }
+        });
+
         Self {
             router: RwLock::new(router),
             tables,
@@ -414,6 +429,8 @@ impl AppState {
             reflection_center,
             training_center,
             optimization_round,
+            doc_jobs,
+            doc_job_cancel: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 

@@ -3189,3 +3189,106 @@ async fn session_delete_flow() {
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
 }
+
+// ── 文档级审校作业（doc-jobs：请求变作业，块级 checkpoint/断点续跑）──
+
+/// 未配置 LLM → 文档作业不可用（503，与 explain 兜底一致）
+#[tokio::test]
+async fn doc_jobs_require_llm() {
+    // start_server 内部持锁清除 LLM 配置
+    let base = start_server().await;
+    let res = client()
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({ "lang": "zh", "text": "测试文本。" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// 完整流程：创建（切块）→ 轮询进度 → 聚合结果（所有权去重 + 覆盖率）→ 列表
+#[tokio::test]
+async fn doc_job_flow_chunks_and_aggregates() {
+    let _guard = env_guard();
+    let llm = start_mock_llm_detect().await;
+    unsafe {
+        std::env::set_var("LLM_API_KEY", "sk-test");
+        std::env::set_var("LLM_BASE_URL", &llm);
+        std::env::set_var(
+            "LLM_PROMPTS_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../prompts")
+                .display()
+                .to_string(),
+        );
+    }
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // mock 对任何请求都报「报复→抱负」：所有权去重后聚合结果应恰好 1 条
+    let p1 = "他昨天报复很大，这是第一段的内容，其余文字是干净的填充。".repeat(2);
+    let p2 = "第二段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+    let text = format!("{p1}\n{p2}\n");
+    let res: serde_json::Value = c
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({
+            "lang": "zh", "text": text, "chunk_target": 60
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = res["job_id"].as_str().unwrap().to_string();
+    assert!(
+        res["chunks"].as_u64().unwrap() >= 2,
+        "应切成多块: {res}"
+    );
+    // 轮询到终态
+    let mut status = String::new();
+    for _ in 0..100 {
+        let v: serde_json::Value = c
+            .get(format!("{base}/gec/doc-jobs/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = v["status"].as_str().unwrap().to_string();
+        if status == "done" || status == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(status, "done", "作业应完成");
+    let r: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs/{id}/results"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["complete"].as_bool(), Some(true), "全部块复查完成: {r}");
+    assert_eq!(r["coverage"].as_f64(), Some(1.0));
+    let errors = r["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "上下文前缀命中被所有权去重: {r}");
+    let expect = text.find("报复").unwrap();
+    assert_eq!(errors[0]["span"][0].as_u64(), Some(expect as u64));
+    // 列表可见
+    let l: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs?limit=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(l["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|j| j["id"].as_str() == Some(&id)));
+}
+
