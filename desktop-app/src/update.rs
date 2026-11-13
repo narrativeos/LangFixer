@@ -29,6 +29,11 @@ pub fn release_source() -> &'static str {
 
 /// 该源对应的 latest.json 更新清单地址
 pub fn endpoints() -> Vec<reqwest::Url> {
+    // 测试钩子（仅编译期生效）：构建时设 LANGFIXER_UPDATE_TEST_ENDPOINT 可烧入
+    // 自定义端点，用于端到端自测自动更新链路；正式发布不设置该变量，行为不变。
+    if let Some(url) = option_env!("LANGFIXER_UPDATE_TEST_ENDPOINT") {
+        return vec![url.parse().expect("测试更新 URL 应合法")];
+    }
     let url = match release_source() {
         "gitea" => {
             "https://gitea.jiulu.ltd/narrativeos/LangFixer/releases/latest/download/latest.json"
