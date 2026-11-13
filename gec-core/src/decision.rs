@@ -77,10 +77,11 @@ pub struct DecisionConfig {
     /// 弃权阈值：句级 `has_error_prob` 低于该值时不产出错误（conformal 校准后概率）
     #[serde(default = "default_abstain_threshold")]
     pub abstain_threshold: f64,
-    /// 决策层开关：**默认 `false`**——该层已**退役出产品路径**（EVOLUTION.md §13 #10，
-    /// L3 特征模型是唯一的 pre-LLM 门控）；代码保留为实验路径，仅
-    /// `GEC_DEC_ENABLED=1` / 设置文件显式开启时在 `rule` 引擎组合中挂载
-    /// （规则为主 + 决策合并）。设置界面不再提供该开关；
+    /// 决策层开关：**默认 `false`**——该层**待发布**（EVOLUTION.md §13 #10；
+    /// 2026-11-13 口径：线不放弃，待找到更合适的决策模型后上线。此前评测显示
+    /// 零样本 vegaml 任务适配不足，L3 特征模型是当前唯一的 pre-LLM 门控）；
+    /// 代码保留，仅 `GEC_DEC_ENABLED=1` / 设置文件显式开启时在 `rule` 引擎组合中
+    /// 挂载（规则为主 + 决策合并）。设置界面不提供该开关；
     /// 旧版设置文件缺失该字段时按关闭处理
     #[serde(default = "default_enabled")]
     pub enabled: bool,

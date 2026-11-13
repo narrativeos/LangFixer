@@ -223,12 +223,12 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
 pub async fn test_decision(config: &DecisionConfig) -> TestResult {
     let target = "decision";
     let started = Instant::now();
-    // 已退役出产品路径且未显式开启：该层不会参与校正，不探测、不报红
+    // 待发布层且未显式开启：该层暂不参与校正，不探测、不报红
     // （设置页对未启用的服务探测必然报红，与产品现实矛盾）
     if !config.enabled() {
         return ok_result(
             target,
-            "决策模型未启用（该层已退役出产品路径，不参与校正）",
+            "决策模型未启用（待发布：正在寻找更合适的决策模型，找到后上线）",
             started,
         );
     }
@@ -598,7 +598,7 @@ mod tests {
         });
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
-            enabled: true, // 探测类用例需显式开启（默认退役关闭）
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -644,7 +644,7 @@ mod tests {
         });
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
-            enabled: true, // 探测类用例需显式开启（默认退役关闭）
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -675,7 +675,7 @@ mod tests {
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
             model: "my-model".into(),
-            enabled: true, // 探测类用例需显式开启（默认退役关闭）
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -685,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_layers_short_circuit_without_probing() {
-        // 退役/关闭的层不探测：即使地址指向不可用端口也回「未启用」（绿），
+        // 待发布/关闭的层不探测：即使地址指向不可用端口也回「未启用」（绿），
         // 设置页「测试全部」不为不参与产品路径的服务报红
         let decision = DecisionConfig {
             endpoint: "http://127.0.0.1:9".into(),
@@ -708,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn test_all_collects_seven_results() {
         // 全部指向不可用配置（127.0.0.1:9 必然拒绝连接）→ 全部失败。
-        // 决策层默认已退役关闭（关闭即短路不探测），此处显式开启才能探测到不可用
+        // 决策层默认待发布关闭（关闭即短路不探测），此处显式开启才能探测到不可用
         let decision = DecisionConfig {
             endpoint: "http://127.0.0.1:9".into(),
             enabled: true,

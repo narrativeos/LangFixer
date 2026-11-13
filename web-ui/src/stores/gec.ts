@@ -103,7 +103,7 @@ export const useGecStore = defineStore('gec', {
     categoryFilter: '',
     /** 检查模式（内部 level，对用户展示为 快速检查/标准检查/深度扫描）：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底；L3 未启用时回退决策模型弃权语义）；3 = + 强制 LLM */
     level: draft.level ?? 1,
-    /** 决策模型（vegaml）层启用状态——该层已退役出产品路径（EVOLUTION.md §13 #10）；
+    /** 决策模型（vegaml）层启用状态——该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）；
      *  仅当实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启时为 true（来自 GET /gec/settings 的 decision.enabled；
      *  P0.5 起默认关闭，opt-in；与检测页「标准检查」对齐：L3 未启用时其弃权兜底依赖它） */
     decisionEnabled: false,

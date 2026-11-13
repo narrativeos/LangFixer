@@ -730,7 +730,7 @@ impl GecEngine for CascadeDetector {
         // ③ LLM 兜底：force_llm 无条件触发 / level 2 门控触发（P0.5：L3 是唯一的
         // pre-LLM 门控——L3 弃权 / 服务不可用 → 开闸；L3 **显式关闭**（l3_disabled）
         // → 同样开闸回退无条件 LLM，这是 l3.rs enabled 字段的文档口径，防止门控层
-        // 缺席叠加退役决策层后 level 2 静默退化为纯规则；从未配置 L3 的旧式部署
+        // 缺席叠加待发布决策层后 level 2 静默退化为纯规则；从未配置 L3 的旧式部署
         // 保持旧语义：决策模型弃权触发）/ level 3 无条件
         let l3_gate_open = match &l3_res {
             Some(Ok(o)) => o.abstained,
@@ -1144,7 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn cascade_level2_with_l3_disabled_triggers_llm() {
         // L3 显式关闭（配置存在但 enabled=false，引擎未挂载）→ level 2 门控开闸，
-        // 回退**无条件** LLM（l3.rs「回退无条件 LLM」口径）。若关门，叠加已退役
+        // 回退**无条件** LLM（l3.rs「回退无条件 LLM」口径）。若关门，叠加待发布
         // 决策层后 level 2 会静默退化为纯规则——level 2 流量丢失 LLM 覆盖率
         let llm_endpoint = mock_llm_service().await;
         let llm = llm_engine(&llm_endpoint);

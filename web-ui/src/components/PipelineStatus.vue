@@ -50,7 +50,7 @@ const items = computed<StatusItem[]>(() => [
     hint: '内置规则与词表，即时运行，始终可用',
     anchor: 'dirs',
   },
-  // ② 决策模型已退役出产品路径（EVOLUTION.md §13 #10）：状态条不再列示
+  // ② 决策模型待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：状态条不再列示
   {
     key: 'embedding',
     label: '知识查询',

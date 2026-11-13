@@ -1,7 +1,7 @@
 /**
  * 检测管线层展示（① 本地 ZEN 规则 → ②.5 知识召回 → ③-F 特征模型 → ③ LLM 兜底）
  *
- * ② 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：默认不显示；
+ * ② 决策模型（vegaml）待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：默认不显示；
  * 仅当实验开关显式开启（GEC_DEC_ENABLED=1 / 设置文件）时才出现在管线条中。
  *
  * - ①②②.5 状态来自服务端设置（决策模型是否启用 / 嵌入引擎是否配置）；
@@ -38,7 +38,7 @@ export function computePipelineLayers(s: PipelineState): PipelineLayer[] {
   const layers: PipelineLayer[] = [
     { no: '①', label: '① 本地 ZEN 规则', type: 'success' },
   ]
-  // ② 决策模型已退役出产品路径：仅实验开关显式开启时显示（默认路径 = 规则 → L3 → LLM）
+  // ② 决策模型待发布（11-13 注：线不放弃，待更合适的决策模型）：仅实验开关显式开启时显示（默认路径 = 规则 → L3 → LLM）
   if (s.decisionEnabled) {
     layers.push({ no: '②', label: '② 决策模型 · 已启用', type: 'success' })
   }

@@ -44,7 +44,7 @@ pub struct AppSettings {
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     #[serde(default = "default_lexicons_dir")]
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数——该层已**退役出产品路径**（EVOLUTION.md §13 #10，
+    /// 决策模型（vegaml）层参数——该层**待发布**（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型。
     /// 设置界面卡片已移除）；代码保留为实验路径，`enabled=true`（设置文件）或
     /// `GEC_DEC_ENABLED=1` 显式开启时在 `rule` 引擎组合中挂载决策模型层；
     /// 等价环境变量 `GEC_DEC_*`。字段保留以维持设置契约与实验可用）

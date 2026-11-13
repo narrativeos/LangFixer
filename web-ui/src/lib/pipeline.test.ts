@@ -1,7 +1,7 @@
 /**
  * pipeline.ts 单元测试（vitest）
  *
- * 覆盖：检测管线层（① 规则 / ② 决策模型（退役后仅实验开启时显示）/ ②.5 知识召回 /
+ * 覆盖：检测管线层（① 规则 / ② 决策模型（待发布，仅实验开启时显示）/ ②.5 知识召回 /
  * ③ LLM 兜底）的启用状态与 ③ 层按「响应级别」的动态显示。
  */
 import { describe, expect, it } from 'vitest'
@@ -25,7 +25,7 @@ describe('computePipelineLayers', () => {
     expect(l1.type).toBe('success')
   })
 
-  it('② 决策模型已退役出产品路径：默认（未启用）不显示；实验开启时显示', () => {
+  it('② 决策模型待发布（11-13 注：线不放弃，待更合适的决策模型）：默认（未启用）不显示；实验开启时显示', () => {
     expect(find({ ...base, decisionEnabled: false }, '②')).toBeUndefined()
     expect(find(base, '②')?.label).toBe('② 决策模型 · 已启用')
     expect(find(base, '②')?.type).toBe('success')
