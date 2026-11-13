@@ -111,6 +111,7 @@ async fn reviewer_surface_is_allowlist_not_per_endpoint_deny() {
         ("GET", "/gec/sessions/s1/mistakes"),
         ("POST", "/gec/sessions"),
         ("DELETE", "/gec/sessions/s1"),
+        ("GET", "/gec/eval/layers"),
         ("POST", "/mcp"),
         ("GET", "/auth/whoami"),
     ] {

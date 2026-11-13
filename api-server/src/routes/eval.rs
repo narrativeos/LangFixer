@@ -6,6 +6,8 @@
 //! - `GET /gec/eval/job/:id` — 任务进度（轮询；`status` = pending/running/done/error）
 //! - `GET /gec/eval/reports` — 历史报告列表（含各臂 Fβ / 召回 / LLM 触达率摘要）
 //! - `GET /gec/eval/report/:id` — 报告详情（overall + 层级归因 + 漏斗）
+//! - `GET /gec/eval/layers` — 各层贡献度报告（**不转发**：api-server 直读报告
+//!   档案，生产无测评实例也可用；评审密钥白名单内，见 `middleware/auth.rs`）
 //!
 //! 测评服务是开发工具（默认 `127.0.0.1:4807`，`GEC_EVAL_ENDPOINT` 可覆盖）；
 //! 不可达时全部端点返回 503（不阻断检测主链路）。闭环定位见 `EVOLUTION.md`：
@@ -92,4 +94,75 @@ pub async fn reports(State(_state): State<Arc<AppState>>) -> Response {
 /// GET /gec/eval/report/:id — 报告详情
 pub async fn report(State(_state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     forward("GET", &format!("/eval/report/{id}"), None).await
+}
+
+/// 报告档案目录：`GEC_EVAL_REPORTS_DIR` 覆盖 > `datasets/eval_reports`（仓库 cwd）>
+/// `src/datasets/eval_reports`（服务器部署 cwd 为安装根，git 跟踪的数据集在 src 下）
+pub fn reports_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("GEC_EVAL_REPORTS_DIR") {
+        let p = std::path::PathBuf::from(d);
+        return p.is_dir().then_some(p);
+    }
+    ["datasets/eval_reports", "src/datasets/eval_reports"]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_dir())
+}
+
+/// 响应内报告条数上限（档案会随评测次数膨胀，展示取最近若干份即可）
+const LAYERS_REPORTS_CAP: usize = 60;
+
+/// 报告排序键（ISO ts 字典序即时间序；缺失按最早处理）
+fn report_ts(v: &serde_json::Value) -> &str {
+    v.get("ts").and_then(|t| t.as_str()).unwrap_or("")
+}
+
+/// GET /gec/eval/layers — 各层贡献度报告（api-server 直读报告档案，不依赖
+/// Python 测评服务：生产评测实例未起时也能展示「质量来自哪一层」；
+/// 评审密钥经 `review_denied` 白名单可读，属质量透明面，与 detect 同级）
+pub async fn layers() -> Response {
+    let Some(dir) = reports_dir() else {
+        return err_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "未找到评测报告目录（可设 GEC_EVAL_REPORTS_DIR；档案由评测任务落盘到 datasets/eval_reports）"
+                .to_string(),
+        );
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut reports: Vec<serde_json::Value> = Vec::new();
+    let mut skipped = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        // 有效报告 = 评测任务落盘的报告（带 id + layers 层级归因）；
+        // 档案内辅助文件（如 baseline_rules.json）与损坏/半写文件按条跳过
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            skipped += 1;
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            skipped += 1;
+            continue;
+        };
+        if v.get("id").and_then(|i| i.as_str()).is_none()
+            || v.get("layers").and_then(|l| l.as_object()).is_none()
+        {
+            skipped += 1;
+            continue;
+        }
+        reports.push(v);
+    }
+    reports.sort_by(|a, b| report_ts(b).cmp(report_ts(a)));
+    reports.truncate(LAYERS_REPORTS_CAP);
+    Json(serde_json::json!({
+        "dir": dir.display().to_string(),
+        "reports": reports,
+        "skipped": skipped,
+    }))
+    .into_response()
 }

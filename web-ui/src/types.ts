@@ -1144,6 +1144,7 @@ export interface EvalJob {
     llm_enabled?: boolean
     decision_enabled?: boolean
     l3_enabled?: boolean
+    knowledge_enabled?: boolean
     embedding_configured?: boolean
   } | null
   progress: { done: number; total: number }
@@ -1213,6 +1214,14 @@ export interface EvalReportSummary {
   p_strict?: number
   r_strict?: number
   llm_reach?: number
+}
+
+/** GET /gec/eval/layers 响应（各层贡献度报告：api-server 直读报告档案，
+ *  不依赖 Python 测评服务；`skipped` = 档案内非报告 / 损坏文件的跳过条数） */
+export interface EvalLayersResponse {
+  dir: string
+  reports: EvalReport[]
+  skipped: number
 }
 
 // ─────────────────────────── 反思中心（P1） ───────────────────────────

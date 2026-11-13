@@ -581,6 +581,20 @@ R≈0.45 曾把 3 例内置示例放行 2 例；engine ③-F 加 level 3 例外�
 「待发布」（§13 #10 注）：线不放弃，待更合适的决策模型。遗留：3090 gec 新模型出来后
 补同载体对比版，并评估是否把 ELECTRA CTC 字级侧车（char_gate）一并上线。
 
+### 2026-11-13 · 各层贡献度报告界面（参赛需求）
+
+参赛方要求「展示各层在评测报告中的贡献」。既有 `POST /gec/eval/contributions`
+（消融 Δ）与 `GET /gec/eval/reports|report/:id` 都是**转发** Python 评测服务，
+生产实例上没有评测常驻进程，等于公网不可用；而定版报告 JSON 本身已完备
+（`layers.*` 每层 `n_pred/p_strict/r_strict/f_beta/gate/recall_share/
+attributed_gold` + `funnel` + `config` 开关）。故新开端点 `GET /gec/eval/layers`：
+api-server **直读**报告档案（目录按 `GEC_EVAL_REPORTS_DIR` > `datasets/eval_reports`
+> `src/datasets/eval_reports` 取首个存在者，非报告与坏文件按条跳过），并把该
+只读端点加进评审密钥的 fail-closed 白名单——评委能核对「质量来自哪一层」，
+但发起评测仍属运营面。前端「各层贡献」视图给报告选择 + 两报告 Δ 对比 +
+层级贡献表 + config 开关 chips + 级联漏斗；作为核心视图对网关形态全员开放，
+单机形态只在运营位显示入口（数据是本地档案，普通用户看到只会是空页）。
+
 ## 11. 项目 #1 重评：决策模型（vegaml）选型 / 架构作用 / 实际贡献（2026-10-18 测量记录）
 
 **背景**：§7 项目 #1 = 「用测评中心消融工具在 P0.5 后重跑 vegaml vs L3-only，

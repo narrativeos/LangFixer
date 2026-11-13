@@ -57,6 +57,7 @@ import type {
   ValidateResponse,
   EvalRunRequest,
   EvalJob,
+  EvalLayersResponse,
   EvalReport,
   EvalReportSummary,
   ReflectRunRequest,
@@ -1368,6 +1369,14 @@ export const api = {
   getEvalReport(id: string): Promise<EvalReport> {
     if (inTauri) return tauri!.invoke('get_eval_report', { id }).then((r) => r as EvalReport)
     return http.get<EvalReport>(`/gec/eval/report/${id}`).then((r) => r.data)
+  },
+
+  /** GET /gec/eval/layers — 各层贡献度报告（服务端直读报告档案，不需测评服务；
+   *  桌面端不随包分发评测档案，明确报不支持而非静默空列表） */
+  getEvalLayers(): Promise<EvalLayersResponse> {
+    if (inTauri)
+      return Promise.reject(new Error('桌面端不分发评测报告档案；请在 Web / 网关形态查看各层贡献度'))
+    return http.get<EvalLayersResponse>('/gec/eval/layers').then((r) => r.data)
   },
 
   // ─────────────────────────── 反思中心（P1） ───────────────────────────

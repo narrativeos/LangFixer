@@ -12,6 +12,7 @@ import CustomWords from './components/CustomWords.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
+import LayerContributions from './components/LayerContributions.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
 import MediaWorkspace from './components/MediaWorkspace.vue'
 import LearningPanel from './components/LearningPanel.vue'
@@ -24,9 +25,10 @@ import { gateReady, identity, initGate } from './lib/auth'
 import { ElMessage } from 'element-plus'
 
 const store = useGecStore()
-/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 接入 / 设置。
- *  门控（lib/caps 能力位）：workspace/settings 共享核心；learning 扩展默认开；
+/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 各层贡献 / 接入 / 设置。
+ *  门控（lib/caps 能力位）：workspace/settings/layers 共享核心；learning 扩展默认开；
  *  载体审校 = 编校扩展（proofreading）；规则/知识/进化 = 运营扩展（ops，web 形态需 token 解锁）；
+ *  各层贡献 = 只读质量报告（网关形态全员可见——评审密钥要能核对质量来自哪一层；单机仅运营位显示入口）；
  *  接入 = 所有人（MCP 配置）；设置页在网关形态只对超管出现（服务端写入同样收口） */
 const APP_VIEWS: AppView[] = [
   'workspace',
@@ -35,6 +37,7 @@ const APP_VIEWS: AppView[] = [
   'rules',
   'knowledge',
   'evolution',
+  'layers',
   'access',
   'settings',
 ]
@@ -361,6 +364,15 @@ if (isTauri) api.setWindowTheme(isDark.value)
       >
         进化中心
       </el-button>
+      <!-- 各层贡献度报告（只读质量透明面）：网关形态全员可见（评委核对层级贡献），单机仅运营位 -->
+      <el-button
+        v-if="identity.gateway || store.caps.ops"
+        :class="{ 'nav-active': activeView === 'layers' }"
+        :aria-current="activeView === 'layers' ? 'page' : undefined"
+        @click="activeView = 'layers'"
+      >
+        各层贡献
+      </el-button>
       <el-button
         v-if="!isTauri"
         :class="{ 'nav-active': activeView === 'access' }"
@@ -516,6 +528,11 @@ if (isTauri) api.setWindowTheme(isDark.value)
     <!-- 进化中心（右上角入口）：测评（P0）/ 反思（P1）/ 训练（P2）/ 贡献与轮次（P3） -->
     <section v-else-if="activeView === 'evolution'" class="manage-pane">
       <EvolutionCenter />
+    </section>
+
+    <!-- 各层贡献度报告（只读）：直读评测报告档案，不依赖测评服务；评审通道可见 -->
+    <section v-else-if="activeView === 'layers'" class="manage-pane">
+      <LayerContributions />
     </section>
 
     <!-- 接入：我的 MCP 配置（所有人）+ 密钥分发（仅超管，服务端 /admin/* 同口径） -->

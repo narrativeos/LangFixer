@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **各层贡献度报告界面**（参赛需求「展示各层在评测报告中的贡献」）：新端点
+  `GET /gec/eval/layers` 由 api-server 直读报告档案（`GEC_EVAL_REPORTS_DIR` >
+  `datasets/eval_reports` > `src/datasets/eval_reports`，坏文件按条跳过），不依赖
+  Python 测评服务——生产评测实例未起也能看；已入评审密钥 fail-closed 白名单
+  （只读质量透明面，评测**发起**仍属运营面）。前端新「各层贡献」视图
+  （LayerContributions）：报告选择 + 两报告 Δ 对比、层级贡献表（预测 / 严格
+  P·R·Fβ / 自定案金标 / 召回份额条）、config 开关 chips 与级联漏斗；网关形态
+  全员可见（评委可达），单机仅运营位显示入口。
 - **L3 特征模型公网上线**（EVOLUTION.md §8「2026-11-13 · L3 特征模型公网上线」）：
   公网实例 4806 服务当日从无到有——sklearn 句级模型（45.8 万句训练特征，dev
   F1 0.549）+ docker（python:3.12-slim）+ systemd `langfixer-l3`，`l3.enabled`  开回 true；level 2 恢复「规则 + L3 门控 + LLM 长尾」的真实三级形态。

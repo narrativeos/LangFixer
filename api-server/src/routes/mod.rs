@@ -127,6 +127,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/gec/eval/job/:id", axum::routing::get(eval::job))
         .route("/gec/eval/reports", axum::routing::get(eval::reports))
         .route("/gec/eval/report/:id", axum::routing::get(eval::report))
+        .route("/gec/eval/layers", axum::routing::get(eval::layers))
         .route(
             "/gec/eval/contributions",
             axum::routing::post(optimization::contributions),

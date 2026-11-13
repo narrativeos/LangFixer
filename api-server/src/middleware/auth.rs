@@ -174,6 +174,8 @@ async fn decide(
 /// - `/gec/history*`、`/gec/sessions*`：本人历史与练习会话，跨账号可见性由
 ///   `Tenant` 归属守卫负责（这里不再判归属）；
 /// - `GET /gec/settings`、`GET /gec/languages`：只读的配置与语言列表；
+/// - `GET /gec/eval/layers`：各层贡献度报告（只读质量透明面：直读报告档案，
+///   评委可核对「质量来自哪一层」；评测**发起**仍属运营面）；
 /// - `/mcp*`：工具面自带分档——只读工具直跑，写档工具回提案信封。
 ///
 /// 超管与单机形态不经过这里（admin 恒直通，单机零变化）。
@@ -195,6 +197,10 @@ fn review_denied(method: &axum::http::Method, path: &str) -> Option<&'static str
         return None;
     }
     if m == "GET" && matches!(path, "/gec/settings" | "/gec/languages") {
+        return None;
+    }
+    // 各层贡献度报告（只读质量透明面：直读报告档案，不落库、不改状态）
+    if m == "GET" && path == "/gec/eval/layers" {
         return None;
     }
     if m == "POST"

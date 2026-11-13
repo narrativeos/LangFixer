@@ -60,6 +60,7 @@ export type AppView =
   | 'knowledge'
   | 'access'
   | 'evolution'
+  | 'layers'
   | 'settings'
 
 /** 视图依赖的能力位（null = 共享核心视图，始终可见） */
@@ -67,6 +68,7 @@ export function viewCapKey(v: AppView): keyof Caps | null {
   if (v === 'learning') return 'learning'
   if (v === 'media') return 'proofreading'
   if (v === 'rules' || v === 'knowledge' || v === 'evolution') return 'ops'
+  // layers（各层贡献度报告）是只读质量透明面：评审密钥可达，故属核心视图
   return null
 }
 
