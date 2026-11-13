@@ -13,6 +13,7 @@ pub mod circuit;
 pub mod contribution;
 pub mod decision;
 pub mod detector;
+pub mod docchunk;
 pub mod embedding;
 pub mod engine;
 pub mod knowledge_recall;
@@ -40,6 +41,7 @@ pub use contribution::{
 };
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
+pub use docchunk::{DocChunk, DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, split_document};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};
 pub use engine::{
     CascadeDetector, CompositeDetector, DetectOutcome, GecEngine, GecEngineKind, LayerReport,

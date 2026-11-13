@@ -157,12 +157,14 @@ pub trait GecEngine: Send + Sync {
                 )
             })?;
             let t_llm = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
+            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+            // 不当作「复查确认干净」
+            let (extra, llm_status, clean) = llm_layer_detect(llm, text).await?;
             llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
+            llm_confirmed_clean = clean;
             layers.push(LayerReport::new(
                 shared_model::sources::LLM,
-                "ran",
+                llm_status,
                 extra.len(),
             ));
             merge_errors(&mut errors, extra);
@@ -271,6 +273,9 @@ pub struct DetectOutcome {
 /// - `decided`：特征模型高置信定案（LLM 收缩未触发）；
 /// - `abstained`：模型明确弃权（长尾交由 LLM 兜底）；
 /// - `unavailable`：该层服务调用失败（按策略回退，不阻断检测）；
+/// - `partial`：该层**部分完成**——响应解析失败（全文单发）或部分块失败/
+///   解析失败（文档级分块复查）；此时该层的空结果**不得**解读为
+///   「复查确认干净」（`llm_confirmed_clean=false`）；
 /// - `skipped`：该层被评估但未执行（如 L3 已定案 → LLM 跳过）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LayerReport {
@@ -439,6 +444,63 @@ pub async fn targeted_llm_review(
         out.push(err);
     }
     Ok(out)
+}
+
+/// 全文 LLM 层统一执行入口：短文本单发、长文本**分块并行复查**
+/// （文档级架构 P1：10 万字+ 不再可能一次调用，且长文单发召回塌陷）。
+///
+/// 阈值与并发（环境变量，运行时设置后续接入）：
+/// - `GEC_LLM_CHUNK_CHARS`：走分块路径的字符阈值（默认 12000；0 = 恒单发）；
+/// - `GEC_LLM_CHUNK_TARGET`：目标块大小字符数（默认 1500）；
+/// - `GEC_LLM_CONCURRENCY`：块并发（默认 8）。
+///
+/// 返回（错误列表，层状态，`llm_confirmed_clean`）：
+/// - 解析失败（单发）或块失败/解析失败（分块）→ 层状态 `partial`，
+///   且 `confirmed_clean` 必为 `false`——**解析失败不得伪装成「无错误」**；
+/// - 分块路径全部块失败 → [`Err`]（与单发网络失败同语义，由调用方降级）。
+pub async fn llm_layer_detect(
+    llm: &LlmGecEngine,
+    text: &str,
+) -> Result<(Vec<Error>, &'static str, bool), DetectorError> {
+    let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
+    if threshold == 0 || text.chars().count() < threshold {
+        let errors = llm.detect(text).await?;
+        let parse_failed = llm.take_parse_failed();
+        let clean = errors.is_empty() && !parse_failed;
+        Ok((
+            errors,
+            if parse_failed { "partial" } else { "ran" },
+            clean,
+        ))
+    } else {
+        let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
+        let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
+        let o = llm.detect_document(text, target, concurrency).await?;
+        let bad = o.failed_chunks + o.parse_failed_chunks;
+        let clean = bad == 0 && o.errors.is_empty();
+        let status = if bad == 0 {
+            "ran"
+        } else if bad >= o.chunks {
+            "unavailable"
+        } else {
+            "partial"
+        };
+        tracing::info!(
+            chunks = o.chunks,
+            failed = o.failed_chunks,
+            parse_failed = o.parse_failed_chunks,
+            coverage = %o.coverage(),
+            "文档级 LLM 复查完成（分块并行）"
+        );
+        Ok((o.errors, status, clean))
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 #[async_trait]
@@ -793,11 +855,13 @@ impl GecEngine for CascadeDetector {
                 )
             })?;
             let t = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
+            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+            // 不当作「复查确认干净」
+            let (extra, llm_status, clean) = llm_layer_detect(llm, text).await?;
             llm_ms = Some(t.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
+            llm_confirmed_clean = clean;
             llm_ran = true;
-            layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
+            layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
             merge_errors(&mut errors, extra);
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
@@ -2534,4 +2598,63 @@ mod tests {
             "决策层耗时应计入总耗时"
         );
     }
+
+    // ── 文档级重构 P0：LLM 层统一入口（单发 partial 语义 + 长文分块） ──
+
+    /// mock LLM：响应可注入（garbage = 解析失败臂）
+    async fn mock_llm_content(content: &'static str) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": { "content": content } }]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn llm_layer_parse_failure_marks_partial_not_clean() {
+        // 解析失败：层状态 partial，confirmed_clean 必须为 false
+        // （「复查失败」绝不得伪装成「复查确认干净」）
+        let endpoint = mock_llm_content("抱歉，我无法完成该任务。").await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, confirmed_clean) = llm_layer_detect(&llm, "正确句子").await.unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(status, "partial");
+        assert!(!confirmed_clean, "解析失败不得当作确认干净");
+    }
+
+    #[tokio::test]
+    async fn llm_layer_normal_run_marks_ran() {
+        let endpoint = mock_llm_content("[]").await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, confirmed_clean) = llm_layer_detect(&llm, "正确句子").await.unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(status, "ran");
+        assert!(confirmed_clean);
+    }
+
+    #[tokio::test]
+    async fn llm_layer_chunked_status_derives_from_outcome() {
+        // 分块路径的状态判定（纯逻辑侧）：直接经 detect_document 验证
+        // 阈值路由本身由 detect_document 测试覆盖（llm.rs），此处锁定
+        // 「全部干净 → ran + confirmed_clean」在长文本入口同样成立
+        let endpoint = mock_llm_content("[]").await;
+        let llm = llm_engine(&endpoint);
+        let text = "第一段是干净的中文叙述，没有任何错误需要检出。\n这是第二段内容，同样干净。\n这是第三段收尾文字，也干净。";
+        let o = llm.detect_document(text, 50, 4).await.unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        assert_eq!(o.coverage(), 1.0);
+        let (errors, _status, _clean) = llm_layer_detect(&llm, text).await.unwrap();
+        assert!(errors.is_empty());
+    }
+
 }

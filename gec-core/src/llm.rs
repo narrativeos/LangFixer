@@ -188,6 +188,10 @@ pub struct LlmGecEngine {
     lang: String,
     client: reqwest::Client,
     config: LlmDetectConfig,
+    /// 上一次 `detect` 是否**响应成功但无法解析**（「复查失败」而非「复查确认干净」）。
+    /// 引擎按请求现构建（运行时配置），实例级标记即「本次调用」语义；
+    /// 由 [`Self::take_parse_failed`] 读取并复位。
+    parse_failed: std::sync::atomic::AtomicBool,
 }
 
 impl LlmGecEngine {
@@ -202,7 +206,135 @@ impl LlmGecEngine {
             lang: lang.into(),
             client,
             config,
+            parse_failed: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// 读取并复位「上次调用解析失败」标记。调用方据此把解析失败
+    /// 上报为层状态 `partial`（部分未复查），**绝不得**当作「无错误」
+    /// （审校产品最危险的失败模式：把系统故障伪装成阴性结论）。
+    pub fn take_parse_failed(&self) -> bool {
+        self.parse_failed.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// 文档级块并行复查的结果（覆盖率核算的原料）
+#[derive(Debug, Clone, Default)]
+pub struct DocLlmOutcome {
+    /// 已映射回**文档字节偏移**的错误列表（按 span 排序）
+    pub errors: Vec<Error>,
+    /// 总块数
+    pub chunks: usize,
+    /// 网络/服务失败的块数（这些块本轮未复查——覆盖率报告必须如实呈现）
+    pub failed_chunks: usize,
+    /// 响应成功但解析失败的块数（同样属于「未复查」）
+    pub parse_failed_chunks: usize,
+}
+
+impl DocLlmOutcome {
+    /// 实际完成复查的块占比（0.0–1.0）
+    pub fn coverage(&self) -> f64 {
+        if self.chunks == 0 {
+            return 0.0;
+        }
+        let bad = self.failed_chunks + self.parse_failed_chunks;
+        (self.chunks - bad.min(self.chunks)) as f64 / self.chunks as f64
+    }
+}
+
+impl LlmGecEngine {
+    /// 文档级块并行复查（10 万字+ 主线的执行单元）：
+    ///
+    /// - [`crate::docchunk::split_document`] 按所有权切块（每字符恰好归属一块），
+    ///   各块带上下文前缀并行送 LLM（并发 `concurrency`）；
+    /// - span 重映射：完全落在上下文前缀区的错误**丢弃**（归上一块所有，
+    ///   结构上消除双报）；归属区内偏移平移回文档坐标；定位失败落到
+    ///   归属块起点的**零长 span**（不与真实错误冲突、不参与重叠去重，
+    ///   message 已带「未能定位」标注）；
+    /// - 单块失败**不中断整体**：计入 `failed_chunks` / `parse_failed_chunks`；
+    ///   全部块失败才返回 [`Err`]。
+    pub async fn detect_document(
+        &self,
+        text: &str,
+        chunk_chars: usize,
+        concurrency: usize,
+    ) -> Result<DocLlmOutcome, DetectorError> {
+        let chunks = crate::docchunk::split_document(text, chunk_chars);
+        if chunks.len() <= 1 {
+            // 短文本（或空文本）：单调用路径
+            let (errors, parse_failed) = self.detect_anchored(text).await?;
+            return Ok(DocLlmOutcome {
+                errors,
+                chunks: 1,
+                failed_chunks: 0,
+                parse_failed_chunks: parse_failed as usize,
+            });
+        }
+        use futures_util::StreamExt;
+        let n_chunks = chunks.len();
+        // 每块所有权移入 future（async_trait 装箱要求跨生命周期 Send，
+        // 借用切块数组会触发 HRTB 推断失败）
+        let mut stream = futures_util::stream::iter(
+            chunks
+                .into_iter()
+                .map(|c| async move {
+                    let r = self.detect_anchored(&c.send).await;
+                    (c, r)
+                }),
+        )
+        .buffer_unordered(concurrency.max(1));
+        let mut out: Vec<Error> = Vec::new();
+        let mut failed = 0usize;
+        let mut parse_failed = 0usize;
+        let mut first_err: Option<DetectorError> = None;
+        while let Some((c, r)) = stream.next().await {
+            match r {
+                Ok((errors, pf)) => {
+                    if pf {
+                        parse_failed += 1;
+                    }
+                    let owned_len = c.owner[1] - c.owner[0];
+                    for mut err in errors {
+                        let cp = c.context_prefix;
+                        if err.span == [0, 0] {
+                            // 定位失败：落归属块起点零长占位（区别于 [0,0] 的文本开头误撞）
+                            err.span = [c.owner[0], c.owner[0]];
+                        } else if err.span[1] <= cp {
+                            // 完全落在上下文前缀：归上一块所有，丢弃（所有权图契约）
+                            continue;
+                        } else {
+                            let s = err.span[0].saturating_sub(cp).min(owned_len);
+                            let e = err.span[1].saturating_sub(cp).min(owned_len);
+                            err.span = [c.owner[0] + s, c.owner[0] + e];
+                        }
+                        out.push(err);
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    tracing::warn!(
+                        error = %e,
+                        chunk_owner = ?c.owner,
+                        "文档级复查：块失败（本轮该块未复查，其余块继续）"
+                    );
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        if failed == n_chunks {
+            return Err(first_err.unwrap_or_else(|| {
+                DetectorError::DetectionFailed("文档级复查：全部块失败".into())
+            }));
+        }
+        out.sort_by_key(|e| e.span[0]);
+        Ok(DocLlmOutcome {
+            errors: out,
+            chunks: n_chunks,
+            failed_chunks: failed,
+            parse_failed_chunks: parse_failed,
+        })
     }
 }
 
@@ -609,12 +741,28 @@ impl GecEngine for LlmGecEngine {
     }
 
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
+        let (errors, parse_failed) = self.detect_anchored(text).await?;
+        self.parse_failed
+            .store(parse_failed, std::sync::atomic::Ordering::Relaxed);
+        Ok(errors)
+    }
+}
+
+impl LlmGecEngine {
+    /// 单次检测的解析与锚定核心：返回（错误列表，**响应成功但解析失败**标记）。
+    ///
+    /// 解析失败时列表为空但标记为 `true`——调用方必须把「解析失败」与
+    /// 「模型确认无错」区分开（见 [`Self::take_parse_failed`]）。
+    pub(crate) async fn detect_anchored(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<Error>, bool), DetectorError> {
         if text.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         // plain 模型（cec3/cec4/自训 COT）：think 块 + 纠正句，走专用适配
         if self.config.output_format == crate::models::OUTPUT_PLAIN {
-            return self.detect_plain(text).await;
+            return Ok((self.detect_plain(text).await?, false));
         }
         let user = self.config.user_template.replace("{{text}}", text);
         // JSON 契约只取最终答案：思考模型（qwen 思考档等）把思考块放在
@@ -623,16 +771,17 @@ impl GecEngine for LlmGecEngine {
             .chat_completion_answer(&self.config.system, &user)
             .await?;
 
-        // 容错解析 JSON 数组；解析失败时告警并返回空（请求已成功，不算服务故障）
+        // 容错解析 JSON 数组；解析失败告警并置标记（请求已成功，不算服务故障，
+        // 但**不得**被上层当作「复查确认干净」）
         let raw = match extract_json_array(&content) {
             Some(r) => r,
             None => {
                 tracing::warn!(
                     model = %self.config.model,
                     content = %content.chars().take(200).collect::<String>(),
-                    "LLM 兜底检测响应无法解析为 JSON 数组，返回空结果"
+                    "LLM 兜底检测响应无法解析为 JSON 数组，本层记 partial"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), true));
             }
         };
         let items: Vec<LlmErrorItem> = match serde_json::from_str(&raw) {
@@ -641,9 +790,9 @@ impl GecEngine for LlmGecEngine {
                 tracing::warn!(
                     model = %self.config.model,
                     error = %e,
-                    "LLM 兜底检测响应 JSON 解析失败，返回空结果"
+                    "LLM 兜底检测响应 JSON 解析失败，本层记 partial"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), true));
             }
         };
 
@@ -653,6 +802,15 @@ impl GecEngine for LlmGecEngine {
         let mut errors = Vec::with_capacity(items.len());
         for it in items {
             if it.original.is_empty() && it.correction.is_none() {
+                continue;
+            }
+            // 结构性拒收「空操作修正」：correction 与 original 无差异
+            // → 不是编辑，属模型过纠正/复读，不进结果（diff 校验的 JSON 契约侧）
+            if it.correction.as_deref() == Some(it.original.as_str()) && !it.original.is_empty() {
+                tracing::debug!(
+                    original = %it.original,
+                    "LLM 报告了与原文无差异的修正（空操作），拒收"
+                );
                 continue;
             }
             let span = resolve_span(text, &it.original, &claimed);
@@ -679,7 +837,7 @@ impl GecEngine for LlmGecEngine {
             e.source = Some(sources::LLM.to_string());
             errors.push(e);
         }
-        Ok(errors)
+        Ok((errors, false))
     }
 }
 
@@ -1625,4 +1783,106 @@ mod tests {
             );
         }
     }
+
+    // ── 文档级重构 P0/P1：解析失败显式化、空操作拒收、块并行复查 ──
+
+    /// 动态 mock：按 user 提示词内容决定响应（块并行路径各块响应不同）
+    async fn mock_dynamic_llm_server(respond: fn(&str) -> String) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| async move {
+                let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let user = req["messages"][1]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let resp = serde_json::json!({
+                    "choices": [{ "message": { "content": respond(&user) } }]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn detect_skips_noop_correction() {
+        // correction 与 original 无差异 → 结构性拒收（不是编辑）
+        let endpoint = mock_llm_server(
+            r#"[{"error_type":"错别字","confidence":0.9,"original":"报复","correction":"报复","message":"复读"}]"#,
+        )
+        .await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        assert!(engine.detect("他报复很大。").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn parse_failure_is_visible_not_silent() {
+        // 响应无法解析：结果为空但 take_parse_failed 置真（「复查失败」≠「确认干净」）
+        let endpoint = mock_llm_server("抱歉，我无法完成该任务。").await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        assert!(engine.detect("正确句子").await.unwrap().is_empty());
+        assert!(engine.take_parse_failed(), "解析失败必须显式可见");
+        assert!(!engine.take_parse_failed(), "读取后复位");
+        // 正常响应不置标记
+        let endpoint = mock_llm_server("[]").await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        engine.detect("正确句子").await.unwrap();
+        assert!(!engine.take_parse_failed());
+    }
+
+    #[tokio::test]
+    async fn detect_document_remaps_spans_and_ownership() {
+        // 所有权契约：错误只由归属块上报——上下文前缀区的重复上报被丢弃。
+        // 两段文本，错误「甲错」在第一段；mock 对**任何**含第一段的请求都报它，
+        // 于是块 1（归属区）保留、块 2（前缀区）丢弃 → 全文恰好 1 条。
+        let p1 = "第一段里有甲错需要检出，其余文字均为干净的叙述内容填充。".repeat(2);
+        let p2 = "第二段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |user| {
+            if user.contains("第一段") {
+                r#"[{"error_type":"错别字","confidence":0.9,"original":"甲错","correction":"抱负","message":"音近误用"}]"#.to_string()
+            } else {
+                "[]".to_string()
+            }
+        };
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let o = engine.detect_document(&text, 50, 4).await.unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        assert_eq!(o.failed_chunks, 0);
+        assert_eq!(o.parse_failed_chunks, 0);
+        assert_eq!(o.errors.len(), 1, "所有权去重后恰好一条: {:?}", o.errors.len());
+        let e = &o.errors[0];
+        let expect = text.find("甲错").unwrap();
+        assert_eq!(e.span, [expect, expect + "甲错".len()], "span 必须是文档字节偏移");
+        assert_eq!(e.source.as_deref(), Some("llm"));
+    }
+
+    #[tokio::test]
+    async fn detect_document_counts_parse_failed_chunks() {
+        // 单块解析失败不中断整体：计入 parse_failed_chunks，coverage 如实下降
+        let p1 = "第一段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p2 = "第二段包含坏块标记，mock 对它返回非 JSON。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |user| {
+            if user.contains("坏块") {
+                "抱歉，这一段我无法处理。".to_string()
+            } else {
+                "[]".to_string()
+            }
+        };
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let o = engine.detect_document(&text, 50, 4).await.unwrap();
+        assert!(o.chunks >= 2);
+        assert!(o.parse_failed_chunks >= 1, "解析失败块必须记账");
+        assert!(o.coverage() < 1.0);
+    }
+
 }
