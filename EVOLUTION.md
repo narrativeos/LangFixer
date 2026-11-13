@@ -563,6 +563,15 @@ arm=current / generic 臂 / 网关 Qwen3.8，LLM 触达率均 100%）：
 修复：`gec-zh` 检测器入口 `tokens_to_byte_spans` 统一经
 `gec_core::char_span_to_bytes` 换算，附回归测试；修复后该测试转绿。
 
+### 2026-11-13 · L3 公网实例开关暂关（生产实况）
+
+公网实例（47.94.172.217）的 L3 特征模型服务**从未部署**：4806 无监听、无 systemd
+单元、模型产物仅 2KB stub（真 gec 模型在 3090 训练）、系统 Python 3.6.8 跑不动
+FastAPI 服务。settings 里 `l3.enabled` 已置 false（与「开闸但 fail-open」行为
+等价；level 2 门控语义见 engine.rs `l3_disabled`）。**待办**：3090 gec 模型出来后
+部署 4806 服务并原位打开开关，随同刀②的对比版一起做。退役决策层同理不再被设置页
+探测（`settings_test` disabled 层短路）。
+
 ## 11. 项目 #1 重评：决策模型（vegaml）选型 / 架构作用 / 实际贡献（2026-10-18 测量记录）
 
 **背景**：§7 项目 #1 = 「用测评中心消融工具在 P0.5 后重跑 vegaml vs L3-only，

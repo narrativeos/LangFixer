@@ -21,7 +21,8 @@
 //! 响应级别语义（P0.5 重绑：**L3 特征模型是唯一的 pre-LLM 门控**）：
 //! - level 1：规则（+ 决策模型，若显式启用）；
 //! - level 2：level 1 + L3 门控（L3 启用时：高置信判定直接定案，
-//!   弃权 / 服务不可用 → LLM 兜底；L3 未启用时回退旧语义：决策模型弃权 → LLM 兜底）；
+//!   弃权 / 服务不可用 → LLM 兜底；L3 **显式关闭** → **无条件** LLM 兜底，
+//!   与 l3.rs「回退无条件 LLM」口径一致；从未配置 L3 时回退旧语义：决策模型弃权触发）；
 //! - level 3：level 1 + L3 门控 + **无条件**全文 LLM（「漏报」兜底）。
 //!
 //! LLM 兜底层（[`LlmGecEngine`]）不静态挂载：由 API / 桌面端在 level 2/3 请求
@@ -533,6 +534,10 @@ pub struct CascadeDetector {
     /// L3 特征模型（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
     /// 未启用时为 None，level 3 回退「无条件 LLM」）
     pub l3: Option<Arc<L3FeatureEngine>>,
+    /// L3 **配置存在但显式关闭**（`enabled=false`）：level 2 门控视同「门控缺席」
+    /// 开闸，回退无条件 LLM（[`crate::l3::L3FeatureConfig`] enabled 字段的文档口径）；
+    /// 从未配置 L3 的部署保持旧语义（决策模型弃权门控）
+    pub l3_disabled: bool,
     /// 对外报告的引擎类型（决策层挂载时报告 `decision`）
     kind_override: Option<GecEngineKind>,
 }
@@ -549,6 +554,7 @@ impl CascadeDetector {
             decision,
             knowledge_recall: None,
             l3: None,
+            l3_disabled: false,
             kind_override: None,
         }
     }
@@ -722,12 +728,14 @@ impl GecEngine for CascadeDetector {
             }
         }
         // ③ LLM 兜底：force_llm 无条件触发 / level 2 门控触发（P0.5：L3 是唯一的
-        // pre-LLM 门控——L3 弃权 / 服务不可用 → 长尾兜底；L3 未启用时回退旧语义：
-        // 决策模型弃权触发）/ level 3 无条件
+        // pre-LLM 门控——L3 弃权 / 服务不可用 → 开闸；L3 **显式关闭**（l3_disabled）
+        // → 同样开闸回退无条件 LLM，这是 l3.rs enabled 字段的文档口径，防止门控层
+        // 缺席叠加退役决策层后 level 2 静默退化为纯规则；从未配置 L3 的旧式部署
+        // 保持旧语义：决策模型弃权触发）/ level 3 无条件
         let l3_gate_open = match &l3_res {
             Some(Ok(o)) => o.abstained,
             Some(Err(_)) => true,
-            None => false,
+            None => self.l3_disabled,
         };
         let mut need_llm = force_llm
             || match level {
@@ -922,6 +930,8 @@ pub fn compose_detector<D: GECDetector + 'static>(
         .as_ref()
         .filter(|c| c.enabled())
         .map(|c| Arc::new(L3FeatureEngine::new(lang, c.clone())));
+    // 显式关闭（配置在但 enabled=false）与从未配置区分：前者 level 2 开闸回退无条件 LLM
+    let l3_disabled = l3.as_ref().is_some_and(|c| !c.enabled());
     match GecEngineKind::from_env(lang) {
         GecEngineKind::Statistical => {
             let primary = Arc::new(StatisticalGecEngine::from_env(lang));
@@ -944,6 +954,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
             let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                 .with_kind_override(GecEngineKind::Decision);
             det.knowledge_recall = knowledge_recall;
+            det.l3_disabled = l3_disabled;
             if let Some(e) = l3_engine {
                 det.l3 = Some(e);
                 tracing::info!(
@@ -968,6 +979,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                     .with_kind_override(GecEngineKind::Decision);
                 det.knowledge_recall = knowledge_recall;
+                det.l3_disabled = l3_disabled;
                 if let Some(e) = l3_engine {
                     det.l3 = Some(e);
                     tracing::info!(
@@ -987,6 +999,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     );
                     let mut det = CascadeDetector::new(lang, rule, None);
                     det.knowledge_recall = Some(kr);
+                    det.l3_disabled = l3_disabled;
                     if let Some(e) = l3_engine {
                         det.l3 = Some(e);
                         tracing::info!(
@@ -1112,6 +1125,8 @@ mod tests {
     #[tokio::test]
     async fn cascade_level2_without_gates_marks_llm_skipped() {
         // level 2 但无决策层 / L3（无弃权信号、无门控）→ LLM 未触发 → layers 记 `skipped`
+        // （L3 **从未配置**的旧式部署语义；若是显式关闭 enabled=false 则开闸，
+        // 见 cascade_level2_with_l3_disabled_triggers_llm）
         let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
             lang: "en",
             fail: false,
@@ -1124,6 +1139,34 @@ mod tests {
             .find(|l| l.layer == "llm")
             .expect("level 2 应报告 llm 层状态");
         assert_eq!(llm.status, "skipped");
+    }
+
+    #[tokio::test]
+    async fn cascade_level2_with_l3_disabled_triggers_llm() {
+        // L3 显式关闭（配置存在但 enabled=false，引擎未挂载）→ level 2 门控开闸，
+        // 回退**无条件** LLM（l3.rs「回退无条件 LLM」口径）。若关门，叠加已退役
+        // 决策层后 level 2 会静默退化为纯规则——level 2 流量丢失 LLM 覆盖率
+        let llm_endpoint = mock_llm_service().await;
+        let llm = llm_engine(&llm_endpoint);
+        let mut det = CascadeDetector::new(
+            "zh",
+            Arc::new(FakeRule {
+                lang: "zh",
+                fail: false,
+            }),
+            None,
+        );
+        det.l3_disabled = true;
+        let outcome = det
+            .detect_level("正确句子", 2, false, Some(&llm))
+            .await
+            .unwrap();
+        let llm_layer = outcome
+            .layers
+            .iter()
+            .find(|l| l.layer == "llm")
+            .expect("level 2 应报告 llm 层状态");
+        assert_eq!(llm_layer.status, "ran", "显式关闭 L3 应开闸回退 LLM");
     }
 
     #[test]
