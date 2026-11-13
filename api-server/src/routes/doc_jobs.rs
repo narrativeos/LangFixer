@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use axum::extract::Path as AxPath;
 use axum::extract::{Query, State};
+use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::routes::ApiError;
@@ -25,6 +26,13 @@ pub struct CreateReq {
     /// 目标块大小（字符，默认 `GEC_LLM_CHUNK_TARGET` > 1500）
     #[serde(default)]
     pub chunk_target: Option<usize>,
+    /// 内容寻址块缓存（默认开）：修订文档的未变更块免重跑
+    #[serde(default = "default_true")]
+    pub cache: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn internal(e: rusqlite::Error) -> ApiError {
@@ -36,6 +44,7 @@ fn spawn_run(
     state: &AppState,
     id: &str,
     llm: Arc<gec_core::LlmGecEngine>,
+    use_cache: bool,
 ) -> Result<Arc<AtomicBool>, ApiError> {
     let cancel = Arc::new(AtomicBool::new(false));
     state
@@ -54,6 +63,7 @@ fn spawn_run(
             llm,
             &job_id,
             gec_core::docjob::default_concurrency(),
+            use_cache,
             cancel_bg,
         )
         .await;
@@ -83,7 +93,7 @@ pub async fn create(
         .doc_jobs
         .create_job(&id, &req.lang, &req.text, None, target)
         .map_err(internal)?;
-    spawn_run(&state, &id, llm)?;
+    spawn_run(&state, &id, llm, req.cache)?;
     Ok(Json(serde_json::json!({
         "job_id": id,
         "chunks": chunks,
@@ -215,6 +225,43 @@ pub async fn retry(
         .llm_detect_engine(&job.lang)
         .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
     let reset = state.doc_jobs.reset_failed_chunks(&id).map_err(internal)?;
-    spawn_run(&state, &id, llm)?;
+    spawn_run(&state, &id, llm, true)?;
     Ok(Json(serde_json::json!({ "ok": true, "reset_chunks": reset })))
+}
+
+/// SSE 进度流：每 300ms 一个 `progress` 事件（状态 + 进度 + 覆盖率），
+/// 终态发 `end` 事件后关闭。断线可重连（幂等轮询，无服务端游标状态）。
+pub async fn events(
+    State(state): State<Arc<AppState>>,
+    AxPath(id): AxPath<String>,
+) -> Result<axum::response::Response, ApiError> {
+    if state.doc_jobs.job(&id).map_err(internal)?.is_none() {
+        return Err(ApiError::NotFound(format!("作业不存在: {id}")));
+    }
+    let store = state.doc_jobs.clone();
+    let stream = futures_util::stream::unfold((store, id, false), |(store, job_id, done)| async move {
+        if done {
+            return None;
+        }
+        let job = store.job(&job_id).ok().flatten()?;
+        let progress = store.progress(&job_id).ok()?;
+        let terminal = matches!(job.status.as_str(), "done" | "cancelled" | "failed");
+        let data = serde_json::json!({
+            "status": job.status,
+            "progress": progress,
+            "coverage": progress.coverage(),
+        });
+        let event = axum::response::sse::Event::default()
+            .event(if terminal { "end" } else { "progress" })
+            .json_data(data)
+            .ok()?;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        Some((
+            Ok::<_, std::convert::Infallible>(event),
+            (store, job_id, terminal),
+        ))
+    });
+    Ok(axum::response::sse::Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response())
 }

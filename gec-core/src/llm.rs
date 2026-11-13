@@ -323,6 +323,23 @@ impl LlmGecEngine {
     }
 }
 
+impl LlmGecEngine {
+    /// 块级结果缓存指纹（`docjob::chunk_cache` 的 key 成分）：
+    /// 模型名 + 提示词 + 输出格式 + max_tokens——任一变化即整体失效。
+    /// 不含 base_url / api_key：端点漂移（换 mock / 换代理）不应使缓存作废，
+    /// 复用契约是「同一复查函数」而非「同一端点」。
+    pub fn cache_fingerprint(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.config.model.hash(&mut h);
+        self.config.system.hash(&mut h);
+        self.config.user_template.hash(&mut h);
+        self.config.output_format.hash(&mut h);
+        self.config.max_tokens.hash(&mut h);
+        format!("{:016x}", h.finish())
+    }
+}
+
 /// 块结果重映射（所有权图契约，见 [`crate::docchunk`]）：
 /// - 完全落在上下文前缀区 → 丢弃（归上一块所有，结构上消除双报）；
 /// - 归属区内 → 平移回文档字节坐标（钳制在归属区）；

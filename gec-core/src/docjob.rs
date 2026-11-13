@@ -66,18 +66,21 @@ impl ChunkRow {
 pub struct DocJobProgress {
     pub total: usize,
     pub done: usize,
+    /// 命中内容寻址缓存的块（同样计入覆盖率，未消耗 LLM）
+    pub cached: usize,
     pub failed: usize,
     pub parse_failed: usize,
     pub pending: usize,
 }
 
 impl DocJobProgress {
-    /// 深度复查覆盖率：done / total（failed / parse_failed / pending 均**不算**已复查）
+    /// 深度复查覆盖率：(done + cached) / total
+    /// （failed / parse_failed / pending 均**不算**已复查）
     pub fn coverage(&self) -> f64 {
         if self.total == 0 {
             return 0.0;
         }
-        self.done as f64 / self.total as f64
+        (self.done + self.cached) as f64 / self.total as f64
     }
 }
 
@@ -118,6 +121,13 @@ impl DocJobStore {
                  error TEXT,
                  llm_ms INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY (job_id, idx)
+             );
+             CREATE TABLE IF NOT EXISTS chunk_cache(
+                 key TEXT PRIMARY KEY,
+                 fp TEXT NOT NULL,
+                 send_len INTEGER NOT NULL,
+                 result_json TEXT NOT NULL,
+                 created_at TEXT NOT NULL
              );",
         )?;
         Ok(Self {
@@ -222,6 +232,7 @@ impl DocJobStore {
             p.total += n;
             match s.as_str() {
                 "done" => p.done = n,
+                "cached" => p.cached = n,
                 "failed" => p.failed = n,
                 "parse_failed" => p.parse_failed = n,
                 _ => p.pending += n,
@@ -289,9 +300,9 @@ impl DocJobStore {
         Ok(n)
     }
 
-    /// 聚合全部 done 块的错误（文档坐标，按 span 排序）
+    /// 聚合全部 done / cached 块的错误（文档坐标，按 span 排序）
     pub fn aggregated_errors(&self, id: &str) -> Result<Vec<Error>, rusqlite::Error> {
-        let rows = self.select_chunks(id, "status = 'done'")?;
+        let rows = self.select_chunks(id, "status IN ('done', 'cached')")?;
         let mut out = Vec::new();
         for r in rows {
             if let Some(j) = r.result_json {
@@ -303,6 +314,61 @@ impl DocJobStore {
         out.sort_by_key(|e| e.span[0]);
         Ok(out)
     }
+
+    /// 块缓存查询：命中返回**块局部坐标**的错误（由调用方按所有权重映射）；
+    /// 哈希碰撞防御 = fp + send_len 双重校验。
+    pub fn cache_lookup(
+        &self,
+        key: &str,
+        fp: &str,
+        send_len: usize,
+    ) -> Result<Option<Vec<Error>>, rusqlite::Error> {
+        use rusqlite::OptionalExtension;
+        let row = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT result_json, send_len FROM chunk_cache WHERE key = ?1 AND fp = ?2",
+                params![key, fp],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((json, len)) if len as usize == send_len => {
+                Ok(Some(serde_json::from_str(&json).unwrap_or_default()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// 块缓存写入（仅解析成功的结果；INSERT OR REPLACE 兼作 TTL 顺延）
+    pub fn cache_store(
+        &self,
+        key: &str,
+        fp: &str,
+        send_len: usize,
+        errors: &[Error],
+    ) -> Result<(), rusqlite::Error> {
+        let json = serde_json::to_string(errors).unwrap_or_else(|_| "[]".into());
+        self.conn.lock().unwrap().execute(
+            "INSERT OR REPLACE INTO chunk_cache(key, fp, send_len, result_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            params![key, fp, send_len as i64, json],
+        )?;
+        Ok(())
+    }
+}
+
+/// 内容寻址块缓存 key：`{fp}:{hash(send)}`——
+/// 相同「复查函数」（模型+提示词+格式，见 `LlmGecEngine::cache_fingerprint`）下，
+/// 相同 send 文本 → 相同结果，修订文档中未变更的块天然命中（免显式 diff）。
+fn chunk_cache_key(send: &str, fp: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    fp.hash(&mut h);
+    send.hash(&mut h);
+    format!("{fp}:{:016x}", h.finish())
 }
 
 /// 作业列表元数据（列表页不带全文）
@@ -335,6 +401,9 @@ pub fn default_concurrency() -> usize {
 ///
 /// - `cancel`：调用方持有的取消位——置位后**未开跑**的块保持 pending，
 ///   作业终态 `cancelled`（已 checkpoint 的结果保留，可续跑）；
+/// - `use_cache`：内容寻址块缓存（`chunk_cache`）——相同 send 文本 +
+///   相同复查函数指纹 → 直接复用结果（块标 `cached`，计入覆盖率，
+///   不消耗 LLM）；修订文档的未变更块天然命中，免显式 diff；
 /// - 全部块处理完 → 作业 `done`；
 /// - 返回进度 + 聚合错误（覆盖率 = `progress.coverage()`）。
 pub async fn run_doc_job(
@@ -342,6 +411,7 @@ pub async fn run_doc_job(
     llm: Arc<LlmGecEngine>,
     job_id: &str,
     concurrency: usize,
+    use_cache: bool,
     cancel: Arc<AtomicBool>,
 ) -> Result<(DocJobProgress, Vec<Error>), DetectorError> {
     use futures_util::StreamExt;
@@ -356,11 +426,13 @@ pub async fn run_doc_job(
         .pending_chunks(job_id)
         .map_err(|e| DetectorError::DetectionFailed(format!("块读取失败: {e}")))?;
     let text: Arc<str> = Arc::from(job.text.as_str());
+    let fp = llm.cache_fingerprint();
     let mut stream = futures_util::stream::iter(pending.into_iter().map(|row| {
         let store = store.clone();
         let llm = llm.clone();
         let cancel = cancel.clone();
         let text = text.clone();
+        let fp = fp.clone();
         let job_id = job_id.to_string();
         async move {
             if cancel.load(Ordering::Relaxed) {
@@ -372,10 +444,21 @@ pub async fn run_doc_job(
                     .ok();
                 return;
             };
+            let key = use_cache.then(|| chunk_cache_key(&chunk.send, &fp));
+            if let Some(k) = &key {
+                // 缓存命中：块局部坐标 → 所有权 remap → 直接 done（未消耗 LLM）
+                if let Ok(Some(errors)) = store.cache_lookup(k, &fp, chunk.send.len()) {
+                    let mapped = remap_chunk_errors(&chunk, errors);
+                    let json = serde_json::to_string(&mapped).unwrap_or_else(|_| "[]".into());
+                    store
+                        .checkpoint_chunk(&job_id, row.index, "cached", Some(&json), None, 0)
+                        .ok();
+                    return;
+                }
+            }
             let t = std::time::Instant::now();
             match llm.detect_anchored(&chunk.send).await {
                 Ok((errors, pf)) => {
-                    let mapped = remap_chunk_errors(&chunk, errors);
                     let ms = t.elapsed().as_millis() as u64;
                     if pf {
                         store
@@ -389,6 +472,11 @@ pub async fn run_doc_job(
                             )
                             .ok();
                     } else {
+                        if let Some(k) = &key {
+                            // 仅缓存解析成功的**块局部**结果（remap 前坐标）
+                            store.cache_store(k, &fp, chunk.send.len(), &errors).ok();
+                        }
+                        let mapped = remap_chunk_errors(&chunk, errors);
                         let json = serde_json::to_string(&mapped).unwrap_or_else(|_| "[]".into());
                         store
                             .checkpoint_chunk(&job_id, row.index, "done", Some(&json), None, ms)
@@ -515,6 +603,7 @@ mod tests {
             llm,
             "j1",
             4,
+            false,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -551,6 +640,7 @@ mod tests {
             llm_bad,
             "j1",
             4,
+            false,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -569,6 +659,7 @@ mod tests {
             llm_good,
             "j1",
             4,
+            false,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -587,11 +678,98 @@ mod tests {
         let store = Arc::new(DocJobStore::open_in_memory().unwrap());
         let text = sample_doc();
         let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
-        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, Arc::new(AtomicBool::new(true)))
+        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, Arc::new(AtomicBool::new(true)))
             .await
             .unwrap();
         assert_eq!(p.pending, n, "取消位置位 → 全部块保持 pending");
         assert_eq!(p.coverage(), 0.0);
         assert_eq!(store.job("j1").unwrap().unwrap().status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn cache_hit_avoids_llm_calls() {
+        // 第一轮：正常 mock（use_cache=true）→ 全部 done 并写入块缓存
+        let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
+        let endpoint = mock_server(good).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let text = sample_doc();
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        let (p, _) = run_doc_job(
+            store.clone(),
+            llm,
+            "j1",
+            4,
+            true,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.done, n);
+        // 第二轮：相同文本 + **必然失败**的 mock（400）——若全部块命中缓存，
+        // LLM 一次都不会被调用，failed 恒为 0
+        let dead: fn(&str) -> Option<String> = |_| None;
+        let endpoint = mock_server(dead).await;
+        let llm_dead = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let n2 = store.create_job("j2", "zh", &text, None, 50).unwrap();
+        assert_eq!(n2, n);
+        let (p2, errors) = run_doc_job(
+            store.clone(),
+            llm_dead,
+            "j2",
+            4,
+            true,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2.cached, n, "全部块应命中缓存: {p2:?}");
+        assert_eq!(p2.done, 0);
+        assert_eq!(p2.failed, 0, "缓存命中路径不应触碰 LLM");
+        assert_eq!(p2.coverage(), 1.0);
+        assert!(errors.is_empty(), "缓存内容与命中路径结果一致（mock 恒空）");
+    }
+
+    #[tokio::test]
+    async fn revised_document_rechecks_only_changed_chunks() {
+        let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
+        let endpoint = mock_server(good).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let p1 = "第一段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p2 = "第二段原文也是干净的叙述内容填充文字。".repeat(2);
+        let text1 = format!("{p1}\n{p2}\n");
+        let (p, _) = run_doc_job(
+            store.clone(),
+            llm.clone(),
+            {
+                store.create_job("j1", "zh", &text1, None, 50).unwrap();
+                "j1"
+            },
+            4,
+            true,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.done + p.cached, p.total);
+        // 修订：p1 不变，p2 改 → p1 的块命中缓存，p2 的块重跑
+        let p2b = "第二段被作者修订过，内容变了，需要重新复查。".repeat(2);
+        let text2 = format!("{p1}\n{p2b}\n");
+        store.create_job("j2", "zh", &text2, None, 50).unwrap();
+        let (p2s, _) = run_doc_job(
+            store.clone(),
+            llm,
+            "j2",
+            4,
+            true,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2s.coverage(), 1.0);
+        assert!(p2s.cached >= 1, "未变更段落应命中缓存: {p2s:?}");
+        assert!(p2s.done >= 1, "变更段落必须重跑: {p2s:?}");
+        assert_eq!(p2s.failed + p2s.parse_failed + p2s.pending, 0);
     }
 }

@@ -122,6 +122,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 )
                 .route("/:id", axum::routing::get(doc_jobs::get))
                 .route("/:id/results", axum::routing::get(doc_jobs::results))
+                .route("/:id/events", axum::routing::get(doc_jobs::events))
                 .route("/:id/cancel", axum::routing::post(doc_jobs::cancel))
                 .route("/:id/retry", axum::routing::post(doc_jobs::retry))
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),

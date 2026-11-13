@@ -3290,5 +3290,23 @@ async fn doc_job_flow_chunks_and_aggregates() {
         .unwrap()
         .iter()
         .any(|j| j["id"].as_str() == Some(&id)));
+    // SSE 进度流：作业已终态 → 首个业务事件即 `end`
+    let mut resp = c
+        .get(format!("{base}/gec/doc-jobs/{id}/events"))
+        .send()
+        .await
+        .unwrap();
+    let mut buf = String::new();
+    for _ in 0..20 {
+        match resp.chunk().await.unwrap() {
+            Some(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+            None => break,
+        }
+        if buf.contains("event: end") {
+            break;
+        }
+    }
+    assert!(buf.contains("event: end"), "SSE 应发 end 事件: {buf}");
+    assert!(buf.contains("\"coverage\":1"));
 }
 
