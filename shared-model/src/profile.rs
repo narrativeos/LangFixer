@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::error::coarse_error_type;
 use crate::session::Mistake;
 
 /// 主导错误类型的占比阈值
@@ -100,7 +101,11 @@ pub fn build_error_profile(
     let mut correction_pairs: HashMap<(String, String), u32> = HashMap::new();
     let mut total: u32 = 0;
     for o in observations {
-        *type_counts.entry(o.error_type.clone()).or_insert(0) += o.weight;
+        // 查询期按粗族聚合（§11.11 兼容：新细类型与历史粗类型行同族合并，
+        // 行级数据不变；en/ja 类型透传）
+        *type_counts
+            .entry(coarse_error_type(&o.error_type).to_string())
+            .or_insert(0) += o.weight;
         total += o.weight;
         if let Some(c) = &o.correction {
             *correction_pairs
@@ -134,7 +139,7 @@ pub fn build_error_profile(
             if examples.len() >= EXAMPLES_PER_TYPE {
                 break;
             }
-            if o.error_type != h.error_type {
+            if coarse_error_type(&o.error_type) != h.error_type {
                 continue;
             }
             let example = match &o.correction {
@@ -215,6 +220,22 @@ mod tests {
             correction: correction.map(Into::into),
             weight,
         }
+    }
+
+    #[test]
+    fn zh_fine_types_fold_into_coarse_family() {
+        // §11.11 兼容：新细类型与历史粗类型行在画像中同族合并
+        let observations = vec![
+            obs("grammar", "的的", Some("的"), 2),
+            obs("pos_error", "进行修订", Some("修订了"), 1),
+            obs("conjunction", "不但而且", Some("不仅还"), 1),
+            obs("extra_char", "去了去了", Some("去了"), 1),
+        ];
+        let p = build_error_profile("s_1", BASIS_CONFIRMED, &observations, None);
+        assert_eq!(p.total_errors, 5);
+        assert_eq!(p.type_distribution.get("grammar"), Some(&4));
+        assert_eq!(p.type_distribution.get("spelling"), Some(&1));
+        assert!(p.type_distribution.get("pos_error").is_none());
     }
 
     fn mistake(id: i64, status: Option<&str>) -> Mistake {

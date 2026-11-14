@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Extension, Json, State};
 use gec_core::{DetectOutcome, DetectorError};
-use shared_model::{AnalyzedError, AttributionContext};
+use shared_model::{AnalyzedError, AttributionContext, coarse_error_type};
 
 use crate::APP_VERSION;
 use crate::auth::Tenant;
@@ -145,7 +145,13 @@ pub async fn analyze(
                 };
                 let ctx = AttributionContext {
                     lang: req.lang.clone(),
-                    error_type: error.error_type.clone(),
+                    // zh 细粒度类型在决策表按粗族回退（§11.11 兼容，表不改）；
+                    // en/ja 原样（ja 表有 word_order 命中行，不可折叠）
+                    error_type: if req.lang == "zh" {
+                        coarse_error_type(&error.error_type).to_string()
+                    } else {
+                        error.error_type.clone()
+                    },
                     confidence: error.confidence,
                     session_error_count: history,
                     session_meta: meta.clone(),

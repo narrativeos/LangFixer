@@ -9,9 +9,10 @@
 //! user 模板含 `{{text}}` 占位符）；响应 content 应为 JSON 数组：
 //! `[{"error_type", "confidence", "original", "correction"?, "message"}]`。
 //! zh_detect v1.2 起 prompt 使用 CEC（ACL 2026）教学错误分类（错别字/词语搭配
-//! 错误/…）；`map_llm_error_type` 在解析边界把教学分类映射为统一内部类型
-//! （spelling/collocation/grammar/punctuation/logic/anomaly），教学分类不进入
-//! 决策表与知识库。
+//! 错误/…）；`map_llm_error_type` 在解析边界把教学分类映射为统一内部类型，
+//! §11.11 分类法 v2 起 CEC 细分不再坠缩（spelling/collocation/pos_error/
+//! word_order/missing_component/redundant_component/conjunction/reference/
+//! logic/punctuation），教学分类不进入决策表与知识库。
 //!
 //! span 映射：提示词要求 `original` 为原文中的**精确片段**，服务端在原文中
 //! 定位片段解析字节偏移（规避 LLM 直接数 CJK 字节偏移的不可靠）；
@@ -529,21 +530,27 @@ fn resolve_span(text: &str, original: &str, claimed: &[[usize; 2]]) -> [usize; 2
 /// LLM 输出的 `error_type` → 统一内部错误类型（`shared_model::error_types`）。
 ///
 /// zh_detect v1.2 起 prompt 使用 CEC（ACL 2026）教学分类；本映射只在解析边界
-/// 做一次转换，教学分类不进入决策表 / 知识库：
-/// - 错别字 → spelling；词语搭配错误 → collocation；
-/// - 词性/语序/成分残缺/成分赘余/关联词/指代不明 → grammar；
-/// - 语义逻辑不通 → logic（保持 v1.1 枚举的透传语义）；标点 → punctuation；
-/// - 空 → grammar（兜底）；anomaly 与旧版英文 token（spelling/grammar/…）
-///   及其他未知值原样透传（兼容其他模型的输出）。
+/// 做一次转换，教学分类不进入决策表 / 知识库。**§11.11 分类法 v2：CEC 细分不
+/// 再坠缩进 grammar**——句法细分各自落到一个细类型码（决策表/统计由
+/// [`shared_model::coarse_error_type`] 在查询期回退到粗族，DB 不迁移）：
+/// - 错别字 → spelling；词语搭配错误 → collocation；标点 → punctuation；
+/// - 词性错误 → pos_error；语序错误 → word_order；成分残缺 → missing_component；
+///   成分赘余 → redundant_component；关联词使用错误 → conjunction；
+///   指代不明 → reference；语义逻辑不通 → logic；
+/// - 空 → grammar（坠底）；anomaly 与内部细类型 / 旧版英文 token
+///   （spelling/grammar/…）及其他未知值原样透传（兼容其他模型的输出）。
 fn map_llm_error_type(raw: &str) -> String {
     match raw.trim() {
         "" => error_types::GRAMMAR.to_string(),
         "错别字" => error_types::SPELLING.to_string(),
         "词语搭配错误" => error_types::COLLOCATION.to_string(),
-        "词性错误" | "语序错误" | "成分残缺" | "成分赘余" | "关联词使用错误" | "指代不明" => {
-            error_types::GRAMMAR.to_string()
-        }
-        "语义逻辑不通" => "logic".to_string(),
+        "词性错误" => error_types::POS_ERROR.to_string(),
+        "语序错误" => error_types::WORD_ORDER.to_string(),
+        "成分残缺" => error_types::MISSING_COMPONENT.to_string(),
+        "成分赘余" => error_types::REDUNDANT_COMPONENT.to_string(),
+        "关联词使用错误" => error_types::CONJUNCTION.to_string(),
+        "指代不明" => error_types::REFERENCE.to_string(),
+        "语义逻辑不通" => error_types::LOGIC.to_string(),
         "标点" => error_types::PUNCTUATION.to_string(),
         other => other.to_string(),
     }
@@ -1401,26 +1408,25 @@ mod tests {
 
     #[test]
     fn map_llm_error_type_converts_cec_taxonomy() {
-        // CEC（ACL 2026）教学分类 → 统一内部类型
+        // CEC（ACL 2026）教学分类 → 统一内部类型（§11.11：细分不坠缩）
         assert_eq!(map_llm_error_type("错别字"), "spelling");
         assert_eq!(map_llm_error_type("词语搭配错误"), "collocation");
-        for t in [
-            "词性错误",
-            "语序错误",
-            "成分残缺",
-            "成分赘余",
-            "关联词使用错误",
-            "指代不明",
-        ] {
-            assert_eq!(map_llm_error_type(t), "grammar");
-        }
+        assert_eq!(map_llm_error_type("词性错误"), "pos_error");
+        assert_eq!(map_llm_error_type("语序错误"), "word_order");
+        assert_eq!(map_llm_error_type("成分残缺"), "missing_component");
+        assert_eq!(map_llm_error_type("成分赘余"), "redundant_component");
+        assert_eq!(map_llm_error_type("关联词使用错误"), "conjunction");
+        assert_eq!(map_llm_error_type("指代不明"), "reference");
         assert_eq!(map_llm_error_type("语义逻辑不通"), "logic");
         assert_eq!(map_llm_error_type("标点"), "punctuation");
-        // 空值兜底 grammar；anomaly / 旧版英文 token / 未知值原样透传
+        // 空值坠底 grammar；anomaly / 内部细类型码 / 旧版英文 token /
+        // 未知值原样透传（自训模型直接输出内部码的路径）
         assert_eq!(map_llm_error_type(""), "grammar");
         assert_eq!(map_llm_error_type("anomaly"), "anomaly");
         assert_eq!(map_llm_error_type("spelling"), "spelling");
         assert_eq!(map_llm_error_type("grammar"), "grammar");
+        assert_eq!(map_llm_error_type("extra_char"), "extra_char");
+        assert_eq!(map_llm_error_type("semantic_dup"), "semantic_dup");
         assert_eq!(map_llm_error_type("  错别字  "), "spelling");
         assert_eq!(map_llm_error_type("tense"), "tense");
     }
@@ -1442,7 +1448,7 @@ mod tests {
             .unwrap();
         assert_eq!(errors.len(), 5);
         assert_eq!(errors[0].error_type, "spelling");
-        assert_eq!(errors[1].error_type, "grammar");
+        assert_eq!(errors[1].error_type, "missing_component");
         assert_eq!(errors[2].error_type, "collocation");
         assert_eq!(errors[3].error_type, "punctuation");
         assert_eq!(errors[4].error_type, "logic");

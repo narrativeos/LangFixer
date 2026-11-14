@@ -6,6 +6,16 @@
 
 ### 新增
 
+- **zh 错误分类法 v2 落地：LLM 细类型不再坠缩**（EVOLUTION.md §11.11）：
+  `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/
+  关联词/指代→各自细类型码，语义逻辑不通转正为 `logic` 常量），
+  `error_types` 补 11 个细类型常量；兼容不迁 DB：新函数
+  `coarse_error_type` 查询期粗族回退——归因决策表（analyze/attribute 按
+  zh 门控，ja 表 `word_order` 命中行不受影响）、错误画像统计
+  （type_distribution/habitual）与会话分布按粗族聚合，行级数据保留细类型；
+  W3C issue_type 推导补细类型分支；前端 `ERROR_TYPE_LABELS` 补 T 族与数字
+  通道展示词。
+
 - **zh 数字/量值/序号三条规则通道**（分类法 v2 首批，EVOLUTION.md §11.11）：
   新规则 `ZH_NUMERAL`（万万并置/阿拉伯-汉字数字混写，GB/T 15835—2011）、
   `ZH_QUANTITY_UNIT`（数值区间单侧缺单位、中外单位并注，GB 3101/GB/T 1.1）、

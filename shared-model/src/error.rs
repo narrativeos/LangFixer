@@ -169,6 +169,28 @@ pub mod error_types {
     pub const QUANTITY_UNIT: &str = "quantity_unit";
     /// 序号跳号/重号
     pub const SERIAL_NO: &str = "serial_no";
+    // zh 分类法 v2 细粒度（EVOLUTION.md §11.11 T 族；CEC 细分不再坍缩进粗类型）。
+    // 语序错误复用下方日文区的 WORD_ORDER（字符串相同）。
+    /// 多字（字词重复冗余）
+    pub const EXTRA_CHAR: &str = "extra_char";
+    /// 少字（虚词/结构词缺失）
+    pub const MISSING_CHAR: &str = "missing_char";
+    /// 词性误用
+    pub const POS_ERROR: &str = "pos_error";
+    /// 成分残缺（缺主语/宾语等）
+    pub const MISSING_COMPONENT: &str = "missing_component";
+    /// 成分赘余
+    pub const REDUNDANT_COMPONENT: &str = "redundant_component";
+    /// 句式杂糅
+    pub const BLEND: &str = "blend";
+    /// 关联词误用
+    pub const CONJUNCTION: &str = "conjunction";
+    /// 指代不明
+    pub const REFERENCE: &str = "reference";
+    /// 语义逻辑不通
+    pub const LOGIC: &str = "logic";
+    /// 语义重复
+    pub const SEMANTIC_DUP: &str = "semantic_dup";
     // 英文
     pub const ARTICLE: &str = "article";
     pub const AGREEMENT: &str = "agreement";
@@ -202,16 +224,61 @@ pub mod issue_types {
     pub const OTHER: &str = "other";
 }
 
+/// zh 分类法 v2 兼容映射：细粒度类型 → 旧粗类型（EVOLUTION.md §11.11，DB 不迁移）。
+///
+/// 错题本/统计查询期聚合与决策表归因按此回退，使新细类型与历史
+/// `grammar`/`spelling` 行同族合并；多字/少字归字类（spelling 族），
+/// CEC 句法细分（含按赘余归类的语义重复）归 grammar 族。
+/// zh 规则直判类（numeral/quantity_unit/serial_no）自有账目，原样返回；
+/// en/ja 与其余类型透传（ja 决策表有 `word_order` 命中行，调用方须按语种门控）。
+pub fn coarse_error_type(error_type: &str) -> &str {
+    match error_type {
+        "extra_char" | "missing_char" => error_types::SPELLING,
+        "pos_error"
+        | "word_order"
+        | "missing_component"
+        | "redundant_component"
+        | "blend"
+        | "conjunction"
+        | "reference"
+        | "semantic_dup" => error_types::GRAMMAR,
+        other => other,
+    }
+}
+
 /// 从内部 error_type 推导 W3C ITS 2.0 issue_type
 pub fn derive_issue_type(error_type: &str) -> &'static str {
     match error_type {
-        "spelling" | "typo" => issue_types::MISSPELLING,
+        "spelling" | "typo" | "extra_char" | "missing_char" => issue_types::MISSPELLING,
         "punctuation" => issue_types::PUNCTUATION,
         "anomaly" => issue_types::OTHER,
-        "grammar" | "article" | "agreement" | "tense" | "preposition" | "morphology"
-        | "adjective" | "adverb" | "noun" | "verb" | "pronoun" | "infinitive" | "gerund"
-        | "subjunctive" | "negation" | "collocation" | "particle" | "conjugation" | "honorific"
-        | "word_order" => issue_types::GRAMMAR,
+        "grammar"
+        | "article"
+        | "agreement"
+        | "tense"
+        | "preposition"
+        | "morphology"
+        | "adjective"
+        | "adverb"
+        | "noun"
+        | "verb"
+        | "pronoun"
+        | "infinitive"
+        | "gerund"
+        | "subjunctive"
+        | "negation"
+        | "collocation"
+        | "particle"
+        | "conjugation"
+        | "honorific"
+        | "word_order"
+        | "pos_error"
+        | "missing_component"
+        | "redundant_component"
+        | "blend"
+        | "conjunction"
+        | "reference"
+        | "semantic_dup" => issue_types::GRAMMAR,
         _ => issue_types::OTHER,
     }
 }
@@ -248,6 +315,43 @@ pub fn apply_corrections(text: &str, errors: &[Error]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coarse_error_type_folds_zh_fine_types() {
+        // §11.11 兼容：字类细分→ spelling，句法细分→ grammar
+        for t in ["extra_char", "missing_char"] {
+            assert_eq!(coarse_error_type(t), "spelling", "{t}");
+        }
+        for t in [
+            "pos_error",
+            "word_order",
+            "missing_component",
+            "redundant_component",
+            "blend",
+            "conjunction",
+            "reference",
+            "semantic_dup",
+        ] {
+            assert_eq!(coarse_error_type(t), "grammar", "{t}");
+        }
+        // 粗类型、规则直判类与 en/ja 类型透传
+        for t in [
+            "spelling",
+            "grammar",
+            "collocation",
+            "punctuation",
+            "logic",
+            "anomaly",
+            "numeral",
+            "quantity_unit",
+            "serial_no",
+            "article",
+            "tense",
+            "particle",
+        ] {
+            assert_eq!(coarse_error_type(t), t, "{t}");
+        }
+    }
 
     #[test]
     fn error_serde_roundtrip() {

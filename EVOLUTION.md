@@ -1020,7 +1020,9 @@ spelling/grammar/collocation/punctuation/anomaly），`llm.rs` `map_llm_error_ty
 内容导向风险识别六类**范围外**（产品定位决策，仅记录）。
 
 **代码触点**：`error.rs` 补常量并约定 `category`=族名（text/knowledge/user）；
-`llm.rs` 映射表按 CEC 细分重写；**本批已建**：lexicon 新增 `numeric`（数字·量值·序号）
+`llm.rs` 映射表按 CEC 细分重写（**已做**：细类型常量 + `coarse_error_type`
+粗族回退函数；归因入口按 zh 门控回退、决策表不改，画像/会话分布查询期
+按粗族聚合，DB 不迁移）；**本批已建**：lexicon 新增 `numeric`（数字·量值·序号）
 分类与 `ZH_NUMERAL`/`ZH_QUANTITY_UNIT`/`ZH_SERIAL_NO` 三规则（`gec-zh/src/rules.rs`，
 token/离线双路径；经 `apply_suppression_filters` 中央过滤，自动继承停用/白名单）；
 docjob/mcp 契约加校对通式「校对项范围」参数；**旧 `grammar` 不迁移**——错题本
