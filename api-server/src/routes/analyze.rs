@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, State};
+use axum::extract::{Extension, Json, State};
 use gec_core::{DetectOutcome, DetectorError};
 use shared_model::{AnalyzedError, AttributionContext};
 
 use crate::APP_VERSION;
+use crate::auth::Tenant;
 use crate::routes::ApiError;
 use crate::routes::detect;
 use crate::state::AppState;
@@ -52,6 +53,7 @@ pub struct AnalyzeResponse {
 /// POST /gec/analyze — 检测 + 归因一站式接口（自动持久化到历史）
 pub async fn analyze(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Json(req): Json<AnalyzeRequest>,
 ) -> Result<Json<AnalyzeResponse>, ApiError> {
     let level = req.level.unwrap_or(1);
@@ -60,6 +62,8 @@ pub async fn analyze(
             "无效响应级别: {level}（应为 1-3）"
         )));
     }
+    // 网关形态：按字符数计配额（超限 429），语义与 detect 入口一致
+    tenant.charge_chars(req.text.chars().count())?;
     // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
     let engine = state
         .router
@@ -71,10 +75,14 @@ pub async fn analyze(
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发，不缓存）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history): (DetectOutcome, bool) = if level <= 1 && !req.force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）
-        if let Some(reused) =
+        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）；
+        // 网关形态跳过（每账号实时跑并自写历史，归属完整）
+        let reused = if crate::auth::gateway_mode() {
+            None
+        } else {
             detect::try_reuse_history(state.as_ref(), &req.lang, &req.text, &None, 1).await
-        {
+        };
+        if let Some(reused) = reused {
             (reused, true)
         } else {
             (engine.detect_level(&req.text, 1, false, None).await?, false)
@@ -98,6 +106,8 @@ pub async fn analyze(
         .session_id
         .clone()
         .unwrap_or_else(|| format!("s_{}", uuid::Uuid::new_v4().simple()));
+    // 网关形态：会话归属绑定（首次即绑；他人会话 403），历史行按它做跨账号过滤
+    tenant.guard_session(&session_id)?;
 
     let (history, meta) = {
         let record = state.sessions.get_or_create(&session_id, &req.lang);

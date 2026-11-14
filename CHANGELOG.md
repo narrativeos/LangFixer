@@ -4,6 +4,151 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **各层贡献度报告界面**（参赛需求「展示各层在评测报告中的贡献」）：新端点
+  `GET /gec/eval/layers` 由 api-server 直读报告档案（`GEC_EVAL_REPORTS_DIR` >
+  `datasets/eval_reports` > `src/datasets/eval_reports`，坏文件按条跳过），不依赖
+  Python 测评服务——生产评测实例未起也能看；已入评审密钥 fail-closed 白名单
+  （只读质量透明面，评测**发起**仍属运营面）。前端新「各层贡献」视图
+  （LayerContributions）：报告选择 + 两报告 Δ 对比、层级贡献表（预测 / 严格
+  P·R·Fβ / 自定案金标 / 召回份额条）、config 开关 chips 与级联漏斗；网关形态
+  全员可见（评委可达），单机仅运营位显示入口。
+- **L3 特征模型公网上线**（EVOLUTION.md §8「2026-11-13 · L3 特征模型公网上线」）：
+  公网实例 4806 服务当日从无到有——sklearn 句级模型（45.8 万句训练特征，dev
+  F1 0.549）+ docker（python:3.12-slim）+ systemd `langfixer-l3`，`l3.enabled`  开回 true；level 2 恢复「规则 + L3 门控 + LLM 长尾」的真实三级形态。
+- **level 3 不得被 L3 门控终结全文 LLM**（L3 上线当日公网实测抓到）：③-F 定案
+  分支把 level 3 的 `need_llm` 也置 false，深度扫描退化为门控臂——内置示例
+  3 例有 2 例被句级「判定无错」放行（门控 R≈0.45），「漏报兜底」名存实亡。
+  level 3 定案错误照合并，但全文 LLM 无条件保留；level 2 放行语义不变。
+  反转 `cascade_level3_l3_*_skips_llm` 两用例并改名固化。
+- **质量指标定版**（EVOLUTION.md §8「2026-11-12 · 质量指标定版」）：capability
+  全集两份报告（mucgec 1137 句 / jfleg 1501 句，seed 42，按 gold 全集行数收敛，
+  网关健康门下 `llm_ran` 100%）。句级门控 mucgec P/R **0.975/0.850**、jfleg
+  **0.954/0.944**；编辑级严格 Fβ 0.0134 / 0.1038（generic 臂支配，与 §8 P0 的
+  cec3 微调臂不可横向比；3090 新 gec 模型出来后补对比版）。报告
+  `20261112T223729Z_{mucgec,jfleg}_current_capability` 随本条入库。
+- **调用级日志（`gw_call_log`）**：网关形态下每个经过鉴权门的请求记一行
+  （`ts / token_id / endpoint / status / latency_ms`）——「谁在几点调了哪个端点、
+  被拒的 401/403 尝试」从此可查（D1 遗留项落地）。立场与红线：
+  ① **放行与拒绝都记**，核验成功的评审令牌即使越权被拒也记本人，不洗成匿名；
+  ② **只存路径**——query string 可能含用户文本（`?text=`）、请求体更是绝不落，
+  header 不落；`token_id` 是身份不是凭证；③ 单机形态**不落**（零新增写盘，不把
+  私人使用记成「调用」）；④ 记账失败只 warn，日志是运维资料不是事务参与方；
+  ⑤ 保留期与日账同源（retention timer 一并删超期行）。读端点：`/admin/stats` 带
+  `calls_today / calls_retained`（进行中的请求完成后才入账，读到的永远是此前全部），
+  `/admin/tokens` 逐令牌带同口径计数；「密钥分发」界面加「调用次数」列与概览合计。
+  验收 `api-server/tests/gateway_call_log.rs`（放行/拒绝/越权逐行对齐 + query 不落 +
+  合计与逐行一致）。`docs/GATEWAY_AUTH.md` D1 段与 `deploy/gateway/langfixer-retention.sh`
+  同步。
+
+### 修复
+
+- **设置页「测试全部」报红两条——待发布层探测 + L3 关闭门控语义缺口**（11-13 走查
+  发现）：① 快速定案层当前**待发布**（`enabled=false`，11-13 定位：线不放弃，待
+  更合适的决策模型；见 EVOLUTION §13 #10），`settings_test` 不看
+  开关直接探测，公网部署必然报红——disabled 层现短路回「未启用」（绿）不探测；
+  ② L3 生产开关开而 4806 服务从未部署到公网实例，这条红属实；处理时牵出**文档与
+  代码矛盾**：`l3.rs` enabled 字段口径「显式关闭 → 回退无条件 LLM」，但 engine 的
+  level 2 门控在 L3 未挂载分支 `None => false` 关门——旧路径「服务不可用」是
+  fail-open 让 LLM 全文复查，直接翻开关会让 level 2 静默退化为纯规则（决策层已
+  退役，弃权触发不复存在）。`CascadeDetector::l3_disabled` 区分**显式关闭**（开闸
+  回退无条件 LLM）与**从未配置 L3**（保持决策弃权门控旧语义）两态，补两用例。
+  公网实例已 `PUT /gec/settings` 关 `l3.enabled`（4806 未部署、3090 模型未出，
+  与关闸前 fail-open 行为一致）；gec 模型出来后随 4806 服务部署原位打开。
+- **jfleg 的 strict 命中恒为 0——量具坐标系错位**（11-12 定版抓到：4489 条预测、
+  0 条严格命中，中文链路数字却正常）：JFLEG gold 按 `make_gold.py` 明文口径「S/D
+  span 含尾随空白、插入锚点取下词起点」，而生产侧 LLM 句级 diff 的预测 span 词界
+  精确（gold `[56,64]` vs 预测 `[56,63]`），strict 键 (op, ref, span) 永远差一个
+  空白位——英文数字是量具问题，不是检测能力。`eval_server.norm_span` 把严格键与
+  重叠判定归一到同一空白不敏感坐标（中文恒等变换，zh 全集数字与修复前逐位一致）；
+  selftest 补英文坐标系用例。修复后 jfleg 严格 P/R/Fβ = 0.1559/0.0444/0.1038。
+- **评审密钥可以改写共享规则库、重训模型、起长跑**（网关形态可达面没收住，11-12
+  评委体验走查发现）：`/gec/l3/retrain`、`/gec/agent/run`（带自主档写工具）、
+  `/gec/eval/run`、`/gec/llm-feedback`（`adopt` → `adopt_as_rule`）、
+  `/gec/ops/unlock`（无 `GEC_TABLES_UPDATE_TOKEN` 时直接 `unlocked:true`）对评审身份
+  全部敞开——参赛密钥是全体评委共享的一枚，一次误触就是全体评委的现场。改为鉴权门
+  上的 **fail-closed 白名单**（`review_denied`）：只放行「检测 + 本人历史 + 只读说明」，
+  其余 403 + 说明文案；界面同步收起评审身份下必然 403 的「测试全部」。立场与 MCP
+  写档工具改提案信封一致：**共享身份不得改写共享状态**。验收
+  `api-server/tests/gateway_review_surface.rs`，口径见 `docs/GATEWAY_AUTH.md` D2。
+- **不挂鉴权门装配 `routes::router` 时，业务端点一律 500**（`Missing request
+  extension: Tenant / AuthContext / Arc<GatewayConfig>`）：这三样由 `gate` 注入，
+  生产 `main.rs` 恒挂门所以线上无恙，但集成测试与「把 api-server 当库用」的宿主
+  绕开门装配就全线报错——`api-server` 测试套件因此已经红了很久（`tests/api.rs`
+  51 项里 32 项失败，症状是空响应体 / 500，很容易被误读成业务坏了）。新增
+  `middleware::auth::with_standalone_tenant()`（注入与门在单机形态等价的三件扩展，
+  配 `GatewayConfig::standalone()` + 内存令牌库，不落 `auth.db`），13 个测试装配点
+  统一改走它。现在 `-p api-server` 全套绿。
+- **LLM 网关失败演练暴露的三个坑**（2026-11 演练，隔离实例黑洞网关实测）：
+  ① **卡死网关把整次 level 3 检测挂 6 分钟**——重试预算原来只累加退避睡眠，
+  每次尝试自身烧满超时不记账：30s 超时 × 3 次尝试 + 25s 退避实测 115s，按线上
+  120s 超时放大 ~6'25"，浏览器 180s 先掐。`LLM_RETRY_BUDGET_SECS` 改**挂钟总预算**
+  语义（含尝试耗时），挂钟越过预算直接收手，退避表 0 间隔不再是「预算外再加一次
+  满超时尝试」的后门；② **LLM 层运行时失败把整次 detect 打回 502**——level 3 /
+  force_llm 的全文 LLM 兜底失败（超时、排队耗尽、熔断开断）现**降级保留规则层
+  结果**，层级摘要记 `llm: unavailable`（前端已有「不可用已回退」映射，零改动；
+  与定向复查、L3 失败同一先例）。未配置 LLM 仍明确报错——那是配置问题不是运行时
+  故障；③ **LLM 聊天客户端没有熔断**（决策 / L3 / 嵌入客户端早有，LLM 漏了）——
+  接入同款三态熔断器（连续失败 3 次开断 30s，冷却到期自动探测恢复）；api-server
+  形态 LLM 引擎每次现构建，故熔断器进程级共享注入（`State::llm_breaker`），桌面端
+  同理（`llm_breaker()` 单例）。演练对账：加固前卡死网关 level 3 = **115.2s→502**、
+  连不上 = 25.3s→502；加固后 = **200**（规则结果保留 + `llm: unavailable`），
+  熔断开启后第 2 次请求起 0.1-4s 级失败不再逐个用户交超时税；level 1 路径
+  （评审常规路径）始终不受波及（0.26s）。重试错误文案「共等待 Ns」改「已耗时
+  Ns」（挂钟口径）。回归测试 4 条：熔断开断/冷却探测/挂钟预算/level 3 降级。
+- **登录后 whoami 的可选字段在界面上消失**（`web-ui/src/lib/auth.ts`）：`loginWithKey` 用
+  逐字段字面量重建身份视图，后端每加一个可选字段就在这条路径上被静默丢掉（`?token=` 直链登录后
+  「密钥分发」看不到密钥来源与指纹，而同一页面直接 `fetch('/auth/whoami')` 带着它们）。
+  现抽出纯函数 `mergeIdentity(prev, me, login?)`，字段只在一处列举；来源与指纹只取本次 whoami
+  （换实例不得留上一台的指纹），`signOut` 一并清掉。`web-ui/src/lib/auth.test.ts` 锁住语义。
+
+### 新增
+
+- **显式轮换超级管理员密钥**（`POST /admin/admin-token/rotate`）：换钥匙从此是一个动作，
+  不是重启或改文件的副作用。body 必须 `{"confirm":"ROTATE"}`（缺失或别的值 → 400）；
+  密钥来自 `gw_meta`（安装生成）时 200，新明文只在这一次响应出现，旧密钥与其超管会话
+  （`gw_sessions.token_id='~admin'`）即刻失效，评审密钥不受影响，重启复用新值；
+  密钥来自 `LANGFIXER_ADMIN_TOKEN` 时 **409** 并给出改 env 的流程——**故意不做**「库里换一把、
+  env 那把仍然赢」的分裂行为。顺序是先落库再换内存摘要（`AdminCred` 摘要改内部可变并随
+  `Clone` 共享，故已注入各路由的句柄同一时刻认新钥匙），库写失败回 500 且密钥未变更；
+  日志只记指纹。`whoami` 对**已验证的超管**额外回 `admin_token_source`（`env`/`generated`）与
+  `admin_token_fp`（SHA-256 前 8 位，核对用，非密钥），匿名探测与桌面端 invoke 不带这两个字段；
+  「密钥分发」界面据此显示「这把由谁持有 · 指纹 xxxx」。env 与 `gw_meta` 同时有值时启动
+  `WARN` 指明库里那枚不会被使用。`docs/GATEWAY_AUTH.md`「轮换超级管理员密钥」按来源写清泄露处置。
+  HTTP 层验收：`api-server/tests/gateway_admin_api.rs`（confirm 必填 / 旧钥匙与旧会话即刻失效 /
+  评审密钥不受波及 / env 模式 409 且不写库 / 评审密钥 403 / 匿名看不到来源）
+- **根目录部署脚本 `./setup.sh` / `./update.sh`**（共用件 `scripts/deploy-common.sh`；约定见
+  `deploy/gateway/README.md`「日常就用两条命令」）：都带 `local|server`，首次安装与日常更新各一条，
+  幂等——已存在的密钥、`langfixer.env`、systemd 单元一律不覆盖。`update.sh server` 一次跑完
+  「铺源码 → 服务器后台编译 release（期间服务不动）→ 换二进制并留 `api-server.prev` → 重启 →
+  探活 → 铺前端 dist（`index.html` 用 `mv` 原子替换）→ 同步运行时资产」，探活不过**自动回滚**
+  二进制并重启。探活不是只看 200：绕开 Caddy 直连网关读 `whoami`、无凭证打管理面应 401、
+  带超管密钥真实跑一次 `detect`。`--dry-run` 只报差异不动手，`--no-web` / `--no-assets` 缩范围。
+  运行时资产（`decision-tables` / `lexicons` / `prompts`）铺之前先按 git 清单比指纹再留档——规则
+  开关与决策表 PUT 会被服务**写回**这些 JSON，无脑覆盖等于静默抹掉运维在界面上做的改动；自上次
+  部署被删除的文件按 git diff 清理，`lexicons/.lexicon-seed.lock` 这类未跟踪锁文件不碰。三条红线：
+  脚本只报密钥来源与指纹、绝不打印明文（首装那一次例外）；脚本永不换钥匙（`systemctl restart`
+  永远复用同一把）；密钥文件、数据库与 `langfixer-settings.json` 永不出现在任何同步路径里。
+  本机实例强制 `.dev/{auth.db,core.db}` 隔离库（缺省会落仓库根的真实产品库，而
+  `DELETE /gec/history` 是真删）；4805 已被旧 Vite 占用时沿用不重复起（Vite 会静默换端口到 4806，
+  反代与文档全都对不上）。两个已踩过的坑写进 README：编译判据只用日志哨兵（`pgrep`/`pkill -f
+  "cargo build --release"` 会匹配到执行它的命令自身），铺源码与启动编译必须分两步（`git archive |
+  ssh 'tar -x && cargo build &'` 会把整条管道一起后台化，tar 被截断）
+
+### 修复
+
+- **嵌入服务「Model not exist.」**（`gec-core/src/embedding.rs`）：`.json()` 之后又 `.header("Content-Type", "application/json")` 走的是 reqwest 的**追加**语义，请求实际带两个同名 `content-type`。宽松服务端容忍，严格的 OpenAI 兼容网关（实测阿里云 DashScope compatible-mode）把请求体判成无效并回 `400 {"error":{"message":"Model not exist.","code":"model_not_found"}}`——与模型名无关，配置怎么改都失败。现由 `.json()` 单独设置该头，并补 mock 严格网关回归测试（`embed_sends_exactly_one_content_type`，同名头多于一个即判 400）；`embed` / `embed_batch` 两条路径同修
+
+### 新增
+
+- **密钥分发界面用量统计**：`GET /admin/tokens` 一条 SQL 带出每枚密钥的日账读数（`used_today` / `used_retained` / `days_used` / `last_day`），`GET /admin/stats` 增 `chars_today` / `chars_retained` / `retention_days`；「接入 → 密钥分发」表格加「今日用量」（含配额进度条与今日剩）与「累计 / 最近」两列，摘要行显示在途会话与保留期内合计字符数。口径如实标注为**保留期内**累计——日账跟检测文本一起按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）清理，不是历史总量；调用级日志（谁何时调了哪个端点）仍未做，`docs/GATEWAY_AUTH.md` 记录了两档补法
+- **验证机制（D4，`docs/GATEWAY_AUTH.md`）**：超管密钥装完即有——env 未设 `LANGFIXER_ADMIN_TOKEN` 时首次启动自动生成 `lf_<40hex>` 落 auth.db `gw_meta`（重启复用不漂移，明文只在生成那一次的启动日志出现一次；env 设了以 env 为准，设了但 <32 字符仍按配置错误拒绝启动）。界面按 `GET /auth/whoami` 的 `locked` 决定是否门禁（网关形态恒锁；单机形态看 owner 是否已认领），未验证前产品界面整体不渲染，密钥只进 `sessionStorage`、`?token=` 直链登录后即从地址栏剥掉。单机「零变化」口径收窄为：业务端点与桌面端 `invoke` 零变化，仅设置写入在 owner 认领后要求登录态（认领入口在「接入」页）。网关形态配置写入与探测仅超管可达（其余 403），非超管读设置时 LLM / embedding 密钥回 `***`。管理界面「接入 + 密钥分发」把一枚密钥变成两种分发形态——Web 直链与 MCP 配置 JSON（同一密钥、同一份配额）；普通密钥用户只能导出自己这一枚，签发与吊销只对超管开放
+- **评测通道 owner 隔离与配额（D2）**：网关形态下会话首次使用即绑定评审账号（跨账号 403），检测历史按账号伪会话 `s_gw:<token>` 归户（列表过滤 / 详情与删除跨账号 404），detect / analyze 按字符数日配额计量（越线 429，`quota_chars=0` 只记账）；清空全部 / 按语言批删 / 全局错题本等跨账号端点网关形态一律 403；网关形态跳过历史复用与进程级缓存保证每账号归属完整。单机形态全部行为零变化
+- **MCP 面（`POST /mcp`，`docs/GATEWAY_AUTH.md`）**：JSON-RPC 2.0 无状态形态（initialize / tools/list / tools/call / ping），工具集 = proofread / explain 检测管线 + agent 工具集全量；与 web 面同一道 gate、同一套 token、同一本字符配额账。网关形态只读工具直执行、写档一律返回提案不执行（executed:false + [confirm-required]，与 web 侧 Confirm gate 同源叙事）；单机形态全部直执行
+- **评测通道（网关形态）身份层**（`docs/GATEWAY_AUTH.md`）：`LANGFIXER_GATEWAY=1` 启用，单机形态行为零变化。评审令牌（明文一次、摘要入库、吊销连会话即断）+ 免注册会话 cookie + 管理面 `/admin/tokens|stats`；超级管理员令牌只来自 `.env`（`LANGFIXER_ADMIN_TOKEN`，≥32 字符，内存留摘要、不落库、不发 cookie、独占 admin 面）。为 web 与 MCP 共用一套 token 的接入形态打好同一身份底座
+- **评测通道部署件**（`deploy/gateway/`）：systemd 服务 + 每日数据保留清理 timer（默认 7 天删除检测文本与配额日账，收敛已吊销令牌会话归属）+ Caddy 站点片段与部署 runbook；服务器形态 api-server 绑 docker 网桥宿主侧地址（`LANGFIXER_BIND=172.18.0.1:4801`），公网入口只由 Caddy(443) 持有，源码/env/数据库放 web 根之外
+
 ## [v1.1.0] - 2026-11-08
 
 桌面端从「能跑」走到「像一台 Mac 应用」：自动更新按发布源烧入更新端点，原生菜单栏 /

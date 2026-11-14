@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use api_server::{routes, state::AppState};
+use api_server::{middleware, routes, state::AppState};
 use axum::response::IntoResponse;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -153,7 +153,7 @@ async fn start_vision_server(mock_base: &str, workdir: &std::path::Path, vision:
         Some(&manifest_dir().join("../decision-tables")),
         Some(&db),
     ));
-    let app = routes::router(state);
+    let app = middleware::auth::with_standalone_tenant(routes::router(state));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());

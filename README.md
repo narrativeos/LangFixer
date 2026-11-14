@@ -201,7 +201,19 @@ POST /gec/knowledge/dataset/:id/clean    删除资源包（?keep_orphan_points=1
 
 # 3. 发布（release + 桌面安装包）
 ./scripts/release.sh
+
+# 4. 首次部署并启动（local = 本机网关 :4801 + Vite :4805；server = 公网评测实例）
+./setup.sh local
+./setup.sh server
+
+# 5. 日常更新（server 会同步后端二进制 + 前端 dist + 运行时资产，失败自动回滚）
+./update.sh local
+./update.sh server
 ```
+
+部署脚本的目标地址、服务名等可用 `LF_SSH / LF_URL / LF_DIR / LF_SRC / LF_WEB_ROOT /
+LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
+[`deploy/gateway/README.md`](deploy/gateway/README.md)。
 
 ### VS Code 调试
 

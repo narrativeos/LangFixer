@@ -377,7 +377,7 @@ onMounted(() => {
   load()
 })
 
-// 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+// 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
 // 「启用决策层」开关与自动保存逻辑移除，decision* 表单值仅随 GET/PUT 透传，
 // 保持服务端状态与设置契约不变；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启。
 /** load() 从服务端回填表单值期间为 true，避免误触发自动保存（如 L3 开关） */
@@ -528,7 +528,7 @@ const serviceOverview = computed<OverviewRow[]>(() => {
       offlineMode.value ? 'info' : hanlpEndpoint.value.trim() ? 'success' : 'warning',
       'hanlp',
     ),
-    // 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：总览不再列示
+    // 决策模型（vegaml）待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：总览不再列示
     row(
       '快速定案（特征模型）',
       '外部服务',
@@ -774,7 +774,7 @@ async function runTest(target: SettingsTestTarget) {
       </div>
     </el-card>
 
-    <!-- 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+    <!-- 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
          设置卡片移除；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启（代码保留）。 -->
 
     <el-card shadow="never" id="set-embedding" class="settings-card">

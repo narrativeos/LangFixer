@@ -1,6 +1,8 @@
+pub mod admin;
 pub mod agent;
 pub mod analyze;
 pub mod attribute;
+pub mod auth;
 pub mod custom_words;
 pub mod detect;
 pub mod doc_jobs;
@@ -15,6 +17,7 @@ pub mod l3;
 pub mod languages;
 pub mod learned_knowledge;
 pub mod llm_feedback;
+pub mod mcp;
 pub mod media;
 pub mod optimization;
 pub mod reflection_center;
@@ -40,6 +43,12 @@ pub enum ApiError {
     NotFound(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("quota exceeded: {0}")]
+    TooManyRequests(String),
     #[error("upstream error: {0}")]
     Upstream(String),
     #[error("service unavailable: {0}")]
@@ -54,6 +63,9 @@ impl ApiError {
             ApiError::BadRequest(_) => http::StatusCode::BAD_REQUEST,
             ApiError::NotFound(_) => http::StatusCode::NOT_FOUND,
             ApiError::Unauthorized(_) => http::StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => http::StatusCode::FORBIDDEN,
+            ApiError::Conflict(_) => http::StatusCode::CONFLICT,
+            ApiError::TooManyRequests(_) => http::StatusCode::TOO_MANY_REQUESTS,
             ApiError::Upstream(_) => http::StatusCode::BAD_GATEWAY,
             ApiError::ServiceUnavailable(_) => http::StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -131,6 +143,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/gec/eval/job/:id", axum::routing::get(eval::job))
         .route("/gec/eval/reports", axum::routing::get(eval::reports))
         .route("/gec/eval/report/:id", axum::routing::get(eval::report))
+        .route("/gec/eval/layers", axum::routing::get(eval::layers))
         .route(
             "/gec/eval/contributions",
             axum::routing::post(optimization::contributions),

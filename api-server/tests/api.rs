@@ -112,7 +112,8 @@ async fn build_server_locked(
         )))
     });
     let state = Arc::new(AppState::from_env(Some(&tables_dir), db_file.as_deref()));
-    let app = routes::router(state).layer(middleware::cors::cors_layer());
+    let app = middleware::auth::with_standalone_tenant(routes::router(state))
+        .layer(middleware::cors::cors_layer());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());
@@ -1898,14 +1899,21 @@ async fn send_text(
             rb = rb.json(b);
         }
         match rb.send().await {
-            Ok(r) => match r.text().await {
-                Ok(t) => return t,
-                Err(e) if is_transport_err(&e) && attempt < 2 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
+            Ok(r) => {
+                let st = r.status();
+                match r.text().await {
+                    Ok(t) if t.is_empty() => {
+                        println!("PROBE empty status={st} {url}");
+                        return t;
+                    }
+                    Ok(t) => return t,
+                    Err(e) if is_transport_err(&e) && attempt < 2 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Err(e) => panic!("读取响应失败: {e}"),
                 }
-                Err(e) => panic!("读取响应失败: {e}"),
-            },
+            }
             Err(e) if is_transport_err(&e) && attempt < 2 => {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
@@ -3459,3 +3467,57 @@ async fn doc_job_budget_defaults_from_settings() {
     .await;
 }
 
+// ── 各层贡献度报告（GET /gec/eval/layers：api-server 直读报告档案，不依赖测评服务）──
+
+#[tokio::test]
+async fn eval_layers_reads_report_archive() {
+    let dir = std::env::temp_dir().join(format!(
+        "langfixer_test_eval_reports_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 有效报告 ×2（故意按 ts 升序写入，端点须按 ts 倒序返回）
+    for (id, ts) in [
+        ("r_old", "2026-11-01T00:00:00Z"),
+        ("r_new", "2026-11-12T00:00:00Z"),
+    ] {
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({
+                "id": id, "ts": ts, "benchmark": "mucgec", "arm": "current",
+                "mode": "capability", "lang": "zh", "beta": 0.5,
+                "layers": {
+                    "rule": { "n_pred": 12, "tp_strict": 9, "p_strict": 0.75,
+                        "r_strict": 0.1, "f_beta": 0.18, "tp_overlap": 10, "r_overlap": 0.11,
+                        "fp_strict": 3, "fp_overlap": 2,
+                        "gate": { "tp": 1, "fp": 0, "fn": 0, "tn": 0,
+                            "precision": 1.0, "recall": 1.0, "f1": 1.0 },
+                        "recall_share": 0.1, "attributed_gold": 9 }
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    // 无效文件：档案辅助件（无 layers）+ 坏 JSON → 按条跳过、不中断整个档案
+    std::fs::write(dir.join("baseline_rules.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(dir.join("broken.json"), "{ not json").unwrap();
+    let _guard = env_guard();
+    unsafe { std::env::set_var("GEC_EVAL_REPORTS_DIR", &dir) };
+    let base = build_server_locked(None, None).await;
+    let body: serde_json::Value = client()
+        .get(format!("{base}/gec/eval/layers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    unsafe { std::env::remove_var("GEC_EVAL_REPORTS_DIR") };
+    assert_eq!(body["skipped"], 2, "辅助件与坏文件按条跳过");
+    let reports = body["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["id"], "r_new", "按 ts 倒序（最新在前）");
+    assert_eq!(reports[1]["id"], "r_old");
+    let _ = std::fs::remove_dir_all(&dir);
+}

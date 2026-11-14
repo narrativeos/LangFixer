@@ -714,7 +714,7 @@ export interface DecisionSettings {
   timeout_secs: number
   /** 弃权阈值：has_error_prob 低于该值视为无错误 */
   abstain_threshold: number
-  /** true = 决策层已启用。该层已退役出产品路径（EVOLUTION.md §13 #10）：默认 false，
+  /** true = 决策层已启用。该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：默认 false，
    *  仅实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启；设置界面不再提供入口 */
   enabled: boolean
 }
@@ -1144,6 +1144,7 @@ export interface EvalJob {
     llm_enabled?: boolean
     decision_enabled?: boolean
     l3_enabled?: boolean
+    knowledge_enabled?: boolean
     embedding_configured?: boolean
   } | null
   progress: { done: number; total: number }
@@ -1213,6 +1214,14 @@ export interface EvalReportSummary {
   p_strict?: number
   r_strict?: number
   llm_reach?: number
+}
+
+/** GET /gec/eval/layers 响应（各层贡献度报告：api-server 直读报告档案，
+ *  不依赖 Python 测评服务；`skipped` = 档案内非报告 / 损坏文件的跳过条数） */
+export interface EvalLayersResponse {
+  dir: string
+  reports: EvalReport[]
+  skipped: number
 }
 
 // ─────────────────────────── 反思中心（P1） ───────────────────────────

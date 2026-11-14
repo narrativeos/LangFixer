@@ -22,6 +22,7 @@
 //!
 //! 产出的错误标记 `source = "llm"`（见 [`shared_model::sources`]）。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -65,7 +66,9 @@ pub struct LlmDetectConfig {
     /// 环境变量 `LLM_RETRY_BACKOFF_SECS`（逗号分隔）可覆盖；空表 = 不重试。
     #[serde(default = "default_llm_retry_backoff")]
     pub retry_backoff_secs: Vec<u64>,
-    /// 重试的总等待预算（秒）：排队可能比退避表长得多，预算封顶才不会把请求挂死
+    /// 重试的**挂钟总预算**（秒，含每次请求自身耗时）：排队可能比退避表长得多，
+    /// 预算封顶才不会把请求挂死。只累加睡眠时间的预算对「卡死不回话」的网关
+    /// 形同虚设（每次尝试都烧满超时却不记账——2026-11 演练实测）
     #[serde(default = "default_llm_retry_budget")]
     pub retry_budget_secs: u64,
 }
@@ -74,6 +77,7 @@ fn default_llm_retry_backoff() -> Vec<u64> {
     parse_backoff(std::env::var("LLM_RETRY_BACKOFF_SECS").ok().as_deref())
 }
 
+/// 挂钟总预算缺省 120s：必须落在前端 level ≥ 2 请求超时（180s）之内
 fn default_llm_retry_budget() -> u64 {
     std::env::var("LLM_RETRY_BUDGET_SECS")
         .ok()
@@ -166,7 +170,11 @@ fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
 /// 重试决策（纯函数，便于测）：`Some(等待秒数)` 继续重试，`None` 就此收手
 ///
 /// 网关给了 `retry_after` 就按它等（它知道自己排到哪，猜的退避只会短），
-/// 但总等待不能越过预算——越过就是「一直等下去」，用户只会看到卡死。
+/// 但总耗时不能越过预算——越过就是「一直等下去」，用户只会看到卡死。
+///
+/// `waited` 为**挂钟已耗时**（含每次请求自身烧掉的时间，非纯睡眠）：网关卡死
+/// 不回话时只累加睡眠的预算形同虚设——30s 超时 × 3 次 + 25s 退避实测 115s，
+/// 线上 120s 超时按配置放大到 ~6 分钟，而浏览器 180s 就先掐（2026-11 演练）。
 fn next_wait(
     backoff: &[u64],
     attempt: usize,
@@ -192,10 +200,27 @@ pub struct LlmGecEngine {
     /// 引擎按请求现构建（运行时配置），实例级标记即「本次调用」语义；
     /// 由 [`Self::take_parse_failed`] 读取并复位。
     parse_failed: std::sync::atomic::AtomicBool,
+    /// 网关健康熔断（与决策 / L3 / 嵌入客户端同款三态熔断器）。
+    /// api-server 形态下检测引擎**每次现构建**，熔断器必须从外部共享注入
+    /// （`State::llm_breaker`），否则每次请求都是全新实例 = 永不开断。
+    breaker: Arc<crate::circuit::CircuitBreaker>,
 }
 
 impl LlmGecEngine {
     pub fn new(lang: impl Into<String>, config: LlmDetectConfig) -> Self {
+        Self::with_breaker(
+            lang,
+            config,
+            Arc::new(crate::circuit::CircuitBreaker::default()),
+        )
+    }
+
+    /// 注入共享熔断器（api-server / 桌面端进程级单例；测试用独立实例避免串扰）
+    pub fn with_breaker(
+        lang: impl Into<String>,
+        config: LlmDetectConfig,
+        breaker: Arc<crate::circuit::CircuitBreaker>,
+    ) -> Self {
         let timeout = Duration::from_secs(config.timeout_secs.max(1));
         let client = reqwest::Client::builder()
             .connect_timeout(timeout)
@@ -207,6 +232,7 @@ impl LlmGecEngine {
             client,
             config,
             parse_failed: std::sync::atomic::AtomicBool::new(false),
+            breaker,
         }
     }
 
@@ -214,7 +240,8 @@ impl LlmGecEngine {
     /// 上报为层状态 `partial`（部分未复查），**绝不得**当作「无错误」
     /// （审校产品最危险的失败模式：把系统故障伪装成阴性结论）。
     pub fn take_parse_failed(&self) -> bool {
-        self.parse_failed.swap(false, std::sync::atomic::Ordering::Relaxed)
+        self.parse_failed
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -274,14 +301,10 @@ impl LlmGecEngine {
         let n_chunks = chunks.len();
         // 每块所有权移入 future（async_trait 装箱要求跨生命周期 Send，
         // 借用切块数组会触发 HRTB 推断失败）
-        let mut stream = futures_util::stream::iter(
-            chunks
-                .into_iter()
-                .map(|c| async move {
-                    let r = self.detect_anchored(&c.send).await;
-                    (c, r)
-                }),
-        )
+        let mut stream = futures_util::stream::iter(chunks.into_iter().map(|c| async move {
+            let r = self.detect_anchored(&c.send).await;
+            (c, r)
+        }))
         .buffer_unordered(concurrency.max(1));
         let mut out: Vec<Error> = Vec::new();
         let mut failed = 0usize;
@@ -347,7 +370,10 @@ impl LlmGecEngine {
 ///   message 已带「未能定位」标注）。
 ///
 /// `detect_document`（即席全文复查）与 `docjob`（作业编排）共用。
-pub(crate) fn remap_chunk_errors(chunk: &crate::docchunk::DocChunk, errors: Vec<Error>) -> Vec<Error> {
+pub(crate) fn remap_chunk_errors(
+    chunk: &crate::docchunk::DocChunk,
+    errors: Vec<Error>,
+) -> Vec<Error> {
     let owned_len = chunk.owner[1] - chunk.owner[0];
     let cp = chunk.context_prefix;
     errors
@@ -946,7 +972,16 @@ impl LlmGecEngine {
         let backoff = &self.config.retry_backoff_secs;
         let budget = self.config.retry_budget_secs;
         let mut attempt = 0usize;
-        let mut waited = 0u64;
+        // 预算与失败提示按**挂钟总时长**计（含每次请求自身烧掉的时间），不是只算睡眠：
+        // 网关卡死不回话时只算睡眠的预算形同虚设——30s 超时 x 3 次 + 25s 退避实测 115s，
+        // 按线上 120s 超时放大到 ~6 分钟，而浏览器 180s 就先掐（2026-11 演练实测）。
+        let started = std::time::Instant::now();
+        // 熔断开断期间毫秒级失败，不再让每次请求都替卡死的网关交一份超时税。
+        if !self.breaker.allow_request() {
+            return Err(DetectorError::ServiceUnavailable(
+                "LLM 网关熔断中（连续失败后的冷却期内不再发起请求，冷却到期自动探测恢复）。规则层结果照常可用，稍后重试即可".to_string(),
+            ));
+        }
         let timeout_hint = format!(
             "（超时上限 {}s：调设置 `llm.timeout_secs` 或环境变量 `LLM_TIMEOUT_SECS`；\
              思考模型整载体检测实测要 60s 以上，默认 30s 必然失败）",
@@ -961,7 +996,10 @@ impl LlmGecEngine {
                 .send()
                 .await
             {
-                Ok(r) if r.status().is_success() => break r,
+                Ok(r) if r.status().is_success() => {
+                    self.breaker.on_success();
+                    break r;
+                }
                 Ok(r) => {
                     let status = r.status();
                     if !is_queue_status(status) {
@@ -970,7 +1008,16 @@ impl LlmGecEngine {
                         )));
                     }
                     let ra = retry_after_secs(&r);
-                    match next_wait(backoff, attempt, ra, waited, budget) {
+                    self.breaker.on_failure();
+                    let spent = started.elapsed().as_secs();
+                    if spent >= budget.max(1) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、已耗时 {spent}s \\
+                                 越过预算 {budget}s 不再重试（退避表 {backoff:?}；LLM_RETRY_BUDGET_SECS \\
+                                 为含请求耗时的挂钟总预算）"
+                        )));
+                    }
+                    match next_wait(backoff, attempt, ra, spent, budget) {
                         Some(wait) => {
                             tracing::warn!(
                                 status = status.as_u16(),
@@ -979,14 +1026,13 @@ impl LlmGecEngine {
                                 "LLM 服务排队：退避后重试"
                             );
                             tokio::time::sleep(Duration::from_secs(wait)).await;
-                            waited += wait;
                             attempt += 1;
                         }
                         None => {
                             return Err(DetectorError::ServiceUnavailable(format!(
-                                "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、共等待 {waited}s \
-                                 仍未放行（退避表 {backoff:?}、预算 {budget}s：\
-                                 LLM_RETRY_BACKOFF_SECS / LLM_RETRY_BUDGET_SECS 可调）"
+                                "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、已耗时 {spent}s \
+                                 仍未放行（退避表 {backoff:?}、预算 {budget}s：LLM_RETRY_BACKOFF_SECS / \
+                                 LLM_RETRY_BUDGET_SECS 可调；预算为含请求耗时的挂钟总时长）"
                             )));
                         }
                     }
@@ -995,12 +1041,21 @@ impl LlmGecEngine {
                     // 传输层：超时 / 连不上算瞬时（排队时网关也会直接掐连接）；
                     // 其余（DNS、非法 URL…）不重试。
                     let chain = transport_chain(&e);
+                    self.breaker.on_failure();
                     if !(e.is_timeout() || e.is_connect()) {
                         return Err(DetectorError::ServiceUnavailable(format!(
                             "{chain}{timeout_hint}"
                         )));
                     }
-                    match next_wait(backoff, attempt, None, waited, budget) {
+                    // 挂钟已越过预算 → 直接收手：退避表里的 0 间隔（「立即重试」
+                    // 语义）不能成为「预算外再加一次满超时尝试」的后门
+                    let spent = started.elapsed().as_secs();
+                    if spent >= budget.max(1) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "{chain}{timeout_hint}（已重试 {attempt} 次、已耗时 {spent}s、预算 {budget}s）"
+                        )));
+                    }
+                    match next_wait(backoff, attempt, None, spent, budget) {
                         Some(wait) => {
                             tracing::warn!(
                                 wait_secs = wait,
@@ -1009,12 +1064,11 @@ impl LlmGecEngine {
                                 "LLM 传输层瞬时故障：退避后重试"
                             );
                             tokio::time::sleep(Duration::from_secs(wait)).await;
-                            waited += wait;
                             attempt += 1;
                         }
                         None => {
                             return Err(DetectorError::ServiceUnavailable(format!(
-                                "{chain}{timeout_hint}（已重试 {attempt} 次、共等待 {waited}s）"
+                                "{chain}{timeout_hint}（已重试 {attempt} 次、已耗时 {spent}s）"
                             )));
                         }
                     }
@@ -1741,7 +1795,8 @@ mod tests {
         let err = engine.detect("测试文本").await.unwrap_err().to_string();
         assert!(err.contains("HTTP 503"), "要说清是网关繁忙：{err}");
         assert!(err.contains("已重试 2 次"), "要给出重试了几次：{err}");
-        assert!(err.contains("共等待 1s"), "要给出等了多久：{err}");
+        // 2026-11 起按挂钟报「已耗时」（含尝试本身），不再是纯睡眠「共等待」
+        assert!(err.contains("已耗时 1s"), "要给出这轮烧了多久：{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 3, "退避表用完就收手");
     }
 
@@ -1886,10 +1941,19 @@ mod tests {
         assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
         assert_eq!(o.failed_chunks, 0);
         assert_eq!(o.parse_failed_chunks, 0);
-        assert_eq!(o.errors.len(), 1, "所有权去重后恰好一条: {:?}", o.errors.len());
+        assert_eq!(
+            o.errors.len(),
+            1,
+            "所有权去重后恰好一条: {:?}",
+            o.errors.len()
+        );
         let e = &o.errors[0];
         let expect = text.find("甲错").unwrap();
-        assert_eq!(e.span, [expect, expect + "甲错".len()], "span 必须是文档字节偏移");
+        assert_eq!(
+            e.span,
+            [expect, expect + "甲错".len()],
+            "span 必须是文档字节偏移"
+        );
         assert_eq!(e.source.as_deref(), Some("llm"));
     }
 
@@ -1914,4 +1978,122 @@ mod tests {
         assert!(o.coverage() < 1.0);
     }
 
+    // ---- 网关熔断 + 挂钟预算（2026-11 演练：网关卡死时 level 3 卡 115s 回 502）----
+
+    #[tokio::test]
+    async fn llm_breaker_opens_and_fails_fast_within_cooldown() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, usize::MAX, "[]").await;
+        let breaker = std::sync::Arc::new(crate::circuit::CircuitBreaker::new(
+            3,
+            Duration::from_secs(3600),
+        ));
+        // 退避表 [0,0,0]：一轮 detect = 首次 + 3 次重试 = 4 次失败尝试。生产时序
+        // （api-server 共享单例）是「单次请求失败即记账」——第 3 次失败落在首轮
+        // detect 的第 3 次重试上，当场开断，那轮不再发出第 5 个请求
+        let mk = || {
+            LlmGecEngine::with_breaker(
+                "zh",
+                config(&base).with_retry(vec![0, 0, 0], 60),
+                breaker.clone(),
+            )
+        };
+        mk().detect("测试文本").await.unwrap_err();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "第 3 次失败即开断（那轮不再发出第 5 个请求）"
+        );
+        assert!(
+            !breaker.allow_request(),
+            "开断须在单次 detect 内触发（重试也记账）"
+        );
+        let t = std::time::Instant::now();
+        let err = LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+            .detect("测试文本")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("熔断"), "{err}");
+        assert!(
+            t.elapsed() < Duration::from_millis(300),
+            "开断期间应毫秒级失败，不再交超时税"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 4, "开断期间不得发出请求");
+    }
+
+    #[tokio::test]
+    async fn llm_breaker_probes_after_cooldown_and_closes_on_success() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, 3, "[]").await;
+        let breaker = std::sync::Arc::new(crate::circuit::CircuitBreaker::new(
+            3,
+            Duration::from_millis(150),
+        ));
+        for _ in 0..3 {
+            LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+                .detect("测试文本")
+                .await
+                .unwrap_err();
+        }
+        tokio::time::sleep(Duration::from_millis(220)).await;
+        LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+            .detect("测试文本")
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "冷却到期放行探测，成功即闭合"
+        );
+        LlmGecEngine::with_breaker("zh", config(&base), breaker)
+            .detect("测试文本")
+            .await
+            .unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 5, "闭合后恢复正常放行");
+    }
+
+    #[tokio::test]
+    async fn retry_budget_counts_wall_time_including_attempt_duration() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // 黑洞网关：接受连接但永不回话——每次尝试都烧满超时。只算睡眠的预算
+        // 对此形同虚设（演练实测 30s 超时 x 3 次 + 25s 退避 = 115s）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conns = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = conns.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        // 持有连接不回话（drop 会掐连接 → 变成 Canceled 而不是超时）
+                        held.push(stream);
+                    }
+                    Err(_) => break,
+                }
+            }
+            drop(held);
+        });
+        let cfg = config(&format!("http://{addr}/v1"));
+        let mut cfg = cfg;
+        cfg.timeout_secs = 1;
+        let engine = LlmGecEngine::new("zh", cfg.with_retry(vec![1, 1], 2));
+        let t = std::time::Instant::now();
+        let err = engine.detect("测试文本").await.unwrap_err().to_string();
+        assert!(err.contains("已耗时"), "{err}");
+        assert!(
+            t.elapsed() < Duration::from_secs(6),
+            "挂钟 {:?}：预算 2s + 尾次超时 1s 内必须收手（旧逻辑只算睡眠会跑到 ~5s）",
+            t.elapsed()
+        );
+        // 第 1 次尝试烧满 1s：1+1≤2 放行重试；第 2 次到 2s：2+1>2 截断。
+        // 旧逻辑只算睡眠会在 ~5s 时跑第 3 次——连接数即判据
+        assert_eq!(
+            conns.load(Ordering::SeqCst),
+            2,
+            "预算必须把尝试本身的耗时计进去"
+        );
+    }
 }

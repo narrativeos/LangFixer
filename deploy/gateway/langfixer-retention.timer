@@ -1,0 +1,10 @@
+[Unit]
+Description=每日 04:10 执行 LangFixer 评测通道数据保留清理
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

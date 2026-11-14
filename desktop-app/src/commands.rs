@@ -893,7 +893,7 @@ impl Core {
                 0,
             ),
         };
-        Some(Arc::new(LlmGecEngine::new(
+        Some(Arc::new(LlmGecEngine::with_breaker(
             lang,
             LlmDetectConfig::from_parts(
                 base_url,
@@ -905,6 +905,7 @@ impl Core {
             )
             .with_output_format(output_format)
             .with_max_tokens(max_tokens),
+            llm_breaker(),
         )))
     }
 
@@ -3087,7 +3088,7 @@ async fn anomaly_adopt_cmd(
             .cloned();
         let llm = if service.config.enabled() {
             t.as_ref().map(|t| {
-                LlmGecEngine::new(
+                LlmGecEngine::with_breaker(
                     lang,
                     LlmDetectConfig::from_parts(
                         service.config.base_url.clone(),
@@ -3097,6 +3098,7 @@ async fn anomaly_adopt_cmd(
                         t.system.clone(),
                         t.user.clone(),
                     ),
+                    llm_breaker(),
                 )
             })
         } else {
@@ -7043,3 +7045,14 @@ mod tests {
         assert!(!report_field_matches(&r2, "split", Some(&json!("dev"))));
     }
 }
+
+/// 进程级 LLM 网关熔断器（桌面端 LLM 引擎按调用现构建，检测与蒸馏两处共用同一只；
+/// 语义见 `gec_core::circuit`：连续失败开断，冷却期内毫秒级失败，到期自动探测恢复）
+fn llm_breaker() -> Arc<gec_core::circuit::CircuitBreaker> {
+    static BREAKER: std::sync::OnceLock<Arc<gec_core::circuit::CircuitBreaker>> =
+        std::sync::OnceLock::new();
+    BREAKER
+        .get_or_init(|| Arc::new(gec_core::circuit::CircuitBreaker::default()))
+        .clone()
+}
+

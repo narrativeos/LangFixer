@@ -21,7 +21,8 @@
 //! 响应级别语义（P0.5 重绑：**L3 特征模型是唯一的 pre-LLM 门控**）：
 //! - level 1：规则（+ 决策模型，若显式启用）；
 //! - level 2：level 1 + L3 门控（L3 启用时：高置信判定直接定案，
-//!   弃权 / 服务不可用 → LLM 兜底；L3 未启用时回退旧语义：决策模型弃权 → LLM 兜底）；
+//!   弃权 / 服务不可用 → LLM 兜底；L3 **显式关闭** → **无条件** LLM 兜底，
+//!   与 l3.rs「回退无条件 LLM」口径一致；从未配置 L3 时回退旧语义：决策模型弃权触发）；
 //! - level 3：level 1 + L3 门控 + **无条件**全文 LLM（「漏报」兜底）。
 //!
 //! LLM 兜底层（[`LlmGecEngine`]）不静态挂载：由 API / 桌面端在 level 2/3 请求
@@ -158,16 +159,31 @@ pub trait GecEngine: Send + Sync {
             })?;
             let t_llm = std::time::Instant::now();
             // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
-            // 不当作「复查确认干净」
-            let (extra, llm_status, clean) = llm_layer_detect(llm, text).await?;
-            llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-            llm_confirmed_clean = clean;
-            layers.push(LayerReport::new(
-                shared_model::sources::LLM,
-                llm_status,
-                extra.len(),
-            ));
-            merge_errors(&mut errors, extra);
+            // 不当作「复查确认干净」。运行时失败（超时/排队耗尽/熔断开断）→ 降级：
+            // 保留规则层结果，层记 `unavailable`（与定向复查、L3 失败同一先例），
+            // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
+            // 那是要人改设置，不是运行时故障。
+            match llm_layer_detect(llm, text).await {
+                Ok((extra, llm_status, clean)) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = clean;
+                    layers.push(LayerReport::new(
+                        shared_model::sources::LLM,
+                        llm_status,
+                        extra.len(),
+                    ));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    layers.push(LayerReport::new(
+                        shared_model::sources::LLM,
+                        "unavailable",
+                        0,
+                    ));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则层结果（本轮 LLM 未参与）");
+                }
+            }
         }
         Ok(DetectOutcome {
             errors,
@@ -467,11 +483,7 @@ pub async fn llm_layer_detect(
         let errors = llm.detect(text).await?;
         let parse_failed = llm.take_parse_failed();
         let clean = errors.is_empty() && !parse_failed;
-        Ok((
-            errors,
-            if parse_failed { "partial" } else { "ran" },
-            clean,
-        ))
+        Ok((errors, if parse_failed { "partial" } else { "ran" }, clean))
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
         let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
@@ -581,9 +593,13 @@ pub struct CascadeDetector {
     pub decision: Option<Arc<DecisionGecEngine>>,
     /// 知识向量召回（可选；未配置嵌入引擎时为 None，静默跳过）
     pub knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
-    /// L3 特征模型（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
-    /// 未启用时为 None，level 3 回退「无条件 LLM」）
+    /// L3 特征模型（三期门控层：level 2 先跑特征模型，LLM 收缩到纯长尾；
+    /// level 3 定案仍合并但不终结全文 LLM（漏报兜底臂）；未启用时为 None）
     pub l3: Option<Arc<L3FeatureEngine>>,
+    /// L3 **配置存在但显式关闭**（`enabled=false`）：level 2 门控视同「门控缺席」
+    /// 开闸，回退无条件 LLM（[`crate::l3::L3FeatureConfig`] enabled 字段的文档口径）；
+    /// 从未配置 L3 的部署保持旧语义（决策模型弃权门控）
+    pub l3_disabled: bool,
     /// 对外报告的引擎类型（决策层挂载时报告 `decision`）
     kind_override: Option<GecEngineKind>,
 }
@@ -600,6 +616,7 @@ impl CascadeDetector {
             decision,
             knowledge_recall: None,
             l3: None,
+            l3_disabled: false,
             kind_override: None,
         }
     }
@@ -773,12 +790,14 @@ impl GecEngine for CascadeDetector {
             }
         }
         // ③ LLM 兜底：force_llm 无条件触发 / level 2 门控触发（P0.5：L3 是唯一的
-        // pre-LLM 门控——L3 弃权 / 服务不可用 → 长尾兜底；L3 未启用时回退旧语义：
-        // 决策模型弃权触发）/ level 3 无条件
+        // pre-LLM 门控——L3 弃权 / 服务不可用 → 开闸；L3 **显式关闭**（l3_disabled）
+        // → 同样开闸回退无条件 LLM，这是 l3.rs enabled 字段的文档口径，防止门控层
+        // 缺席叠加待发布决策层后 level 2 静默退化为纯规则；从未配置 L3 的旧式部署
+        // 保持旧语义：决策模型弃权触发）/ level 3 无条件
         let l3_gate_open = match &l3_res {
             Some(Ok(o)) => o.abstained,
             Some(Err(_)) => true,
-            None => false,
+            None => self.l3_disabled,
         };
         let mut need_llm = force_llm
             || match level {
@@ -790,6 +809,8 @@ impl GecEngine for CascadeDetector {
         // 已在上方与 ①② **并行**跑完（`l3_res`）；
         // 高置信判定直接定案（有错 → 合并错误项；明确无错 → 放行），
         // LLM 收缩到纯长尾：仅特征模型弃权 / 服务不可用时才调用。
+        // **level 3 例外**：深度扫描的存在意义就是「漏报」兜底，句级门控
+        // （dev R≈0.45）不得终结全文 LLM——定案仍合并，但 need_llm 保持为真。
         // **部分定案**（`unreviewed_spans` 非空）：定案部分保留，灰区句不再全文
         // 兜底，改由 ③-T 定向 LLM 复查（成本 ≈ 灰区句长度）
         let mut targeted_spans: Vec<[usize; 2]> = Vec::new();
@@ -819,10 +840,10 @@ impl GecEngine for CascadeDetector {
                             tracing::warn!(
                                 "L3 特征模型判「明确无错」但决策模型弃权：模型冲突，保留 LLM 长尾兜底"
                             );
-                        } else {
+                        } else if level <= 2 {
                             need_llm = false;
                         }
-                    } else {
+                    } else if level <= 2 {
                         need_llm = false;
                     }
                 }
@@ -856,13 +877,22 @@ impl GecEngine for CascadeDetector {
             })?;
             let t = std::time::Instant::now();
             // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
-            // 不当作「复查确认干净」
-            let (extra, llm_status, clean) = llm_layer_detect(llm, text).await?;
-            llm_ms = Some(t.elapsed().as_millis() as u64);
-            llm_confirmed_clean = clean;
-            llm_ran = true;
-            layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
-            merge_errors(&mut errors, extra);
+            // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
+            // 层记 `unavailable`，不把整次 detect 打回 502。
+            match llm_layer_detect(llm, text).await {
+                Ok((extra, llm_status, clean)) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = clean;
+                    llm_ran = true;
+                    layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则/L3 结果（本轮 LLM 未参与）");
+                }
+            }
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
             // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）
@@ -966,6 +996,8 @@ pub fn compose_detector<D: GECDetector + 'static>(
         .as_ref()
         .filter(|c| c.enabled())
         .map(|c| Arc::new(L3FeatureEngine::new(lang, c.clone())));
+    // 显式关闭（配置在但 enabled=false）与从未配置区分：前者 level 2 开闸回退无条件 LLM
+    let l3_disabled = l3.as_ref().is_some_and(|c| !c.enabled());
     match GecEngineKind::from_env(lang) {
         GecEngineKind::Statistical => {
             let primary = Arc::new(StatisticalGecEngine::from_env(lang));
@@ -988,11 +1020,12 @@ pub fn compose_detector<D: GECDetector + 'static>(
             let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                 .with_kind_override(GecEngineKind::Decision);
             det.knowledge_recall = knowledge_recall;
+            det.l3_disabled = l3_disabled;
             if let Some(e) = l3_engine {
                 det.l3 = Some(e);
                 tracing::info!(
                     lang,
-                    "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                    "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                 );
             }
             Arc::new(det)
@@ -1012,11 +1045,12 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                     .with_kind_override(GecEngineKind::Decision);
                 det.knowledge_recall = knowledge_recall;
+                det.l3_disabled = l3_disabled;
                 if let Some(e) = l3_engine {
                     det.l3 = Some(e);
                     tracing::info!(
                         lang,
-                        "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                        "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                     );
                 }
                 Arc::new(det)
@@ -1031,11 +1065,12 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     );
                     let mut det = CascadeDetector::new(lang, rule, None);
                     det.knowledge_recall = Some(kr);
+                    det.l3_disabled = l3_disabled;
                     if let Some(e) = l3_engine {
                         det.l3 = Some(e);
                         tracing::info!(
                             lang,
-                            "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                            "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                         );
                     }
                     Arc::new(det)
@@ -1156,6 +1191,8 @@ mod tests {
     #[tokio::test]
     async fn cascade_level2_without_gates_marks_llm_skipped() {
         // level 2 但无决策层 / L3（无弃权信号、无门控）→ LLM 未触发 → layers 记 `skipped`
+        // （L3 **从未配置**的旧式部署语义；若是显式关闭 enabled=false 则开闸，
+        // 见 cascade_level2_with_l3_disabled_triggers_llm）
         let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
             lang: "en",
             fail: false,
@@ -1168,6 +1205,34 @@ mod tests {
             .find(|l| l.layer == "llm")
             .expect("level 2 应报告 llm 层状态");
         assert_eq!(llm.status, "skipped");
+    }
+
+    #[tokio::test]
+    async fn cascade_level2_with_l3_disabled_triggers_llm() {
+        // L3 显式关闭（配置存在但 enabled=false，引擎未挂载）→ level 2 门控开闸，
+        // 回退**无条件** LLM（l3.rs「回退无条件 LLM」口径）。若关门，叠加待发布
+        // 决策层后 level 2 会静默退化为纯规则——level 2 流量丢失 LLM 覆盖率
+        let llm_endpoint = mock_llm_service().await;
+        let llm = llm_engine(&llm_endpoint);
+        let mut det = CascadeDetector::new(
+            "zh",
+            Arc::new(FakeRule {
+                lang: "zh",
+                fail: false,
+            }),
+            None,
+        );
+        det.l3_disabled = true;
+        let outcome = det
+            .detect_level("正确句子", 2, false, Some(&llm))
+            .await
+            .unwrap();
+        let llm_layer = outcome
+            .layers
+            .iter()
+            .find(|l| l.layer == "llm")
+            .expect("level 2 应报告 llm 层状态");
+        assert_eq!(llm_layer.status, "ran", "显式关闭 L3 应开闸回退 LLM");
     }
 
     #[test]
@@ -2108,7 +2173,8 @@ mod tests {
 
     /// L3 特征模型高置信命中 → 直接定案，不调用 LLM
     #[tokio::test]
-    async fn cascade_level3_l3_hit_skips_llm() {
+    async fn cascade_level3_l3_hit_still_runs_llm() {
+        // level 3（深度扫描）= 漏报兜底臂：L3 定案错误照合并，但全文 LLM 仍无条件跑
         let endpoint = mock_decision_service(true, false, 0.3).await;
         let l3ep = mock_l3_service(false, true, 0.9, true).await;
         let cascade = cascade_with_l3(
@@ -2124,25 +2190,32 @@ mod tests {
             .detect_level("他昨天报复很大。", 3, false, Some(&llm))
             .await
             .unwrap();
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "L3 错误 [0,6] 与规则 [0,2] 重叠 → 合并为 1 条: {:?}",
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|e| e.source.as_deref() == Some("l3"))
+                || outcome
+                    .layers
+                    .iter()
+                    .any(|l| l.layer == sources::FEATURE && l.status == "decided"),
+            "L3 定案结果应保留: {:?}",
             outcome.errors
         );
         assert!(
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "L3 高置信命中不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "level 3 不得被 L3 门控终结全文 LLM: {:?}",
             outcome.errors
         );
     }
 
-    /// L3 特征模型明确无错 + 决策模型也明确（非弃权）→ 放行，不调用 LLM
+    /// L3 明确无错 + 决策明确：level 3 仍**无条件**跑全文 LLM（漏报兜底）；
+    /// level 2 的放行语义见 cascade_level2_l3_confident_clean_skips_llm
     #[tokio::test]
-    async fn cascade_level3_l3_confident_clean_skips_llm() {
+    async fn cascade_level3_l3_confident_clean_still_runs_llm() {
         let endpoint = mock_decision_service(false, false, 0.1).await;
         let l3ep = mock_l3_service(false, false, 0.05, false).await;
         let cascade = cascade_with_l3(
@@ -2162,8 +2235,8 @@ mod tests {
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "特征模型明确无错且决策模型一致时不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "特征模型明确无错不得终结 level 3 全文 LLM: {:?}",
             outcome.errors
         );
     }
@@ -2657,4 +2730,53 @@ mod tests {
         assert!(errors.is_empty());
     }
 
+    #[tokio::test]
+    async fn level3_llm_runtime_failure_degrades_to_rule_results() {
+        // 演练立场（2026-11）：LLM 层运行时失败不能把整次 detect 打回 502——
+        // 规则结果必须保留，层记 `unavailable`；未配置 LLM 则仍是明确报错
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let llm = LlmGecEngine::new(
+            "zh",
+            LlmDetectConfig::from_parts(
+                format!("http://{addr}/v1"),
+                "sk-test",
+                "mock-llm",
+                5,
+                "system",
+                "user {{text}}",
+            )
+            .with_retry(Vec::new(), 0),
+        );
+        let fake = Arc::new(FakeRule {
+            lang: "zh",
+            fail: false,
+        });
+        let outcome = fake
+            .detect_level("他昨天报复很大。", 3, false, Some(&llm))
+            .await
+            .expect("LLM 运行时失败必须降级 Ok，不得打回 Err");
+        assert_eq!(outcome.errors.len(), 1, "规则层结果必须保留");
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == "llm" && l.status == "unavailable"),
+            "llm 层应记 unavailable：{:?}",
+            outcome.layers
+        );
+        // 未配置 ≠ 运行时失败：仍然明确报错（要人改设置）
+        let e = fake
+            .detect_level("他昨天报复很大。", 3, false, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, DetectorError::LlmNotConfigured(_)), "{e:?}");
+    }
 }

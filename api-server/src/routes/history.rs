@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::Tenant;
 use crate::routes::ApiError;
 use crate::state::AppState;
 
@@ -64,12 +65,49 @@ pub struct HistoryListPage {
 }
 
 /// GET /gec/history — 分页列出（limit 钳制 1..=200；q 全文关键词；offset 页偏移）
+///
+/// 网关形态：先扫近 200 行按会话归属过滤（无归属行 fail-closed 隐藏）再内存分页；
+/// 单机形态保持数据库分页原路径。
 pub async fn list(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
+    if let Some(sid) = q.session_id.as_deref() {
+        tenant.guard_session(sid)?;
+    }
+    if tenant.gateway_active() {
+        let scanned = state
+            .detect_history
+            .list_page(
+                q.session_id.as_deref(),
+                q.lang.as_deref(),
+                q.q.as_deref(),
+                200,
+                0,
+            )
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let mut visible = Vec::with_capacity(scanned.len());
+        for h in scanned {
+            if tenant.may_see_session(h.session_id.as_deref())? {
+                visible.push(to_list_item(h));
+            }
+        }
+        let total = visible.len() as i64;
+        let items = visible
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        return Ok(axum::Json(HistoryListPage {
+            items,
+            total,
+            offset,
+            limit,
+        }));
+    }
     let items = state
         .detect_history
         .list_page(
@@ -85,31 +123,7 @@ pub async fn list(
         .count_page(q.session_id.as_deref(), q.lang.as_deref(), q.q.as_deref())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let list: Vec<HistoryListItem> = items
-        .into_iter()
-        .map(|h| {
-            let error_count = serde_json::from_str::<Vec<serde_json::Value>>(&h.errors_json)
-                .map(|v| v.len())
-                .unwrap_or(0);
-            let preview: String = h.text.chars().take(80).collect();
-            let total_ms = h
-                .timings_json
-                .as_deref()
-                .and_then(|j| serde_json::from_str::<gec_core::DetectTimings>(j).ok())
-                .map(|t| t.total_ms);
-            HistoryListItem {
-                id: h.id,
-                session_id: h.session_id,
-                lang: h.lang,
-                text_preview: preview,
-                error_count,
-                total_ms,
-                version: h.version,
-                params_json: h.params_json,
-                created_at: h.created_at,
-            }
-        })
-        .collect();
+    let list: Vec<HistoryListItem> = items.into_iter().map(to_list_item).collect();
 
     Ok(axum::Json(HistoryListPage {
         items: list,
@@ -119,9 +133,33 @@ pub async fn list(
     }))
 }
 
+fn to_list_item(h: crate::detect_history::DetectHistory) -> HistoryListItem {
+    let error_count = serde_json::from_str::<Vec<serde_json::Value>>(&h.errors_json)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let preview: String = h.text.chars().take(80).collect();
+    let total_ms = h
+        .timings_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<gec_core::DetectTimings>(j).ok())
+        .map(|t| t.total_ms);
+    HistoryListItem {
+        id: h.id,
+        session_id: h.session_id,
+        lang: h.lang,
+        text_preview: preview,
+        error_count,
+        total_ms,
+        version: h.version,
+        params_json: h.params_json,
+        created_at: h.created_at,
+    }
+}
+
 /// GET /gec/history/:id
 pub async fn get(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<i64>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
     let item = state
@@ -129,14 +167,27 @@ pub async fn get(
         .get(id)
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("history#{id} 不存在")))?;
+    // 网关形态：非本账号归属的记录按不存在处理（不泄露存在性）
+    if !tenant.may_see_session(item.session_id.as_deref())? {
+        return Err(ApiError::NotFound(format!("history#{id} 不存在")));
+    }
     Ok(axum::Json(item))
 }
 
 /// DELETE /gec/history/:id
 pub async fn remove(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Path(id): Path<i64>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
+    let item = state
+        .detect_history
+        .get(id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("history#{id} 不存在")))?;
+    if !tenant.may_see_session(item.session_id.as_deref())? {
+        return Err(ApiError::NotFound(format!("history#{id} 不存在")));
+    }
     let ok = state
         .detect_history
         .remove(id)
@@ -147,10 +198,12 @@ pub async fn remove(
     Ok(axum::Json(serde_json::json!({ "deleted": true })))
 }
 
-/// DELETE /gec/history — 清空全部
+/// DELETE /gec/history — 清空全部（网关形态拒绝：会波及他账号数据）
 pub async fn clear(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
+    tenant.deny_gateway("清空全部历史")?;
     let n = state
         .detect_history
         .clear()

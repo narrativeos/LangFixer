@@ -44,7 +44,7 @@ pub struct AppSettings {
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     #[serde(default = "default_lexicons_dir")]
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数——该层已**退役出产品路径**（EVOLUTION.md §13 #10，
+    /// 决策模型（vegaml）层参数——该层**待发布**（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型。
     /// 设置界面卡片已移除）；代码保留为实验路径，`enabled=true`（设置文件）或
     /// `GEC_DEC_ENABLED=1` 显式开启时在 `rule` 引擎组合中挂载决策模型层；
     /// 等价环境变量 `GEC_DEC_*`。字段保留以维持设置契约与实验可用）
@@ -107,7 +107,10 @@ impl DocJobSettings {
     fn from_env() -> Self {
         let base = Self::default();
         let read = |k: &str, d: usize| -> usize {
-            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
         };
         Self {
             chunk_target: read("GEC_LLM_CHUNK_TARGET", base.chunk_target),
@@ -255,6 +258,7 @@ mod tests {
             llm_model_id: "generic".into(),
             knowledge_enabled: false,
             media: MediaSettings::default(),
+            doc_jobs: DocJobSettings::default(),
         };
         s.save_to(&path).unwrap();
         let loaded = AppSettings::load(&path);

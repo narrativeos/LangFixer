@@ -329,7 +329,7 @@ pub async fn anomaly_adopt(
         .cloned();
     let (pattern, gate) = match template {
         Some(t) if state.is_llm_available() => {
-            let llm = LlmGecEngine::new(
+            let llm = LlmGecEngine::with_breaker(
                 lang,
                 LlmDetectConfig::from_parts(
                     settings.llm.base_url.clone(),
@@ -339,6 +339,7 @@ pub async fn anomaly_adopt(
                     t.system.clone(),
                     t.user.clone(),
                 ),
+                state.llm_breaker.clone(),
             );
             match distill_pattern(&llm, &t.system, &t.user, wrong, &existing, &gold).await {
                 Ok(p) => {

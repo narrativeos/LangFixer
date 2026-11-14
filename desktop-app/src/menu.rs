@@ -31,21 +31,24 @@ pub fn build<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     let settings = item("menu:settings", "设置…", Some("CmdOrCtrl+,"))?;
 
     let import = item("menu:import", "导入载体文件…", Some("CmdOrCtrl+O"))?;
-    let export = item("menu:export", "导出正误表…", Some("Cmd+Shift+E"))?;
+    // 快捷键一律用 CmdOrCtrl：mac 上等价于 Cmd（HIG 不变），Windows / Linux 上落到
+    // Ctrl。裸 `Cmd+` 在非 mac 平台会被 muda 判为 META 修饰键并在 setup hook
+    // panic（Windows 实测闪退），不可使用。
+    let export = item("menu:export", "导出正误表…", Some("CmdOrCtrl+Shift+E"))?;
 
-    let undo_apply = item("menu:undo-apply", "撤销应用全部修正", Some("Cmd+Alt+Z"))?;
+    let undo_apply = item("menu:undo-apply", "撤销应用全部修正", Some("CmdOrCtrl+Alt+Z"))?;
 
-    let v_workspace = item("menu:view:workspace", "进入检测", Some("Cmd+1"))?;
-    let v_learning = item("menu:view:learning", "练习与复习", Some("Cmd+2"))?;
-    let v_media = item("menu:view:media", "载体审校", Some("Cmd+3"))?;
-    let v_rules = item("menu:view:rules", "规则管理", Some("Cmd+4"))?;
-    let v_knowledge = item("menu:view:knowledge", "知识维护", Some("Cmd+5"))?;
-    let v_evolution = item("menu:view:evolution", "进化中心", Some("Cmd+6"))?;
-    let v_settings = item("menu:view:settings", "设置", Some("Cmd+7"))?;
+    let v_workspace = item("menu:view:workspace", "进入检测", Some("CmdOrCtrl+1"))?;
+    let v_learning = item("menu:view:learning", "练习与复习", Some("CmdOrCtrl+2"))?;
+    let v_media = item("menu:view:media", "载体审校", Some("CmdOrCtrl+3"))?;
+    let v_rules = item("menu:view:rules", "规则管理", Some("CmdOrCtrl+4"))?;
+    let v_knowledge = item("menu:view:knowledge", "知识维护", Some("CmdOrCtrl+5"))?;
+    let v_evolution = item("menu:view:evolution", "进化中心", Some("CmdOrCtrl+6"))?;
+    let v_settings = item("menu:view:settings", "设置", Some("CmdOrCtrl+7"))?;
     let theme = item(
         "menu:toggle-theme",
         "切换浅色 / 深色主题",
-        Some("Cmd+Alt+T"),
+        Some("CmdOrCtrl+Alt+T"),
     )?;
 
     let onboarding = item("menu:onboarding", "使用引导", None)?;

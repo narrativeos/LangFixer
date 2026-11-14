@@ -12,20 +12,49 @@ import CustomWords from './components/CustomWords.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
+import LayerContributions from './components/LayerContributions.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
 import MediaWorkspace from './components/MediaWorkspace.vue'
 import DocJobsPanel from './components/DocJobsPanel.vue'
 import LearningPanel from './components/LearningPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
+import AccessPanel from './components/AccessPanel.vue'
+import TokenGate from './components/TokenGate.vue'
 import { viewAllowed, type AppView } from './lib/caps'
 import { api, isTauri, tauriListen } from './api/client'
+import { gateReady, identity, initGate } from './lib/auth'
 import { ElMessage } from 'element-plus'
 
 const store = useGecStore()
-/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置。
- *  门控（lib/caps 能力位）：workspace/settings 共享核心；learning 扩展默认开；
- *  载体审校 = 编校扩展（proofreading）；规则/知识/进化 = 运营扩展（ops，web 形态需 token 解锁） */
-const APP_VIEWS: AppView[] = ['workspace', 'docjobs', 'learning', 'media', 'rules', 'knowledge', 'evolution', 'settings']
+/** 顶层视图：主工作区（检测与归因 + 检测历史）/ 文档审校作业 / 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 各层贡献 / 接入 / 设置。
+ *  门控（lib/caps 能力位）：workspace/settings/docjobs/layers 共享核心；
+ *  learning 扩展默认开；载体审校 = 编校扩展（proofreading）；规则/知识/进化 = 运营扩展（ops，web 形态需 token 解锁）；
+ *  各层贡献 = 只读质量报告（网关形态全员可见——评审密钥要能核对质量来自哪一层；单机仅运营位显示入口）；
+ *  接入 = 所有人（MCP 配置）；设置页在网关形态只对超管出现（服务端写入同样收口） */
+const APP_VIEWS: AppView[] = [
+  'workspace',
+  'docjobs',
+  'learning',
+  'media',
+  'rules',
+  'knowledge',
+  'evolution',
+  'layers',
+  'access',
+  'settings',
+]
+
+/** 配置面可见性：单机形态本机即用户；网关形态仅超管（服务端 PUT /gec/settings 同口径 403） */
+const canConfigure = computed(() => !identity.value.gateway || identity.value.admin)
+/** 门禁页 / 产品界面二选一（探测期间都留白，避免界面闪一下再被登录页顶掉）：
+ *  `locked` 由服务端判定——网关形态恒锁；单机形态在 owner 激活（超管首次登录）前不锁，
+ *  与「设置写入零变化」同口径，保证装完即用不增加任何摩擦 */
+const showGate = computed(() => gateReady.value && identity.value.locked && !identity.value.authenticated)
+const showApp = computed(() => gateReady.value && (!identity.value.locked || identity.value.authenticated))
+
+/** 学习闭环（错题本 / 复习队列 / 学习统计）是跨会话全局视图：评测通道按账号隔离，
+ *  服务端这些端点恒回 403，界面据此收起入口与徽章刷新，避免打注定失败的请求 */
+const canPractice = computed(() => !identity.value.gateway || identity.value.admin)
 
 /** `?view=media` 深链：刷新 / 分享链接都停在同一视图（也便于无头浏览器冒烟测试） */
 function viewFromUrl(): AppView | null {
@@ -42,6 +71,9 @@ function viewFromUrl(): AppView | null {
 const lockedViewHint = ref<AppView | null>(null)
 function resolveInitialView(): AppView {
   const v = viewFromUrl() ?? 'workspace'
+  // 网关形态的非超管没有配置面：深链 ?view=settings 不硬跳，留在工作区
+  if (v === 'settings' && !canConfigure.value) return 'workspace'
+  if (v === 'learning' && !canPractice.value) return 'workspace'
   if (!viewAllowed(v, store.caps)) {
     lockedViewHint.value = v
     return 'workspace'
@@ -64,18 +96,25 @@ const knowledgeSub = ref('attribution')
 // 首次启动引导（T1-2）：只弹一次（localStorage 记录）；header「帮助」可随时重新打开
 const showOnboarding = ref(false)
 
-onMounted(() => {
+/** 验证通过后才拉数据：网关形态下未登录打业务端点会 401，界面会闪一串错误 */
+function boot() {
   // 拉取后端真实语言 / 引擎元信息（Web: GET /gec/languages；桌面: invoke('languages')）
   store.loadLanguages()
   // 同步决策模型启用状态（「检查模式」标准检查的状态显示用）
   store.loadSettings()
   // 学习闭环召回钩子：导航「练习与复习」徽章显示今日到期复习数
-  if (store.caps.learning) void store.refreshReviewDue()
+  if (store.caps.learning && canPractice.value) void store.refreshReviewDue()
   try {
     showOnboarding.value = !localStorage.getItem('langfixer.onboarded.v1')
   } catch {
     showOnboarding.value = true
   }
+}
+
+onMounted(async () => {
+  // 门禁探测（?token= 直链自动登录 / 已有会话 / sessionStorage 补登录）后再决定是否进界面
+  await initGate()
+  if (showApp.value) boot()
 })
 
 function finishOnboarding() {
@@ -90,10 +129,20 @@ function finishOnboarding() {
 // 切回检测工作区时重新校验检测管线各层启用状态：
 // 设置页保存（或他处变更）后，L2 的状态标签 / 管线提示自动与服务端对齐
 watch(activeView, (v) => {
+  // 配置面在网关形态仅超管可达：任何入口（深链 / 状态条跳设置）都改落到接入页
+  if (v === 'settings' && !canConfigure.value) {
+    activeView.value = 'access'
+    return
+  }
+  // 评测通道按账号隔离：练习页的全局错题本 / 复习队列服务端恒 403，回工作区而不是报错
+  if (v === 'learning' && !canPractice.value) {
+    activeView.value = 'workspace'
+    return
+  }
   psPopover.value?.hide?.() // 视图切换时收起系统状态 popover（状态条跳设置等动作后不残留）
   if (v === 'workspace') void store.refreshEngineStatus()
   // 进入练习页时徽章保鲜（复习完成数即时反映到导航）
-  if (v === 'learning') void store.refreshReviewDue()
+  if (v === 'learning' && canPractice.value) void store.refreshReviewDue()
   // 视图同步进地址栏（replaceState：不产生历史堆栈，刷新仍在当前视图）
   try {
     const url = new URL(window.location.href)
@@ -249,7 +298,9 @@ if (isTauri) api.setWindowTheme(isDark.value)
 </script>
 
 <template>
-  <header class="app-header">
+  <!-- 验证机制：未通过 token 验证前，产品界面（header / 工作区）一律不渲染 -->
+  <TokenGate v-if="showGate" @entered="boot" />
+  <header v-else-if="showApp" class="app-header">
     <div class="brand-mark">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M5 12.5l4.5 4.5L19 7.5" />
@@ -276,7 +327,7 @@ if (isTauri) api.setWindowTheme(isDark.value)
         文档审校
       </el-button>
       <el-badge
-        v-if="store.caps.learning"
+        v-if="store.caps.learning && canPractice"
         :value="store.reviewDue"
         :hidden="store.reviewDue <= 0"
         :max="99"
@@ -322,7 +373,25 @@ if (isTauri) api.setWindowTheme(isDark.value)
       >
         进化中心
       </el-button>
+      <!-- 各层贡献度报告（只读质量透明面）：网关形态全员可见（评委核对层级贡献），单机仅运营位 -->
       <el-button
+        v-if="identity.gateway || store.caps.ops"
+        :class="{ 'nav-active': activeView === 'layers' }"
+        :aria-current="activeView === 'layers' ? 'page' : undefined"
+        @click="activeView = 'layers'"
+      >
+        各层贡献
+      </el-button>
+      <el-button
+        v-if="!isTauri"
+        :class="{ 'nav-active': activeView === 'access' }"
+        :aria-current="activeView === 'access' ? 'page' : undefined"
+        @click="activeView = 'access'"
+      >
+        接入
+      </el-button>
+      <el-button
+        v-if="canConfigure"
         :class="{ 'nav-active': activeView === 'settings' }"
         :aria-current="activeView === 'settings' ? 'page' : undefined"
         @click="activeView = 'settings'"
@@ -355,10 +424,19 @@ if (isTauri) api.setWindowTheme(isDark.value)
         <el-icon><Moon v-if="!isDark" /><Sunny v-else /></el-icon>
       </el-button>
       <el-button text title="查看使用引导" aria-label="查看使用引导" @click="showOnboarding = true">帮助</el-button>
+      <!-- 当前身份：网关形态显示密钥归属（超管 / 评审）与退出；单机形态本机即用户不显示 -->
+      <el-button
+        v-if="identity.gateway"
+        text
+        :title="identity.admin ? '当前为超级管理员（可改配置、签发密钥）' : `当前密钥：${identity.token_id ?? '会话中'}`"
+        @click="activeView = 'access'"
+      >
+        {{ identity.admin ? '超管' : '评审' }}
+      </el-button>
     </nav>
   </header>
 
-  <main class="main-area">
+  <main v-if="showApp" class="main-area">
     <!-- 主工作区：检测与归因（三列）+ 检测历史，直接展示 -->
     <template v-if="activeView === 'workspace'">
       <!-- 深链命中未解锁视图：一次性说明卡（解释这是什么、去哪开启），不硬跳转 -->
@@ -466,6 +544,16 @@ if (isTauri) api.setWindowTheme(isDark.value)
       <EvolutionCenter />
     </section>
 
+    <!-- 各层贡献度报告（只读）：直读评测报告档案，不依赖测评服务；评审通道可见 -->
+    <section v-else-if="activeView === 'layers'" class="manage-pane">
+      <LayerContributions />
+    </section>
+
+    <!-- 接入：我的 MCP 配置（所有人）+ 密钥分发（仅超管，服务端 /admin/* 同口径） -->
+    <section v-else-if="activeView === 'access'" class="manage-pane">
+      <AccessPanel />
+    </section>
+
     <!-- 设置（右上角入口） -->
     <section v-else class="manage-pane">
       <SettingsPanel />
@@ -473,5 +561,5 @@ if (isTauri) api.setWindowTheme(isDark.value)
   </main>
 
   <!-- 首次启动引导（T1-2）：三步上手，关闭后不再出现 -->
-  <OnboardingDialog v-if="showOnboarding" :visible="true" @done="finishOnboarding" />
+  <OnboardingDialog v-if="showOnboarding && showApp" :visible="true" @done="finishOnboarding" />
 </template>
