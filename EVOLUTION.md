@@ -1032,6 +1032,35 @@ docjob/mcp 契约加校对通式「校对项范围」参数；**旧 `grammar` �
 验证「rule 命中即定、LLM 低收益」，杂糅/残缺类应验证「LLM 高收益」——分层曲线本身
 即路由可学性证据）；K/S 族有自己的通道与账，不进此空间。§11.10 验收口径不变。
 
+### 11.12 路由 harness 建成首跑（2026-11-15，分支 feat/router-harness）
+
+**机件**（`feature-model/`，标签/特征/记账全部复用现有机器）：
+- `router_labels.py`：在 jev zh_v2 池（格式对齐，追加 route_label/signals/
+  error_types 字段）产句级路由标签，配方 = §11.10 并集（gold=1 且规则未定案→
+  llm_review；规则定案档覆盖→rule_decide；LLM 检出/词典命中→llm_review；
+  干净剩余每 3 句采样地板强制复查（对齐 docjob 地板）其余 skip，skipped
+  如实入账不算覆盖率）。LLM 臂未直跑时标签 = gold∪lexical∪floor（实测
+  train 9780：llm_review 67.5% / rule_decide 1.1% / skip 31.4%，lexical 559、
+  floor 1488）。
+- `eval_router_arms.py`：三臂等调用率曲线。histgb = 生产门控本地代理（HistGB
+  在 zh_v2 池 gold 标签上训）；random = 固定种子；router = 同特征在 route_label
+  上训（可学性代理臂，终局换 jev route 头）。覆盖 = 规则定案档命中 ∪ 被复查句
+  检出（默认 **oracle 上限**，三臂同假设横向可比；--llm-cache 可接真实检出）。
+
+**污染面（重要）**：gold 集（MuCGEC/NACGEC/CSCD）本就是 zh_v2 金标基座的训练源，
+池内重叠无法避免（manifest 仅对 frozen 集断言零重叠）。两臂污染相同→曲线横向可比
+但绝对值 optimistic；harness 默认**仅用池外行**出曲线（本次 6,168 句，gold 编辑
+9,641），--include-inpool 可关。
+
+**首跑实测**（mucgec+nacgec+cscd，oracle 口径，锚点 63.1%）：总体 router 65.2% ≥
+histgb 64.7% ≥ random 64.0%，**总体 PASS**；但优势幅度薄（+0.5pp，且 80% 档回落后
+于 histgb），分层 7/8 类 FAIL。归因：LLM 臂未跑，route_label 信息面≈gold 标签本身
+（+lexical/floor），「LLM 边际收益」维度缺失——这正是要验证的假设而非缺陷。
+另 MuCGEC 池外子集上 random>histgb（74.0% vs 46.9%），印证域外行上句级门控失真。
+**下一步**：在池 stratified 子集直跑 LLM 臂（`router_labels.py --llm-run`，credited
+记账）补边际收益维度后重赛；分层判定待按全网格逐点展开（当前仅锚点切片）。
+复现：`cd feature-model && .venv/bin/python router_labels.py && .venv/bin/python eval_router_arms.py`。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/

@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **路由三臂评测 harness**（EVOLUTION.md §11.12，分支 feat/router-harness）：
+  `feature-model/router_labels.py` 在 jev zh_v2 池上产句级路由标签（格式对齐
+  池行，配方 = gold∪LLM∪lexical∪采样地板并集，§11.10）；
+  `feature-model/eval_router_arms.py` 三臂等调用率曲线（histgb 代理/random/
+  router）+ §11.11 类型分层判定（薄金标只报数不裁决、skipped≠covered）。
+  首跑总体 PASS（锚点 63.1%：router 65.2% ≥ histgb 64.7% ≥ random 64.0%），
+  优势幅度待 LLM 臂直跑补边际收益维度；gold 集与池的结构性污染以
+  「默认仅池外行」口径披露。
 - **zh 错误分类法 v2 落地：LLM 细类型不再坠缩**（EVOLUTION.md §11.11）：
   `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/
   关联词/指代→各自细类型码，语义逻辑不通转正为 `logic` 常量），
