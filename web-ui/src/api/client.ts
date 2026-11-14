@@ -12,6 +12,12 @@ import type {
   DecisionTableView,
   DetectResponse,
   DetectTimings,
+  DocChunkRow,
+  DocJobCreated,
+  DocJobDetail,
+  DocJobListItem,
+  DocJobProgress,
+  DocJobResults,
   ErrorItem,
   ExampleList,
   ExplainResponse,
@@ -1646,6 +1652,45 @@ export const api = {
     a.click()
     URL.revokeObjectURL(url)
     return { filename, size_bytes: (resp.data as Blob).size }
+  },
+
+  // ── 文档级审校作业（doc-detect-flow）──────────────────────────
+  // 说明：桌面端 Tauri 命令镜像暂未提供，统一走内嵌 api-server HTTP
+
+  docJobCreate(body: {
+    lang: string
+    text: string
+    budget?: 'full' | 'economical'
+    cache?: boolean
+  }): Promise<DocJobCreated> {
+    return http.post<DocJobCreated>('/gec/doc-jobs', body, { timeout: 120000 }).then((r) => r.data)
+  },
+  docJobList(limit = 20): Promise<{ jobs: DocJobListItem[] }> {
+    return http
+      .get<{ jobs: DocJobListItem[] }>('/gec/doc-jobs', { params: { limit } })
+      .then((r) => r.data)
+  },
+  docJobGet(id: string): Promise<DocJobDetail> {
+    return http.get<DocJobDetail>(`/gec/doc-jobs/${encodeURIComponent(id)}`).then((r) => r.data)
+  },
+  docJobResults(id: string): Promise<DocJobResults> {
+    return http
+      .get<DocJobResults>(`/gec/doc-jobs/${encodeURIComponent(id)}/results`)
+      .then((r) => r.data)
+  },
+  docJobCancel(id: string): Promise<{ ok: boolean }> {
+    return http
+      .post<{ ok: boolean }>(`/gec/doc-jobs/${encodeURIComponent(id)}/cancel`)
+      .then((r) => r.data)
+  },
+  docJobRetry(id: string): Promise<{ ok: boolean; reset_chunks: number }> {
+    return http
+      .post<{ ok: boolean; reset_chunks: number }>(`/gec/doc-jobs/${encodeURIComponent(id)}/retry`)
+      .then((r) => r.data)
+  },
+  /** SSE 进度流 URL（EventSource 直连；断线自动重连由调用方处理） */
+  docJobEventsUrl(id: string): string {
+    return `/gec/doc-jobs/${encodeURIComponent(id)}/events`
   },
 }
 

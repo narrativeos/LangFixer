@@ -1733,3 +1733,58 @@ export interface MediaReportResult {
   warnings: string[]
 }
 
+// ── 文档级审校作业（10 万字+，doc-detect-flow）────────────────────
+
+/** 作业块级进度（`DocJobProgress`） */
+export interface DocJobProgress {
+  total: number
+  done: number
+  cached: number
+  skipped: number
+  failed: number
+  parse_failed: number
+  pending: number
+}
+
+/** 作业列表行 */
+export interface DocJobListItem {
+  id: string
+  lang: string
+  status: 'created' | 'running' | 'done' | 'cancelled'
+  created_at: string
+  progress: DocJobProgress
+  coverage: number
+}
+
+/** GET /gec/doc-jobs/:id 详情 */
+export interface DocJobDetail extends DocJobListItem {
+  text_chars: number
+  chunk_target: number
+  cancelling: boolean
+}
+
+/** 单块状态行（结果端点） */
+export interface DocChunkRow {
+  index: number
+  owner: [number, number]
+  status: 'pending' | 'done' | 'cached' | 'skipped' | 'failed' | 'parse_failed'
+  error: string | null
+  risk: number
+}
+
+/** GET /gec/doc-jobs/:id/results */
+export interface DocJobResults {
+  errors: ErrorItem[]
+  progress: DocJobProgress
+  coverage: number
+  complete: boolean
+  chunks: DocChunkRow[]
+}
+
+/** POST /gec/doc-jobs 响应 */
+export interface DocJobCreated {
+  job_id: string
+  chunks: number
+  status: string
+}
+

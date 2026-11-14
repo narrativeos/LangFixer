@@ -54,6 +54,7 @@ export function saveCaps(caps: Caps): void {
 /** 顶层视图（App.vue 与能力门控共用） */
 export type AppView =
   | 'workspace'
+  | 'docjobs'
   | 'learning'
   | 'media'
   | 'rules'

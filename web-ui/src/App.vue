@@ -14,6 +14,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
 import MediaWorkspace from './components/MediaWorkspace.vue'
+import DocJobsPanel from './components/DocJobsPanel.vue'
 import LearningPanel from './components/LearningPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { viewAllowed, type AppView } from './lib/caps'
@@ -24,7 +25,7 @@ const store = useGecStore()
 /** 顶层视图：主工作区（检测与归因 + 检测历史）/ 练习与复习 / 载体审校 / 规则管理 / 知识维护 / 进化中心 / 设置。
  *  门控（lib/caps 能力位）：workspace/settings 共享核心；learning 扩展默认开；
  *  载体审校 = 编校扩展（proofreading）；规则/知识/进化 = 运营扩展（ops，web 形态需 token 解锁） */
-const APP_VIEWS: AppView[] = ['workspace', 'learning', 'media', 'rules', 'knowledge', 'evolution', 'settings']
+const APP_VIEWS: AppView[] = ['workspace', 'docjobs', 'learning', 'media', 'rules', 'knowledge', 'evolution', 'settings']
 
 /** `?view=media` 深链：刷新 / 分享链接都停在同一视图（也便于无头浏览器冒烟测试） */
 function viewFromUrl(): AppView | null {
@@ -267,6 +268,13 @@ if (isTauri) api.setWindowTheme(isDark.value)
       >
         检测
       </el-button>
+      <el-button
+        :class="{ 'nav-active': activeView === 'docjobs' }"
+        :aria-current="activeView === 'docjobs' ? 'page' : undefined"
+        @click="activeView = 'docjobs'"
+      >
+        文档审校
+      </el-button>
       <el-badge
         v-if="store.caps.learning"
         :value="store.reviewDue"
@@ -410,6 +418,11 @@ if (isTauri) api.setWindowTheme(isDark.value)
         <HistoryPanel :lang="store.lang" />
       </section>
     </template>
+
+    <!-- 文档审校（共享核心）：长文档作业化——SSE 进度 / 覆盖率 / 块状态与风险 -->
+    <section v-else-if="activeView === 'docjobs'" class="manage-pane">
+      <DocJobsPanel />
+    </section>
 
     <!-- 练习与复习（学习扩展）：错题 → 间隔复习 → 掌握度（Phase 2 建设中） -->
     <section v-else-if="activeView === 'learning'" class="manage-pane">

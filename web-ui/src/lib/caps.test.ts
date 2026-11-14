@@ -55,4 +55,9 @@ describe('view gating', () => {
     expect(viewAllowed('learning', caps)).toBe(true)
     expect(viewAllowed('learning', { ...caps, learning: false })).toBe(false)
   })
+
+  it('文档审校是共享核心视图（无能力位依赖，始终可见）', () => {
+    expect(viewCapKey('docjobs')).toBeNull()
+    expect(viewAllowed('docjobs', { learning: false, proofreading: false, ops: false })).toBe(true)
+  })
 })
