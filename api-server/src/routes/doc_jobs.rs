@@ -29,10 +29,24 @@ pub struct CreateReq {
     /// 内容寻址块缓存（默认开）：修订文档的未变更块免重跑
     #[serde(default = "default_true")]
     pub cache: bool,
+    /// 预算模式：`full`（默认，全量深度复查）| `economical`
+    /// （低风险块跳过深度复查，覆盖率如实下降——用召回换成本）
+    #[serde(default)]
+    pub budget: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn parse_budget(s: &Option<String>) -> Result<gec_core::DocBudget, ApiError> {
+    match s.as_deref().unwrap_or("full") {
+        "full" | "" => Ok(gec_core::DocBudget::All),
+        "economical" => Ok(gec_core::DocBudget::SkipLowRisk),
+        other => Err(ApiError::BadRequest(format!(
+            "无效预算模式: {other}（应为 full / economical）"
+        ))),
+    }
 }
 
 fn internal(e: rusqlite::Error) -> ApiError {
@@ -45,6 +59,7 @@ fn spawn_run(
     id: &str,
     llm: Arc<gec_core::LlmGecEngine>,
     use_cache: bool,
+    budget: gec_core::DocBudget,
 ) -> Result<Arc<AtomicBool>, ApiError> {
     let cancel = Arc::new(AtomicBool::new(false));
     state
@@ -64,6 +79,7 @@ fn spawn_run(
             &job_id,
             gec_core::docjob::default_concurrency(),
             use_cache,
+            budget,
             cancel_bg,
         )
         .await;
@@ -93,7 +109,7 @@ pub async fn create(
         .doc_jobs
         .create_job(&id, &req.lang, &req.text, None, target)
         .map_err(internal)?;
-    spawn_run(&state, &id, llm, req.cache)?;
+    spawn_run(&state, &id, llm, req.cache, parse_budget(&req.budget)?)?;
     Ok(Json(serde_json::json!({
         "job_id": id,
         "chunks": chunks,
@@ -174,7 +190,8 @@ pub async fn results(
         .into_iter()
         .map(|c| {
             serde_json::json!({
-                "index": c.index, "owner": c.owner, "status": c.status, "error": c.error,
+                "index": c.index, "owner": c.owner, "status": c.status,
+                "error": c.error, "risk": c.risk,
             })
         })
         .collect();
@@ -182,8 +199,11 @@ pub async fn results(
         "errors": errors,
         "progress": progress,
         "coverage": progress.coverage(),
-        // 覆盖率不满时如实标注：部分块未复查，结果不完整
-        "complete": progress.pending == 0 && progress.failed == 0 && progress.parse_failed == 0,
+        // 覆盖率不满时如实标注：部分块未复查（失败/解析失败/跳过/未跑），结果不完整
+        "complete": progress.pending == 0
+            && progress.failed == 0
+            && progress.parse_failed == 0
+            && progress.skipped == 0,
         "chunks": chunks,
     })))
 }
@@ -225,7 +245,7 @@ pub async fn retry(
         .llm_detect_engine(&job.lang)
         .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
     let reset = state.doc_jobs.reset_failed_chunks(&id).map_err(internal)?;
-    spawn_run(&state, &id, llm, true)?;
+    spawn_run(&state, &id, llm, true, gec_core::DocBudget::All)?;
     Ok(Json(serde_json::json!({ "ok": true, "reset_chunks": reset })))
 }
 

@@ -29,6 +29,7 @@ pub mod reflection_center;
 pub mod settings_test;
 pub mod statistical;
 pub mod timings;
+pub mod triage;
 pub mod training_center;
 
 pub use agent::{
@@ -43,7 +44,7 @@ pub use contribution::{
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
 pub use docchunk::{DocChunk, DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, split_document};
-pub use docjob::{DocJob, DocJobProgress, DocJobStore, run_doc_job};
+pub use docjob::{DocBudget, DocJob, DocJobProgress, DocJobStore, run_doc_job};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};
 pub use engine::{
     CascadeDetector, CompositeDetector, DetectOutcome, GecEngine, GecEngineKind, LayerReport,
@@ -73,6 +74,7 @@ pub use reflection_center::{
 pub use settings_test::TestResult;
 pub use statistical::{StatisticalConfig, StatisticalGecEngine};
 pub use timings::{DetectTimings, NlpCall};
+pub use triage::{ChunkRisk, ReviewMode, chunk_risk, review_mode};
 pub use training_center::{
     DomainPool, LlmTrainingData, LlmTrainingSample, PoolInput, PoolSample, TrainingJob,
     build_domain_pool, build_llm_training_data, is_model_source, job_kind, job_status,

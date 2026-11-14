@@ -22,6 +22,7 @@ use shared_model::Error;
 use crate::detector::DetectorError;
 use crate::docchunk::{split_document, DocChunk};
 use crate::llm::{remap_chunk_errors, LlmGecEngine};
+use crate::triage::{FAST_THRESHOLD, chunk_risk};
 
 /// 作业状态机：`created → running → done / cancelled`（`cancelling` 为过渡态）
 #[derive(Debug, Clone)]
@@ -41,10 +42,12 @@ pub struct ChunkRow {
     pub index: usize,
     pub owner: [usize; 2],
     pub context_prefix: usize,
-    /// `pending / done / failed / parse_failed`
+    /// `pending / done / cached / failed / parse_failed / skipped`
     pub status: String,
     pub result_json: Option<String>,
     pub error: Option<String>,
+    /// 风险分（triage 统计信号；-1 = 未计算）
+    pub risk: f64,
 }
 
 impl ChunkRow {
@@ -71,17 +74,30 @@ pub struct DocJobProgress {
     pub failed: usize,
     pub parse_failed: usize,
     pub pending: usize,
+    /// 预算模式跳过的低风险块（未复查）
+    pub skipped: usize,
 }
 
 impl DocJobProgress {
     /// 深度复查覆盖率：(done + cached) / total
-    /// （failed / parse_failed / pending 均**不算**已复查）
+    /// （failed / parse_failed / pending / skipped 均**不算**已复查）
     pub fn coverage(&self) -> f64 {
         if self.total == 0 {
             return 0.0;
         }
         (self.done + self.cached) as f64 / self.total as f64
     }
+}
+
+/// LLM 预算模式：风险分诊决定「哪些块值得深度复查」
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DocBudget {
+    /// 全量：所有块都深度复查（默认）
+    #[default]
+    All,
+    /// 经济：低风险（fast，`risk < FAST_THRESHOLD`）块标 `skipped`，
+    /// 覆盖率如实下降——用可控的召回换成本
+    SkipLowRisk,
 }
 
 pub struct DocJobStore {
@@ -128,8 +144,16 @@ impl DocJobStore {
                  send_len INTEGER NOT NULL,
                  result_json TEXT NOT NULL,
                  created_at TEXT NOT NULL
-             );",
+             );")?;
+        // 迁移：旧库补 risk 列（-1 = 未计算）
+        let has_risk: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('doc_chunks') WHERE name = 'risk'",
+            [],
+            |r| r.get(0),
         )?;
+        if has_risk == 0 {
+            conn.execute("ALTER TABLE doc_chunks ADD COLUMN risk REAL NOT NULL DEFAULT -1", [])?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -153,15 +177,17 @@ impl DocJobStore {
             params![id, lang, text, params_json, chunk_target as i64],
         )?;
         for (i, c) in chunks.iter().enumerate() {
+            let risk = chunk_risk(&text[c.owner[0]..c.owner[1]]).score;
             tx.execute(
-                "INSERT INTO doc_chunks(job_id, idx, owner_start, owner_end, context_prefix, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+                "INSERT INTO doc_chunks(job_id, idx, owner_start, owner_end, context_prefix, status, risk)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
                 params![
                     id,
                     i as i64,
                     c.owner[0] as i64,
                     c.owner[1] as i64,
-                    c.context_prefix as i64
+                    c.context_prefix as i64,
+                    risk
                 ],
             )?;
         }
@@ -233,6 +259,7 @@ impl DocJobStore {
             match s.as_str() {
                 "done" => p.done = n,
                 "cached" => p.cached = n,
+                "skipped" => p.skipped = n,
                 "failed" => p.failed = n,
                 "parse_failed" => p.parse_failed = n,
                 _ => p.pending += n,
@@ -245,19 +272,26 @@ impl DocJobStore {
         Self::progress_conn(&self.conn.lock().unwrap(), id)
     }
 
+    /// 待跑块：**高风险优先**（risk 降序）——进度更有价值，
+    /// 取消时未跑的是低风险块；同风险按文档顺序（idx）
     pub fn pending_chunks(&self, id: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
-        self.select_chunks(id, "status = 'pending'")
+        self.select_chunks(id, "status = 'pending'", "risk DESC, idx ASC")
     }
 
     pub fn chunks(&self, id: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
-        self.select_chunks(id, "1 = 1")
+        self.select_chunks(id, "1 = 1", "idx ASC")
     }
 
-    fn select_chunks(&self, id: &str, cond: &str) -> Result<Vec<ChunkRow>, rusqlite::Error> {
+    fn select_chunks(
+        &self,
+        id: &str,
+        cond: &str,
+        order: &str,
+    ) -> Result<Vec<ChunkRow>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut q = conn.prepare(&format!(
-            "SELECT idx, owner_start, owner_end, context_prefix, status, result_json, error
-             FROM doc_chunks WHERE job_id = ?1 AND {cond} ORDER BY idx"
+            "SELECT idx, owner_start, owner_end, context_prefix, status, result_json, error, risk
+             FROM doc_chunks WHERE job_id = ?1 AND {cond} ORDER BY {order}"
         ))?;
         let rows = q.query_map([id], |r| {
             Ok(ChunkRow {
@@ -267,6 +301,7 @@ impl DocJobStore {
                 status: r.get(4)?,
                 result_json: r.get(5)?,
                 error: r.get(6)?,
+                risk: r.get::<_, f64>(7)?,
             })
         })?;
         Ok(rows.flatten().collect())
@@ -302,7 +337,7 @@ impl DocJobStore {
 
     /// 聚合全部 done / cached 块的错误（文档坐标，按 span 排序）
     pub fn aggregated_errors(&self, id: &str) -> Result<Vec<Error>, rusqlite::Error> {
-        let rows = self.select_chunks(id, "status IN ('done', 'cached')")?;
+        let rows = self.select_chunks(id, "status IN ('done', 'cached')", "idx ASC")?;
         let mut out = Vec::new();
         for r in rows {
             if let Some(j) = r.result_json {
@@ -404,6 +439,8 @@ pub fn default_concurrency() -> usize {
 /// - `use_cache`：内容寻址块缓存（`chunk_cache`）——相同 send 文本 +
 ///   相同复查函数指纹 → 直接复用结果（块标 `cached`，计入覆盖率，
 ///   不消耗 LLM）；修订文档的未变更块天然命中，免显式 diff；
+/// - `budget`：`SkipLowRisk` 下低风险块（fast）直接标 `skipped`（未复查，
+///   覆盖率如实下降）；排队序恒为**高风险优先**（见 `pending_chunks`）；
 /// - 全部块处理完 → 作业 `done`；
 /// - 返回进度 + 聚合错误（覆盖率 = `progress.coverage()`）。
 pub async fn run_doc_job(
@@ -412,6 +449,7 @@ pub async fn run_doc_job(
     job_id: &str,
     concurrency: usize,
     use_cache: bool,
+    budget: DocBudget,
     cancel: Arc<AtomicBool>,
 ) -> Result<(DocJobProgress, Vec<Error>), DetectorError> {
     use futures_util::StreamExt;
@@ -437,6 +475,20 @@ pub async fn run_doc_job(
         async move {
             if cancel.load(Ordering::Relaxed) {
                 return; // 保持 pending（可续跑）
+            }
+            // 预算模式：低风险块不深度复查（skipped，不算覆盖率）
+            if matches!(budget, DocBudget::SkipLowRisk) && row.risk < FAST_THRESHOLD {
+                store
+                    .checkpoint_chunk(
+                        &job_id,
+                        row.index,
+                        "skipped",
+                        None,
+                        Some("低风险块跳过深度复查（预算模式）"),
+                        0,
+                    )
+                    .ok();
+                return;
             }
             let Some(chunk) = row.doc_chunk(&text) else {
                 store
@@ -604,6 +656,7 @@ mod tests {
             "j1",
             4,
             false,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -641,6 +694,7 @@ mod tests {
             "j1",
             4,
             false,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -660,6 +714,7 @@ mod tests {
             "j1",
             4,
             false,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -678,7 +733,7 @@ mod tests {
         let store = Arc::new(DocJobStore::open_in_memory().unwrap());
         let text = sample_doc();
         let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
-        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, Arc::new(AtomicBool::new(true)))
+        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, DocBudget::All, Arc::new(AtomicBool::new(true)))
             .await
             .unwrap();
         assert_eq!(p.pending, n, "取消位置位 → 全部块保持 pending");
@@ -701,6 +756,7 @@ mod tests {
             "j1",
             4,
             true,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -719,6 +775,7 @@ mod tests {
             "j2",
             4,
             true,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -748,6 +805,7 @@ mod tests {
             },
             4,
             true,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -763,6 +821,7 @@ mod tests {
             "j2",
             4,
             true,
+            DocBudget::All,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -771,5 +830,54 @@ mod tests {
         assert!(p2s.cached >= 1, "未变更段落应命中缓存: {p2s:?}");
         assert!(p2s.done >= 1, "变更段落必须重跑: {p2s:?}");
         assert_eq!(p2s.failed + p2s.parse_failed + p2s.pending, 0);
+    }
+
+    #[tokio::test]
+    async fn risk_column_persisted_and_budget_skips_low_risk() {
+        // 干净段（无信号 → fast）+ 高风险段（标点重复 + 括号不配对）
+        let p_clean = "第一段是完全干净的叙述内容。它的句子结构清晰，标点使用规范。最后一句同样没有任何异常。";
+        let p_risky = "第二段问题很多！！标点重复了，还有（没闭合的括号。";
+        let text = format!("{p_clean}\n{p_risky}\n");
+        let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
+        let endpoint = mock_server(good).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let store = Arc::new(DocJobStore::open_in_memory().unwrap());
+        let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
+        assert!(n >= 2, "两段应成两块: {n}");
+        let rows = store.chunks("j1").unwrap();
+        let risky = rows.iter().find(|c| c.owner[0] >= p_clean.len() + 1).unwrap();
+        let clean = rows.iter().find(|c| c.owner[0] == 0).unwrap();
+        assert!(risky.risk > clean.risk, "风险分应持久化且高危更高: {rows:?}");
+        // 经济模式：低风险块 skipped，高风险块正常复查
+        let (p, _) = run_doc_job(
+            store.clone(),
+            llm.clone(),
+            "j1",
+            4,
+            false,
+            DocBudget::SkipLowRisk,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert!(p.skipped >= 1, "低风险块应被跳过: {p:?}");
+        assert!(p.done >= 1, "高风险块应复查: {p:?}");
+        assert!(p.coverage() < 1.0, "skipped 不算覆盖率");
+        assert_eq!(store.job("j1").unwrap().unwrap().status, "done");
+        // 全量模式：同样文本全部复查
+        store.create_job("j2", "zh", &text, None, 50).unwrap();
+        let (p2, _) = run_doc_job(
+            store.clone(),
+            llm,
+            "j2",
+            4,
+            false,
+            DocBudget::All,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2.skipped, 0);
+        assert_eq!(p2.coverage(), 1.0);
     }
 }
