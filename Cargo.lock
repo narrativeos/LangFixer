@@ -1987,6 +1987,7 @@ name = "gec-zh"
 version = "1.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "gec-core",
  "regex",
  "reqwest 0.12.28",

@@ -457,6 +457,11 @@ pub fn default_concurrency() -> usize {
         .unwrap_or(8)
 }
 
+/// 采样地板：预算模式下每 N 个低风险块仍深度复查 1 个（按块序取模，
+/// 重跑稳定）。防信号失效时的系统性召回盲区——即使风险信号全错，
+/// 召回也有 ≈1/N 的下限，而不是塌到 0。
+pub const SAMPLE_EVERY: usize = 3;
+
 /// 运行/续跑作业：只处理 pending 块，每块完成即 checkpoint。
 ///
 /// - `cancel`：调用方持有的取消位——置位后**未开跑**的块保持 pending，
@@ -464,8 +469,11 @@ pub fn default_concurrency() -> usize {
 /// - `use_cache`：内容寻址块缓存（`chunk_cache`）——相同 send 文本 +
 ///   相同复查函数指纹 → 直接复用结果（块标 `cached`，计入覆盖率，
 ///   不消耗 LLM）；修订文档的未变更块天然命中，免显式 diff；
-/// - `budget`：`SkipLowRisk` 下低风险块（fast）直接标 `skipped`（未复查，
-///   覆盖率如实下降）；排队序恒为**高风险优先**（见 `pending_chunks`）；
+/// - `budget`：`SkipLowRisk` 下低风险块（fast）按 [`SAMPLE_EVERY`] 抽样后
+///   跳过深度复查（未复查，覆盖率如实下降）；排队序恒为**高风险优先**
+///   （见 `pending_chunks`）；
+/// - `fast_threshold`：fast 判定阈值覆盖（`None` → [`FAST_THRESHOLD`]），
+///   供 eval 扫描 cost–recall 曲线；
 /// - 全部块处理完 → 作业 `done`；
 /// - 返回进度 + 聚合错误（覆盖率 = `progress.coverage()`）。
 pub async fn run_doc_job(
@@ -475,6 +483,7 @@ pub async fn run_doc_job(
     concurrency: usize,
     use_cache: bool,
     budget: DocBudget,
+    fast_threshold: Option<f64>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(DocJobProgress, Vec<Error>), DetectorError> {
     use futures_util::StreamExt;
@@ -501,8 +510,13 @@ pub async fn run_doc_job(
             if cancel.load(Ordering::Relaxed) {
                 return; // 保持 pending（可续跑）
             }
-            // 预算模式：低风险块不深度复查（skipped，不算覆盖率）
-            if matches!(budget, DocBudget::SkipLowRisk) && row.risk < FAST_THRESHOLD {
+            // 预算模式：低风险块按采样地板抽样后跳过（skipped，不算覆盖率）。
+            // 地板保证每 SAMPLE_EVERY 个低风险块至少深度复查 1 个——
+            // 信号失效时召回仍有下限，不会出现系统性全盲。
+            if matches!(budget, DocBudget::SkipLowRisk)
+                && row.risk < fast_threshold.unwrap_or(FAST_THRESHOLD)
+                && row.index % SAMPLE_EVERY != 0
+            {
                 store
                     .checkpoint_chunk(
                         &job_id,
@@ -705,6 +719,7 @@ mod tests {
             4,
             false,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -743,6 +758,7 @@ mod tests {
             4,
             false,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -763,6 +779,7 @@ mod tests {
             4,
             false,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -781,7 +798,7 @@ mod tests {
         let store = Arc::new(DocJobStore::open_in_memory().unwrap());
         let text = sample_doc();
         let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
-        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, DocBudget::All, Arc::new(AtomicBool::new(true)))
+        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, DocBudget::All, None, Arc::new(AtomicBool::new(true)))
             .await
             .unwrap();
         assert_eq!(p.pending, n, "取消位置位 → 全部块保持 pending");
@@ -805,6 +822,7 @@ mod tests {
             4,
             true,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -824,6 +842,7 @@ mod tests {
             4,
             true,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -854,6 +873,7 @@ mod tests {
             4,
             true,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -870,6 +890,7 @@ mod tests {
             4,
             true,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -882,21 +903,26 @@ mod tests {
 
     #[tokio::test]
     async fn risk_column_persisted_and_budget_skips_low_risk() {
-        // 干净段（无信号 → fast）+ 高风险段（标点重复 + 括号不配对）
-        let p_clean = "第一段是完全干净的叙述内容。它的句子结构清晰，标点使用规范。最后一句同样没有任何异常。";
-        let p_risky = "第二段问题很多！！标点重复了，还有（没闭合的括号。";
-        let text = format!("{p_clean}\n{p_risky}\n");
+        // 多个干净段（无信号 → fast）+ 高风险段（标点重复 + 括号不配对）。
+        // 干净块需覆盖 index%3 != 0 的位置——采样地板下 index%3==0 的低风险块
+        // 仍会被复查（保底抽样），其余才 skipped。
+        let p1 = "第一段是完全干净的叙述内容。它的句子结构清晰，标点使用规范。最后一句同样没有任何异常。句间衔接自然。";
+        let p2 = "第二段同样是完全干净的叙述内容。句子结构清晰，标点使用规范，没有任何需要复查的地方。段落主题明确。";
+        let p3 = "第三段还是完全干净的叙述内容。通篇用词规范，句式平稳，没有任何异常信号。叙述节奏均匀。";
+        let p_risky = "第四段问题很多！！标点重复了，还有（没闭合的括号。";
+        let text = format!("{p1}\n{p2}\n{p3}\n{p_risky}\n");
         let good: fn(&str) -> Option<String> = |_| Some("[]".to_string());
         let endpoint = mock_server(good).await;
         let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
         let store = Arc::new(DocJobStore::open_in_memory().unwrap());
         let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
-        assert!(n >= 2, "两段应成两块: {n}");
+        assert!(n >= 4, "四段应成至少四块: {n}");
         let rows = store.chunks("j1").unwrap();
-        let risky = rows.iter().find(|c| c.owner[0] >= p_clean.len() + 1).unwrap();
+        let risky_start = text.find("第四段").unwrap();
+        let risky = rows.iter().find(|c| c.owner[1] > risky_start).unwrap();
         let clean = rows.iter().find(|c| c.owner[0] == 0).unwrap();
         assert!(risky.risk > clean.risk, "风险分应持久化且高危更高: {rows:?}");
-        // 经济模式：低风险块 skipped，高风险块正常复查
+        // 经济模式：低风险块按地板抽样后 skipped，高风险块正常复查
         let (p, _) = run_doc_job(
             store.clone(),
             llm.clone(),
@@ -904,12 +930,13 @@ mod tests {
             4,
             false,
             DocBudget::SkipLowRisk,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
         .unwrap();
-        assert!(p.skipped >= 1, "低风险块应被跳过: {p:?}");
-        assert!(p.done >= 1, "高风险块应复查: {p:?}");
+        assert!(p.skipped >= 1, "低风险块应被跳过（地板之外）: {p:?}");
+        assert!(p.done >= 2, "高风险块 + 地板抽样块应复查: {p:?}");
         assert!(p.coverage() < 1.0, "skipped 不算覆盖率");
         assert_eq!(store.job("j1").unwrap().unwrap().status, "done");
         // 全量模式：同样文本全部复查
@@ -921,6 +948,7 @@ mod tests {
             4,
             false,
             DocBudget::All,
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -1024,7 +1052,7 @@ mod tests {
         let store_a = Arc::new(DocJobStore::open_in_memory().unwrap());
         store_a.create_job("full", "zh", &doc, None, 400).unwrap();
         let (pa, ea) =
-            run_doc_job(store_a.clone(), llm.clone(), "full", 8, true, DocBudget::All, no_cancel())
+            run_doc_job(store_a.clone(), llm.clone(), "full", 8, true, DocBudget::All, None, no_cancel())
                 .await
                 .unwrap();
         let (hits_a, fp_a) = metrics(&ea);
@@ -1039,6 +1067,7 @@ mod tests {
             8,
             false,
             DocBudget::SkipLowRisk,
+            None,
             no_cancel(),
         )
         .await
@@ -1068,6 +1097,7 @@ mod tests {
             8,
             true,
             DocBudget::All,
+            None,
             no_cancel(),
         )
         .await

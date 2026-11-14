@@ -7,12 +7,30 @@
 //!    如实计入 `skipped`（不算覆盖率）——用可控的召回换成本。
 //!
 //! 信号全部是零依赖统计量（标点异常 / 括号配对 / 超长句 / 重复句 / 字符异常）；
-//! 词典 OOV 密度等更重的信号留待接入词表层后叠加（[`ChunkRisk::signals`] 开放）。
+//! 宿主可经 [`set_extra_signal`] 注入更重的信号源（如 gec-zh 词典规则命中
+//! 密度）——eval 实测纯统计信号对语义级错误（同音替换等）近乎全盲，
+//! 词典命中是把「统计干净但含真实错误」的块抬出 fast 区的关键信号。
+
+use std::sync::{Arc, OnceLock};
 
 /// fast 阈值：风险分低于此值的块在预算模式下可跳过深度复查
 pub const FAST_THRESHOLD: f64 = 0.2;
 /// deep 阈值：高于此值的块值得更深的复查（当前仅作排队优先级标注）
 pub const DEEP_THRESHOLD: f64 = 0.6;
+
+/// 宿主注入的附加信号源（输入块归属区文本，输出该信号源的风险分与信号名）
+pub type SignalFn = dyn Fn(&str) -> ChunkRisk + Send + Sync;
+
+static EXTRA_SIGNAL: OnceLock<Arc<SignalFn>> = OnceLock::new();
+
+/// 注册宿主侧附加信号源（进程内一次性；重复注册返回 Err）。
+///
+/// 典型用法：api-server 启动时注入 gec-zh `rules::detect_local` 的命中密度，
+/// 使词典可见的疑似错误块不被预算模式跳过。gec-core 独立使用时不注册，
+/// 行为与纯统计信号完全一致。
+pub fn set_extra_signal(f: Arc<SignalFn>) -> Result<(), ()> {
+    EXTRA_SIGNAL.set(f).map_err(|_| ())
+}
 
 /// 块风险（归属区文本的统计画像）
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -53,7 +71,31 @@ pub fn review_mode(score: f64) -> ReviewMode {
 }
 
 /// 对块**归属区**文本做风险打分（上下文前缀不参与——那不是本块所有的内容）
+///
+/// 已注册的宿主附加信号源（[`set_extra_signal`]）自动并入：分数相加封顶 1.0，
+/// 信号名拼接。
 pub fn chunk_risk(text: &str) -> ChunkRisk {
+    match EXTRA_SIGNAL.get() {
+        Some(f) => chunk_risk_with(text, Some(f.as_ref())),
+        None => chunk_risk_with(text, None),
+    }
+}
+
+/// 显式传入附加信号源的风险打分（[`chunk_risk`] 的可测版本，不依赖进程全局）
+pub fn chunk_risk_with(text: &str, extra: Option<&dyn Fn(&str) -> ChunkRisk>) -> ChunkRisk {
+    let mut r = statistical_risk(text);
+    if let Some(f) = extra {
+        let x = f(text);
+        if !x.signals.is_empty() || x.score > 0.0 {
+            r.score = (r.score + x.score).min(1.0);
+            r.signals.extend(x.signals);
+        }
+    }
+    r
+}
+
+/// 纯统计信号风险分（零依赖，不含宿主注入信号）
+fn statistical_risk(text: &str) -> ChunkRisk {
     let mut r = ChunkRisk::default();
     let add = |score: &mut f64, signals: &mut Vec<String>, name: &str, w: f64| {
         *score = (*score + w).min(1.0);
@@ -171,5 +213,28 @@ mod tests {
         assert_eq!(review_mode(0.0), ReviewMode::Fast);
         assert_eq!(review_mode(0.3), ReviewMode::Standard);
         assert_eq!(review_mode(0.9), ReviewMode::Deep);
+    }
+
+    #[test]
+    fn extra_signal_lifts_clean_text_out_of_fast() {
+        let clean = "这是一段完全正常的中文段落，句子结构清晰，标点使用规范。\\n另一句同样规范的句子，没有任何异常。\\n";
+        let base = chunk_risk_with(clean, None);
+        assert!(base.score < FAST_THRESHOLD);
+        // 词典命中类信号：干净统计画像 + 命中 → 抬出 fast 区
+        let r = chunk_risk_with(clean, Some(&|_t| ChunkRisk {
+            score: 0.5,
+            signals: vec!["lexicon_hit:2".into()],
+        }));
+        assert!(r.score >= FAST_THRESHOLD, "{r:?}");
+        assert!(r.signals.contains(&"lexicon_hit:2".to_string()), "{r:?}");
+    }
+
+    #[test]
+    fn extra_signal_score_caps_at_one() {
+        let r = chunk_risk_with("标点异常。。测试。", Some(&|_t| ChunkRisk {
+            score: 0.9,
+            signals: vec!["x".into()],
+        }));
+        assert!(r.score <= 1.0, "{r:?}");
     }
 }

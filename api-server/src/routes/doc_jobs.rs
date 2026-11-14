@@ -78,6 +78,7 @@ fn spawn_run(
             concurrency,
             use_cache,
             budget,
+            None,
             cancel_bg,
         )
         .await;
