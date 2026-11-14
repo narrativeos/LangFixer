@@ -14,7 +14,15 @@
   首跑总体 PASS（锚点 63.1%：router 65.2% ≥ histgb 64.7% ≥ random 64.0%），
   优势幅度待 LLM 臂直跑补边际收益维度；gold 集与池的结构性污染以
   「默认仅池外行」口径披露。
-- **zh 错误分类法 v2 落地：LLM 细类型不再坠缩**（EVOLUTION.md §11.11）：
+- **路由 harness 非 oracle 口径与 LLM 臂直跑机件**（EVOLUTION.md §11.12 补）：
+  `router_labels.py --llm-run` 支持并发（`--llm-workers`）与检出缓存断点续跑，
+  失败行不再伪装成已查实干净；`eval_router_arms.py --llm-run-gold` 在池外
+  gold 行分层抽样直跑 LLM 臂落盘检出，`--only-cached` 只在已查实行上出
+  公平曲线。实测（398 已查实行）：总体 FAIL（random 48.6% > router 42.5%），
+  定量实证「gold 存在性代理标签缺 LLM 边际收益维度」（LLM 对 word_order
+  检出召回仅 41.7%，路由预算被低收益句占住）；待池 llm_hit 标签入位后重赛。
+
+- **zh 错误分类法 v2 落地：LLM 细类型不再坍缩**（EVOLUTION.md §11.11）：
   `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/
   关联词/指代→各自细类型码，语义逻辑不通转正为 `logic` 常量），
   `error_types` 补 11 个细类型常量；兼容不迁 DB：新函数

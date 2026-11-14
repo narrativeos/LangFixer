@@ -1061,6 +1061,25 @@ histgb 64.7% ≥ random 64.0%，**总体 PASS**；但优势幅度薄（+0.5pp，
 记账）补边际收益维度后重赛；分层判定待按全网格逐点展开（当前仅锚点切片）。
 复现：`cd feature-model && .venv/bin/python router_labels.py && .venv/bin/python eval_router_arms.py`。
 
+**补：非 oracle 口径首测（同日夜，--llm-run-gold 直跑 + --only-cached 公平子集）**：
+机件补齐：LLM 臂并发（--llm-workers）+ 断点续跑；**失败行不再假装已查实干净**；
+gold 行直跑模式 `eval_router_arms.py --llm-run-gold`（池外行按 src 分层抽样，
+检出落盘）+ `--only-cached` 只在已查实行上出曲线。实跑 400 抽样→已查实 398
+（3 行 120s 超时剔除）；端到端实测吞吐 ~4.3s/行（上游串行，workers 只抵超时损耗）。
+
+实测（已验证子集 398 句，gold 编辑 621；锚点 63.1%）：总体 **FAIL**
+（router 42.5% / histgb 40.9% / **random 48.6%**），分层 FAIL 5/8；LLM 臂自身
+检出召回按型严不均：spelling 93.5% / blend 83.1% / …… / **word_order 41.7%**；
+clean 行检出非空率 56%（成本信号，span 对齐口径下偏保守）。
+归因：gold 存在性代理标签不含「LLM 实际检得出」维度，router 头优先送检的恰是
+word_order 重仓句，而 LLM 对该型只捡回四成→预算被低收益句占住；random 无此
+系统性错配。这不是路由不可学，而是**标签信息面缺陷的定量实证**。
+下一步：池 LLM 臂直跑（llm_hit 入 route_label，已在跑）后重赛；另「按型条件化
+路由」值得单试（word_order 降权或改走规则/专项侧）。本局仅换检出口径、
+标签配方不变，oracle 结论不受影响。复现：
+`eval_router_arms.py --llm-run-gold --gold-llm-limit 400 --llm-workers 4`（需 LLM_*）
+→ `eval_router_arms.py --llm-cache /tmp/router_llm_arm_gold.jsonl --only-cached`。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/
