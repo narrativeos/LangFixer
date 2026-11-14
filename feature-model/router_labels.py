@@ -103,8 +103,18 @@ def stratified_cap(rows: list[dict], cap: int, seed: int) -> list[dict]:
     return out[:cap]
 
 
-def run_llm_arm(rows: list[dict], limit: int) -> dict[str, list[dict]]:
-    """真实 LLM 臂直跑（cost 高，仅抽样）；返回 {id: [{error_type, original}]}。"""
+def _dump_cache(path: str, rows: list[dict], out: dict[str, list[dict]]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            if r["id"] in out:
+                f.write(json.dumps({"id": r["id"], "text": r["text"],
+                                    "errors": out[r["id"]]},
+                                   ensure_ascii=False) + "\n")
+
+
+def run_llm_arm(rows: list[dict], limit: int, cache_out: str) -> dict[str, list[dict]]:
+    """真实 LLM 臂直跑（cost 高，仅抽样）；返回 {id: [{error_type, original}]}，
+    并把原始检出同步落盘 cache_out（供 eval_router_arms.py --llm-cache 非 oracle 口径）。"""
     base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
     model = os.environ.get("LLM_MODEL", "")
     key = os.environ.get("LLM_API_KEY", "")
@@ -135,6 +145,11 @@ def run_llm_arm(rows: list[dict], limit: int) -> dict[str, list[dict]]:
             out[r["id"]] = []
         if (i + 1) % 50 == 0:
             print(f"[llm] {i + 1}/{min(limit, len(rows))}", file=sys.stderr)
+        # 增量落盘：中途崩溃/断网不丢已完成结果
+        if cache_out and (i + 1) % 25 == 0:
+            _dump_cache(cache_out, rows[:limit], out)
+    if cache_out:
+        _dump_cache(cache_out, rows[:limit], out)
     return out
 
 
@@ -150,6 +165,8 @@ def main() -> None:
     ap.add_argument("--llm-out", default="", help="LLM 臂检出缓存 jsonl（{id, errors}）；有则并入标签")
     ap.add_argument("--llm-run", action="store_true", help="直跑 LLM 臂（需 LLM_* 环境变量）")
     ap.add_argument("--llm-limit", type=int, default=500)
+    ap.add_argument("--llm-cache-out", default="/tmp/router_llm_arm_{split}.jsonl",
+                    help="--llm-run 直跑结果的检出缓存落盘（eval 侧 --llm-cache 可用；支持 {split}）")
     ap.add_argument("--out", default="", help="输出路径模板（含 {split} 占位；默认 /tmp/router_labels_{split}.jsonl）")
     args = ap.parse_args()
 
@@ -165,7 +182,8 @@ def main() -> None:
         pool_p = Path(args.pool_dir) / f"{split}.jsonl"
         rows = stratified_cap(load_jsonl(pool_p), args.cap, args.seed)
         if args.llm_run:
-            llm_cache.update(run_llm_arm(rows, args.llm_limit))
+            llm_cache.update(run_llm_arm(rows, args.llm_limit,
+                                         args.llm_cache_out.format(split=split)))
 
         out_p = Path(args.out.format(split=split) if args.out
                      else f"/tmp/router_labels_{split}.jsonl")
