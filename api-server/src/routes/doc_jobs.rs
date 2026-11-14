@@ -215,6 +215,42 @@ pub async fn results(
     })))
 }
 
+/// 启动自动续跑：把库里 `created` / `running`（进程重启打断）的作业
+/// 重新排队执行；`cancelled` / `done` 不动。块级 checkpoint 保证已
+/// 完成块不重跑（缓存命中则连 LLM 都不消耗）。LLM 未配置时跳过并
+/// 记日志——块保持 pending，配置好后可经 retry 或新建作业继续。
+pub fn resume_interrupted_jobs(state: &AppState) {
+    let jobs = match state.doc_jobs.resumable_jobs() {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "文档作业续跑扫描失败");
+            return;
+        }
+    };
+    if jobs.is_empty() {
+        return;
+    }
+    let settings = state.settings.read().unwrap().clone();
+    for job in jobs {
+        if state.doc_job_cancel.lock().unwrap().contains_key(&job.id) {
+            continue; // 本进程已在跑（防御性去重）
+        }
+        let Some(llm) = state.llm_detect_engine(&job.lang) else {
+            tracing::info!(job_id = job.id, "LLM 未配置，文档作业保持待跑（可在设置后 retry）");
+            continue;
+        };
+        tracing::info!(job_id = job.id, lang = job.lang, "续跑重启打断的文档作业");
+        let _ = spawn_run(
+            state,
+            &job.id,
+            llm,
+            settings.doc_jobs.concurrency,
+            settings.doc_jobs.cache,
+            gec_core::DocBudget::All,
+        );
+    }
+}
+
 pub async fn cancel(
     State(state): State<Arc<AppState>>,
     AxPath(id): AxPath<String>,

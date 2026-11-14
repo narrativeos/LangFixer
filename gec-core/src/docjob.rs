@@ -240,6 +240,31 @@ impl DocJobStore {
         Ok(out)
     }
 
+    /// 重启后应续跑的作业：`created`（建而未跑即终止）与 `running`
+    /// （进程重启打断）。块只在完成时 checkpoint，被打断的块仍是
+    /// `pending`，天然可续，无需租约。`cancelled`/`done` 不自动续
+    /// （尊重用户取消意图 / 已是终态）。
+    pub fn resumable_jobs(&self) -> Result<Vec<DocJob>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut q = conn.prepare(
+            "SELECT id, lang, text, status, params_json, chunk_target, created_at
+             FROM doc_jobs WHERE status IN ('created', 'running')
+             ORDER BY created_at ASC LIMIT 50",
+        )?;
+        let rows = q.query_map([], |r| {
+            Ok(DocJob {
+                id: r.get(0)?,
+                lang: r.get(1)?,
+                text: r.get(2)?,
+                status: r.get(3)?,
+                params_json: r.get(4)?,
+                chunk_target: r.get::<_, i64>(5)? as usize,
+                created_at: r.get(6)?,
+            })
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), rusqlite::Error> {
         self.conn
             .lock()
@@ -629,6 +654,29 @@ mod tests {
         let p = store.progress("j1").unwrap();
         assert_eq!((p.total, p.done, p.pending), (n, 0, n));
         assert_eq!(p.coverage(), 0.0);
+    }
+
+    #[test]
+    fn resumable_jobs_covers_created_and_running_only() {
+        let store = DocJobStore::open_in_memory().unwrap();
+        let text = sample_doc();
+        for id in ["a", "b", "c", "d"] {
+            store.create_job(id, "zh", &text, None, 50).unwrap();
+        }
+        store.set_status("a", "running").unwrap(); // 跑中被打断
+        store.set_status("b", "done").unwrap(); // 终态
+        store.set_status("c", "cancelled").unwrap(); // 尊重取消意图
+        // d 保持 created（建而未跑）
+        let mut ids: Vec<String> = store
+            .resumable_jobs()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_string(), "d".to_string()]);
+        // 被打断的 running 作业：块仍是 pending，天然可续
+        assert_eq!(store.pending_chunks("a").unwrap().len(), store.progress("a").unwrap().total);
     }
 
     #[tokio::test]

@@ -14,6 +14,8 @@ async fn main() {
         .unwrap_or(4801);
     // 决策表目录跟随运行时设置（设置文件 > 环境变量 GEC_TABLES_DIR > 内置默认）
     let state = Arc::new(AppState::from_env(None, None));
+    // 重启续跑：把上次进程遗留（created/running）的文档作业重新排队
+    routes::doc_jobs::resume_interrupted_jobs(&state);
     let app = routes::router(state.clone()).layer(middleware::cors::cors_layer());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
