@@ -113,12 +113,15 @@ def _dump_cache(path: str, rows: list[dict], out: dict[str, list[dict]]) -> None
 
 
 def run_llm_arm(rows: list[dict], limit: int, cache_out: str,
-                seed_out: dict[str, list[dict]] | None = None
-                ) -> dict[str, list[dict]]:
+                seed_out: dict[str, list[dict]] | None = None,
+                workers: int = 1) -> dict[str, list[dict]]:
     """真实 LLM 臂直跑（cost 高，仅抽样）；返回 {id: [{error_type, original}]}，
     并把原始检出同步落盘 cache_out（供 eval_router_arms.py --llm-cache 非 oracle 口径）。
     seed_out 已有的 id 直接跳过（断点续跑）；请求失败的 id 不记入结果
-    （区分“查实无错”与“未查实”，非 oracle 评测时失败行不假装干净）。"""
+    （区分“查实无错”与“未查实”，非 oracle 评测时失败行不假装干净）。
+    workers>1 时并发发请求（服务端为代理，吞吐受上游限制）。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
     model = os.environ.get("LLM_MODEL", "")
     key = os.environ.get("LLM_API_KEY", "")
@@ -127,34 +130,46 @@ def run_llm_arm(rows: list[dict], limit: int, cache_out: str,
     prompt = json.load(open(REPO / "prompts" / "zh_detect_prompt.json", encoding="utf-8"))
     system, user_t = prompt["system"], prompt.get("user", "{{text}}")
     out: dict[str, list[dict]] = dict(seed_out or {})
-    n_fail = 0
-    for i, r in enumerate(rows[:limit]):
-        if r["id"] in out:
-            continue
+    lock = threading.Lock()
+    n_done = n_fail = 0
+    todo = [r for r in rows[:limit] if r["id"] not in out]
+
+    def one(r: dict) -> tuple[str, list[dict] | None]:
         body = json.dumps({
             "model": model, "temperature": 0,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user_t.replace("{{text}}", r["text"])}],
         }).encode()
         req = urllib.request.Request(
-            base + ("/chat/completions" if not base.endswith("/v1") else "/chat/completions"),
+            base + "/chat/completions",
             data=body, headers={"Content-Type": "application/json",
                                 "Authorization": f"Bearer {key}"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 content = json.loads(resp.read())["choices"][0]["message"]["content"]
             items = json.loads(content[content.find("["):content.rfind("]") + 1])
-            out[r["id"]] = [{"error_type": map_cec_type(it.get("error_type", "")),
-                             "original": it.get("original", "")}
-                            for it in items if isinstance(it, dict)]
+            return r["id"], [{"error_type": map_cec_type(it.get("error_type", "")),
+                              "original": it.get("original", "")}
+                             for it in items if isinstance(it, dict)]
         except Exception as e:  # noqa: BLE001
-            print(f"WARN llm row {i} failed: {e}", file=sys.stderr)
-            n_fail += 1
-        if (i + 1) % 50 == 0:
-            print(f"[llm] {i + 1}/{min(limit, len(rows))}", file=sys.stderr)
-        # 增量落盘：中途崩溃/断网不丢已完成结果
-        if cache_out and (i + 1) % 25 == 0:
-            _dump_cache(cache_out, rows[:limit], out)
+            print(f"WARN llm row {r['id']} failed: {e}", file=sys.stderr)
+            return r["id"], None
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = [ex.submit(one, r) for r in todo]
+        for fut in as_completed(futs):
+            rid, errors = fut.result()
+            with lock:
+                if errors is not None:
+                    out[rid] = errors
+                else:
+                    n_fail += 1
+                n_done += 1
+                if n_done % 50 == 0:
+                    print(f"[llm] {n_done}/{len(todo)}（失败 {n_fail}）",
+                          file=sys.stderr)
+                if cache_out and n_done % 25 == 0:
+                    _dump_cache(cache_out, rows[:limit], out)
     if cache_out:
         _dump_cache(cache_out, rows[:limit], out)
     if n_fail:
@@ -175,6 +190,8 @@ def main() -> None:
     ap.add_argument("--llm-out", default="", help="LLM 臂检出缓存 jsonl（{id, errors}）；有则并入标签")
     ap.add_argument("--llm-run", action="store_true", help="直跑 LLM 臂（需 LLM_* 环境变量）")
     ap.add_argument("--llm-limit", type=int, default=500)
+    ap.add_argument("--llm-workers", type=int, default=1,
+                    help="--llm-run 并发请求数（单流实测 ~9s/行，串行 1200 行≈ 3h）")
     ap.add_argument("--llm-cache-out", default="/tmp/router_llm_arm_{split}.jsonl",
                     help="--llm-run 直跑结果的检出缓存落盘（eval 侧 --llm-cache 可用；支持 {split}）")
     ap.add_argument("--out", default="", help="输出路径模板（含 {split} 占位；默认 /tmp/router_labels_{split}.jsonl）")
@@ -201,7 +218,8 @@ def main() -> None:
             if seed:
                 print(f"[llm] 续跑：跳过已查实 {len(seed)} 行", file=sys.stderr)
             llm_cache.update(run_llm_arm(rows, args.llm_limit,
-                                         cache_p, seed_out=seed))
+                                         cache_p, seed_out=seed,
+                                         workers=args.llm_workers))
 
         out_p = Path(args.out.format(split=split) if args.out
                      else f"/tmp/router_labels_{split}.jsonl")
