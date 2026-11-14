@@ -112,9 +112,13 @@ def _dump_cache(path: str, rows: list[dict], out: dict[str, list[dict]]) -> None
                                    ensure_ascii=False) + "\n")
 
 
-def run_llm_arm(rows: list[dict], limit: int, cache_out: str) -> dict[str, list[dict]]:
+def run_llm_arm(rows: list[dict], limit: int, cache_out: str,
+                seed_out: dict[str, list[dict]] | None = None
+                ) -> dict[str, list[dict]]:
     """真实 LLM 臂直跑（cost 高，仅抽样）；返回 {id: [{error_type, original}]}，
-    并把原始检出同步落盘 cache_out（供 eval_router_arms.py --llm-cache 非 oracle 口径）。"""
+    并把原始检出同步落盘 cache_out（供 eval_router_arms.py --llm-cache 非 oracle 口径）。
+    seed_out 已有的 id 直接跳过（断点续跑）；请求失败的 id 不记入结果
+    （区分“查实无错”与“未查实”，非 oracle 评测时失败行不假装干净）。"""
     base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
     model = os.environ.get("LLM_MODEL", "")
     key = os.environ.get("LLM_API_KEY", "")
@@ -122,8 +126,11 @@ def run_llm_arm(rows: list[dict], limit: int, cache_out: str) -> dict[str, list[
         sys.exit("--llm-run 需要 LLM_BASE_URL / LLM_MODEL（/ LLM_API_KEY）")
     prompt = json.load(open(REPO / "prompts" / "zh_detect_prompt.json", encoding="utf-8"))
     system, user_t = prompt["system"], prompt.get("user", "{{text}}")
-    out: dict[str, list[dict]] = {}
+    out: dict[str, list[dict]] = dict(seed_out or {})
+    n_fail = 0
     for i, r in enumerate(rows[:limit]):
+        if r["id"] in out:
+            continue
         body = json.dumps({
             "model": model, "temperature": 0,
             "messages": [{"role": "system", "content": system},
@@ -142,7 +149,7 @@ def run_llm_arm(rows: list[dict], limit: int, cache_out: str) -> dict[str, list[
                             for it in items if isinstance(it, dict)]
         except Exception as e:  # noqa: BLE001
             print(f"WARN llm row {i} failed: {e}", file=sys.stderr)
-            out[r["id"]] = []
+            n_fail += 1
         if (i + 1) % 50 == 0:
             print(f"[llm] {i + 1}/{min(limit, len(rows))}", file=sys.stderr)
         # 增量落盘：中途崩溃/断网不丢已完成结果
@@ -150,6 +157,9 @@ def run_llm_arm(rows: list[dict], limit: int, cache_out: str) -> dict[str, list[
             _dump_cache(cache_out, rows[:limit], out)
     if cache_out:
         _dump_cache(cache_out, rows[:limit], out)
+    if n_fail:
+        print(f"[llm] 失败 {n_fail} 行（未记入缓存，评测时按未查实处理）",
+              file=sys.stderr)
     return out
 
 
@@ -182,8 +192,16 @@ def main() -> None:
         pool_p = Path(args.pool_dir) / f"{split}.jsonl"
         rows = stratified_cap(load_jsonl(pool_p), args.cap, args.seed)
         if args.llm_run:
+            cache_p = Path(args.llm_cache_out.format(split=split))
+            if cache_p.exists():
+                for r in load_jsonl(cache_p):
+                    llm_cache.setdefault(r["id"], r.get("errors", []))
+            seed = {r["id"]: llm_cache[r["id"]] for r in rows
+                    if r["id"] in llm_cache}
+            if seed:
+                print(f"[llm] 续跑：跳过已查实 {len(seed)} 行", file=sys.stderr)
             llm_cache.update(run_llm_arm(rows, args.llm_limit,
-                                         args.llm_cache_out.format(split=split)))
+                                         cache_p, seed_out=seed))
 
         out_p = Path(args.out.format(split=split) if args.out
                      else f"/tmp/router_labels_{split}.jsonl")
