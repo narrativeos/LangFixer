@@ -928,4 +928,206 @@ mod tests {
         assert_eq!(p2.skipped, 0);
         assert_eq!(p2.coverage(), 1.0);
     }
+
+    /// 文档级 eval harness（doc-detect-flow）：mucgec dev 句合成 120 句长文档，
+    /// mock LLM 为「理想复查」（凡送端文本含 gold 句即报该句），度量流水线自身
+    /// 的召回/误报/覆盖率/预算-召回/cache 命中，并落报告 JSON。
+    ///
+    /// 三臂：`full`（全量）→ 应零损耗；`economical`（跳低风险）→ 如实报告
+    /// 召回换成本；`revised`（改一句 + 缓存）→ 未变更块应命中缓存。
+    #[tokio::test]
+    async fn doc_eval_synthetic_mucgec() {
+        use std::sync::OnceLock;
+        static GOLD: OnceLock<Vec<String>> = OnceLock::new();
+
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../datasets/mucgec_gold.json"
+        ))
+        .expect("mucgec gold 缺失");
+        let items: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        let ok_len = |s: &str| s.chars().count() >= 8 && s.chars().count() <= 60;
+        let mut gold: Vec<String> = Vec::new();
+        let mut clean: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        for it in &items {
+            if it["split"] != "dev" {
+                continue;
+            }
+            let s = it["src"].as_str().unwrap_or("").trim().to_string();
+            if !ok_len(&s) || s.contains('\n') || !seen.insert(s.clone()) {
+                continue;
+            }
+            let has_edits = it["edits"].as_array().is_some_and(|a| !a.is_empty());
+            if has_edits && gold.len() < 60 {
+                gold.push(s);
+            } else if !has_edits && clean.len() < 50 {
+                clean.push(s);
+            }
+        }
+        assert!(gold.len() >= 50 && clean.len() >= 30, "gold 集供给不足");
+        // 句级探针要求句互不包含（resolve_span 以整句定位，包含关系会错位）
+        gold.retain(|s| !clean.iter().any(|o| o.contains(s.as_str())));
+        clean.retain(|s| !gold.iter().any(|o| o.contains(s.as_str())));
+        GOLD.set(gold.clone()).ok();
+
+        // 文档：gold/clean 交替，记录每句字节区间
+        let mut doc = String::new();
+        let mut gold_ranges: Vec<[usize; 2]> = Vec::new();
+        for (i, s) in gold.iter().enumerate() {
+            let st = doc.len();
+            doc.push_str(s);
+            doc.push('\n');
+            doc.push_str(&clean[i % clean.len()]);
+            doc.push('\n');
+            gold_ranges.push([st, st + s.len()]);
+        }
+
+        // 理想复查 mock：送端文本含 gold 句即报该句（含前缀区，由所有权 remap 去重）
+        let respond: fn(&str) -> Option<String> = |user| {
+            let mut arr: Vec<serde_json::Value> = Vec::new();
+            for s in GOLD.get()? {
+                if user.contains(s.as_str()) {
+                    arr.push(serde_json::json!({
+                        "error_type": "grammar",
+                        "confidence": 0.9,
+                        "original": s,
+                        "correction": "（gold 探针）",
+                        "message": "doc_eval gold probe",
+                    }));
+                }
+            }
+            Some(serde_json::to_string(&arr).unwrap())
+        };
+        let endpoint = mock_server(respond).await;
+        let llm = Arc::new(LlmGecEngine::new("zh", config(&endpoint)));
+        let no_cancel = || Arc::new(AtomicBool::new(false));
+
+        // 指标：句级匹配（error span 与 gold 句区间重叠即命中）
+        let metrics = |errs: &[Error]| -> (usize, usize) {
+            let mut hits = 0usize;
+            let mut fp = 0usize;
+            for r in &gold_ranges {
+                if errs.iter().any(|e| e.span[0] < r[1] && r[0] < e.span[1]) {
+                    hits += 1;
+                }
+            }
+            for e in errs {
+                if !gold_ranges.iter().any(|r| e.span[0] < r[1] && r[0] < e.span[1]) {
+                    fp += 1;
+                }
+            }
+            (hits, fp)
+        };
+
+        // 臂 A：full（cache 开启，为臂 C 预热）
+        let store_a = Arc::new(DocJobStore::open_in_memory().unwrap());
+        store_a.create_job("full", "zh", &doc, None, 400).unwrap();
+        let (pa, ea) =
+            run_doc_job(store_a.clone(), llm.clone(), "full", 8, true, DocBudget::All, no_cancel())
+                .await
+                .unwrap();
+        let (hits_a, fp_a) = metrics(&ea);
+
+        // 臂 B：economical（独立 store，避免缓存影响 skipped 语义）
+        let store_b = Arc::new(DocJobStore::open_in_memory().unwrap());
+        store_b.create_job("econ", "zh", &doc, None, 400).unwrap();
+        let (pb, eb) = run_doc_job(
+            store_b.clone(),
+            llm.clone(),
+            "econ",
+            8,
+            false,
+            DocBudget::SkipLowRisk,
+            no_cancel(),
+        )
+        .await
+        .unwrap();
+        let (hits_b, fp_b) = metrics(&eb);
+        // skip 决策质量：被跳过块中与 gold 句重叠 ≥1 的占比（越低越安全）
+        let skipped_unsafe = store_b
+            .chunks("econ")
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.status == "skipped")
+            .filter(|c| {
+                gold_ranges
+                    .iter()
+                    .any(|r| c.owner[0] < r[1] && r[0] < c.owner[1])
+            })
+            .count();
+
+        // 臂 C：修订文档（复制一句制造重复 → 该块必须重跑，其余块应命中缓存）
+        let dup = clean[7].clone();
+        let revised = format!("{doc}{dup}\n");
+        store_a.create_job("rev", "zh", &revised, None, 400).unwrap();
+        let (pc, ec) = run_doc_job(
+            store_a.clone(),
+            llm.clone(),
+            "rev",
+            8,
+            true,
+            DocBudget::All,
+            no_cancel(),
+        )
+        .await
+        .unwrap();
+        let (hits_c, fp_c) = metrics(&ec);
+        let cache_hit_rate = if pc.cached + pc.done > 0 {
+            pc.cached as f64 / (pc.cached + pc.done) as f64
+        } else {
+            0.0
+        };
+
+        let n_gold = gold_ranges.len();
+        let report = serde_json::json!({
+            "doc_chars": doc.chars().count(),
+            "chunks": pa.total,
+            "gold_sentences": n_gold,
+            "full": {
+                "coverage": pa.coverage(),
+                "recall": hits_a as f64 / n_gold as f64,
+                "false_positives": fp_a,
+                "fp_per_1k_chars": fp_a as f64 * 1000.0 / doc.chars().count() as f64,
+                "llm_calls": pa.done,
+            },
+            "economical": {
+                "coverage": pb.coverage(),
+                "recall": hits_b as f64 / n_gold as f64,
+                "false_positives": fp_b,
+                "skipped": pb.skipped,
+                "skipped_chunks_with_gold": skipped_unsafe,
+                "llm_calls": pb.done + pb.cached,
+            },
+            "revised": {
+                "coverage": pc.coverage(),
+                "recall": hits_c as f64 / n_gold as f64,
+                "false_positives": fp_c,
+                "cached": pc.cached,
+                "done": pc.done,
+                "cache_hit_rate": cache_hit_rate,
+            },
+        });
+        let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../datasets/eval_reports");
+        std::fs::create_dir_all(out_dir).ok();
+        std::fs::write(
+            format!("{out_dir}/doc_eval_latest.json"),
+            serde_json::to_string_pretty(&report).unwrap(),
+        )
+        .ok();
+
+        // 回归阈值：full 必须零损耗（所有权去重 + remap 不丢 gold）
+        assert_eq!(pa.coverage(), 1.0);
+        assert_eq!(hits_a, n_gold, "full 模式必须零漏检（gold 探针）: {report}");
+        assert_eq!(fp_a, 0, "所有权去重不应产生重复/错位报告: {report}");
+        // economical：确有跳过、覆盖率如实下降、召回不高于 full
+        assert!(pb.skipped >= 1, "economical 应有跳过: {report}");
+        assert!(pb.coverage() < 1.0);
+        assert!(hits_b <= hits_a);
+        // revised：多数块应命中缓存，gold 仍零漏检
+        assert!(cache_hit_rate >= 0.5, "修订文档缓存命中过低: {report}");
+        assert_eq!(hits_c, n_gold, "缓存 remap 不应丢 gold: {report}");
+        assert_eq!(fp_c, 0);
+        assert_eq!(fp_b, 0);
+    }
 }
