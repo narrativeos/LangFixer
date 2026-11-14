@@ -202,6 +202,15 @@ def main() -> None:
     ap.add_argument("--grid", default="5,10,20,30,40,50,63.1,70,80,100")
     ap.add_argument("--min-gold", type=int, default=30, help="分层判定的最少金标编辑数")
     ap.add_argument("--llm-cache", default="", help="真实 LLM 臂检出缓存（替代 oracle 上限）")
+    ap.add_argument("--llm-run-gold", action="store_true",
+                    help="先在池外 gold 行上直跑 LLM 臂并落盘缓存（需 LLM_* 环境变量），然后退出")
+    ap.add_argument("--gold-llm-limit", type=int, default=400,
+                    help="--llm-run-gold 抽样上限（按 src 分层；支持从缓存断点续跑）")
+    ap.add_argument("--llm-cache-out", default="/tmp/router_llm_arm_gold.jsonl",
+                    help="--llm-run-gold 检出缓存落盘路径")
+    ap.add_argument("--llm-workers", type=int, default=1)
+    ap.add_argument("--only-cached", action="store_true",
+                    help="非 oracle 曲线只在已查实行上计（已验证子集，公平口径；需 --llm-cache）")
     ap.add_argument("--floor-every", type=int, default=0,
                     help="路由臂采样地板：每 N 句强制 1 句复查（0=关，成本计入调用率）")
     ap.add_argument("--seed", type=int, default=20261115)
@@ -228,6 +237,40 @@ def main() -> None:
     if not args.include_inpool:
         rows = [r for r in rows if not r["in_pool"]]
 
+    # ── gold 行 LLM 臂直跑（非 oracle 口径的数据制备） ──
+    if args.llm_run_gold:
+        import router_labels as RL
+        for i, r in enumerate(rows):
+            r.setdefault("id", r["text"])
+        seed_out: dict[str, list[dict]] = {}
+        cache_p = Path(args.llm_cache_out)
+        if cache_p.is_file():
+            for r in RL.load_jsonl(cache_p):
+                seed_out[r.get("text", r.get("id", ""))] = r.get("errors", [])
+        rng_g = random.Random(args.seed)
+        strata: dict[str, list[dict]] = {}
+        for r in rows:
+            strata.setdefault(r["src_name"], []).append(r)
+        picked: list[dict] = []
+        for k in sorted(strata):
+            xs = strata[k]
+            kk = max(1, round(args.gold_llm_limit * len(xs) / len(rows)))
+            picked.extend(rng_g.sample(xs, min(kk, len(xs))))
+        rng_g.shuffle(picked)
+        picked = picked[:args.gold_llm_limit]
+        # 并上历史已查实行，保证落盘缓存不因换 cap 而丢旧条目
+        seen = {r["text"] for r in picked}
+        rows_arg = picked + [r for r in rows
+                             if r["text"] in seed_out and r["text"] not in seen]
+        n_new = sum(1 for r in picked if r["text"] not in seed_out)
+        print(f"[gold-llm] 抽样 {len(picked)} 行（已查实 {len(picked) - n_new}，"
+              f"待跑 {n_new}）→ {cache_p}", file=sys.stderr)
+        RL.run_llm_arm(rows_arg, len(rows_arg), str(cache_p),
+                       seed_out=seed_out, workers=args.llm_workers)
+        print(f"[gold-llm] 完成；评测时 --llm-cache {cache_p}"
+              f"（建议叠 --only-cached 出公平曲线）", file=sys.stderr)
+        return
+
     labels_p = Path(args.labels)
     if not labels_p.is_file():
         sys.exit(f"缺路由标签 {labels_p}；先跑 router_labels.py --split train")
@@ -253,6 +296,13 @@ def main() -> None:
 
     oracle = not args.llm_cache
     llm = llm_cache_load(args.llm_cache) if args.llm_cache else None
+    if args.only_cached:
+        if not llm:
+            sys.exit("--only-cached 需搭配 --llm-cache")
+        n_all = len(rows)
+        rows = [r for r in rows if r["text"] in llm]
+        print(f"WARN 已验证子集口径：{len(rows)}/{n_all} 句（其余行 LLM 臂未查实，不入曲线）",
+              file=sys.stderr)
     grid = [float(x) for x in args.grid.split(",")]
     gold_types = sorted({r["type"] for r in rows if r["edits"] and r["type"]})
     type_gold = {t: sum(len(r["edits"]) for r in rows if r["edits"] and r["type"] == t)
