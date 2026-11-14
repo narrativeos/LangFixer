@@ -163,6 +163,12 @@ pub mod error_types {
     pub const PUNCTUATION: &str = "punctuation";
     /// 异常（AI 生成文本污染：助手回复 / 元讨论混入正文；非语言错误，不做 CEFR 归因）
     pub const ANOMALY: &str = "anomaly";
+    /// 数字用法差错（GB/T 15835；分类法见 EVOLUTION.md §11.11）
+    pub const NUMERAL: &str = "numeral";
+    /// 量与单位书写差错（GB 3101/GB/T 1.1）
+    pub const QUANTITY_UNIT: &str = "quantity_unit";
+    /// 序号跳号/重号
+    pub const SERIAL_NO: &str = "serial_no";
     // 英文
     pub const ARTICLE: &str = "article";
     pub const AGREEMENT: &str = "agreement";

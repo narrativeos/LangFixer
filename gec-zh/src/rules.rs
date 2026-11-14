@@ -193,6 +193,9 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_missing_subject(text, tokens, lexicon));
     out.extend(detect_time_mixed(text));
     out.extend(detect_colon_after_name(text));
+    out.extend(detect_numeral(text));
+    out.extend(detect_quantity_unit(text));
+    out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
 }
@@ -218,6 +221,9 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     out.extend(detect_punctuation_by_scan(text, lexicon));
     out.extend(detect_time_mixed(text));
     out.extend(detect_colon_after_name(text));
+    out.extend(detect_numeral(text));
+    out.extend(detect_quantity_unit(text));
+    out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
 }
@@ -519,6 +525,331 @@ fn detect_colon_after_name(text: &str) -> Vec<Error> {
             Some("ZH_COLON_AFTER_NAME"),
             vec![Suggestion::new(name, 0.6)],
         ));
+    }
+    out
+}
+
+/// 解析 1..=99 的汉字数字（仅用于序号语境；解析失败返回 None）
+fn parse_cn_int(s: &str) -> Option<u32> {
+    let dig = |c: char| -> Option<u32> {
+        "一二三四五六七八九"
+            .chars()
+            .position(|x| x == c)
+            .map(|i| i as u32 + 1)
+    };
+    let cs: Vec<char> = s.chars().collect();
+    match cs.as_slice() {
+        ['十'] => Some(10),
+        [c] => dig(*c),
+        [c, '十'] => dig(*c).map(|d| d * 10),
+        ['十', d] => Some(10 + dig(*d)?),
+        [c, '十', d] => Some(dig(*c)? * 10 + dig(*d)?),
+        _ => None,
+    }
+}
+
+/// 数字用法（参照 GB/T 15835—2011；不依赖 POS，token / 离线双路径共用）
+///
+/// v1 最小集（精度优先；误报进 excludes，规则 id `ZH_NUMERAL` 可整停）：
+/// - 「万万」并置（「3万万 / 一万万」→ 亿）；
+/// - 阿拉伯-汉字数字混写（「3千五」→ 3500、「三十5」→ 35）。
+/// 后随字属「十百千万点年月日时」时跳过——「3千五百万」「3千九年」这类
+/// 合法组合宁可不触发也不给错建议（与 media-core「不编造位置 / 不静默改
+/// 内容」同一立场）。
+fn detect_numeral(text: &str) -> Vec<Error> {
+    let digit_val = |c: char| -> Option<u32> {
+        if let Some(d) = c.to_digit(10) {
+            Some(d)
+        } else {
+            "一二三四五六七八九"
+                .chars()
+                .position(|x| x == c)
+                .map(|i| i as u32 + 1)
+        }
+    };
+    let mut out = Vec::new();
+    // 万万并置
+    if let Ok(re) = regex::Regex::new(r"([0-9一二三四五六七八九])万万") {
+        for caps in re.captures_iter(text) {
+            let whole = caps.get(0).expect("group 0 必然存在");
+            let Some(v) = caps
+                .get(1)
+                .and_then(|m| m.as_str().chars().next())
+                .and_then(digit_val)
+            else {
+                continue;
+            };
+            let correction = format!("{v}亿");
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::NUMERAL,
+                0.8,
+                [whole.start(), whole.end()],
+                whole.as_str(),
+                Some(correction.clone()),
+                "「万万」为过时写法（参照 GB/T 15835—2011），应写作「亿」",
+                Some("numeric"),
+                Some("ZH_NUMERAL"),
+                vec![Suggestion::new(correction, 0.8)],
+            ));
+        }
+    }
+    // 阿拉伯在前：3千五 / 3百五 / 3万五
+    if let Ok(re) = regex::Regex::new(r"([1-9])([百千万])([一二三四五六七八九])(.)?") {
+        for caps in re.captures_iter(text) {
+            let guard = caps
+                .get(4)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            if guard
+                .chars()
+                .next()
+                .is_some_and(|c| "十百千万点年月日时".contains(c))
+            {
+                continue;
+            }
+            let whole = caps.get(0).expect("group 0 必然存在");
+            let (a, mark, b): (u32, String, u32) = (
+                caps[1].parse().unwrap_or(0),
+                caps[2].to_string(),
+                caps[3].chars().next().and_then(digit_val).unwrap_or(0),
+            );
+            let correction = match mark.as_str() {
+                "百" => format!("{}", a * 100 + b * 10),
+                "千" => format!("{}", a * 1000 + b * 100),
+                "万" => format!("{a}.{b}万"),
+                _ => continue,
+            };
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::NUMERAL,
+                0.7,
+                [whole.start(), whole.end()],
+                whole.as_str(),
+                Some(correction.clone()),
+                "汉字与阿拉伯数字交叉混写（参照 GB/T 15835—2011），应统一为一种写法",
+                Some("numeric"),
+                Some("ZH_NUMERAL"),
+                vec![Suggestion::new(correction, 0.7)],
+            ));
+        }
+    }
+    // 汉字在前＋十：三十5
+    if let Ok(re) = regex::Regex::new(r"([一二三四五六七八九])十([0-9])(.)?") {
+        for caps in re.captures_iter(text) {
+            // 后随仍是数字（「三十53」类）：位数无法确定，宁缺勿错
+            if caps
+                .get(3)
+                .is_some_and(|m| m.as_str().starts_with(|c: char| c.is_ascii_digit()))
+            {
+                continue;
+            }
+            let whole = caps.get(0).expect("group 0 必然存在");
+            let Some(ones) = caps
+                .get(2)
+                .and_then(|m| m.as_str().chars().next())
+                .and_then(digit_val)
+            else {
+                continue;
+            };
+            let Some(correction) = caps
+                .get(1)
+                .and_then(|m| m.as_str().chars().next())
+                .and_then(digit_val)
+                .map(|d| format!("{}", d * 10 + ones))
+            else {
+                continue;
+            };
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::NUMERAL,
+                0.7,
+                [whole.start(), whole.end()],
+                whole.as_str(),
+                Some(correction.clone()),
+                "汉字与阿拉伯数字交叉混写（参照 GB/T 15835—2011），应统一为一种写法",
+                Some("numeric"),
+                Some("ZH_NUMERAL"),
+                vec![Suggestion::new(correction, 0.7)],
+            ));
+        }
+    }
+    out
+}
+
+/// 量与单位（参照 GB 3101/GB/T 1.1；不依赖 POS，token / 离线双路径共用）
+///
+/// v1 两形态（精度优先，误报进 excludes）：
+/// - 数值区间单侧缺单位：「10~20kg」→「10kg~20kg」（区间两端都应带单位；
+///   置信 0.6，出版口径交人工）；
+/// - 中外单位并注：「10公斤kg」→「10公斤」（择一保留；置信 0.85）。
+fn detect_quantity_unit(text: &str) -> Vec<Error> {
+    // 候选单位（长在前，避免 km 被 k+mm 抢占）
+    const UNITS: &str = "MPa|kPa|kHz|MHz|GHz|Hz|kV|kW|VA|mg|kg|mm|km|cm|ms|m|t|千克|公斤|千米|公里|毫米|厘米|米|吨|千瓦|毫升|升";
+    let mut out = Vec::new();
+    // A：区间单侧缺单位
+    if let Ok(re) = regex::Regex::new(&format!(
+        r"([0-9]+(?:\.[0-9]+)?)\s*([~～–—-]|至)\s*([0-9]+(?:\.[0-9]+)?)\s*({UNITS})"
+    )) {
+        for caps in re.captures_iter(text) {
+            let whole = caps.get(0).expect("group 0 必然存在");
+            // 单位紧邻后续字母/数字（如 max / mm3）时跳过，避免把普通英文词拆成单位
+            if let Some(next) = text[whole.end()..].chars().next() {
+                if next.is_ascii_alphanumeric() {
+                    continue;
+                }
+            }
+            let correction = format!(
+                "{}{}{}{}{}",
+                &caps[1],
+                caps.get(4).map(|m| m.as_str()).unwrap_or(""),
+                &caps[2],
+                &caps[3],
+                caps.get(4).map(|m| m.as_str()).unwrap_or(""),
+            );
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::QUANTITY_UNIT,
+                0.6,
+                [whole.start(), whole.end()],
+                whole.as_str(),
+                Some(correction.clone()),
+                "数值区间单侧缺单位（参照 GB 3101/GB/T 1.1）：区间两端都应带单位",
+                Some("numeric"),
+                Some("ZH_QUANTITY_UNIT"),
+                vec![Suggestion::new(correction, 0.6)],
+            ));
+        }
+    }
+    // B：中外单位并注（中文单位紧跟对应 ASCII 符号）
+    if let Ok(re) = regex::Regex::new(
+        r"([0-9]+(?:\.[0-9]+)?)(千克|公斤|千米|公里|毫米|厘米|米|吨)(kg|km|mm|cm|m|t)\b",
+    ) {
+        let pairs = |cn: &str| -> &'static str {
+            match cn {
+                "千克" | "公斤" => "kg",
+                "千米" | "公里" => "km",
+                "毫米" => "mm",
+                "厘米" => "cm",
+                "米" => "m",
+                "吨" => "t",
+                _ => "",
+            }
+        };
+        for caps in re.captures_iter(text) {
+            if pairs(&caps[2]) != &caps[3] {
+                continue;
+            }
+            let whole = caps.get(0).expect("group 0 必然存在");
+            let correction = format!("{}{}", &caps[1], &caps[2]);
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::QUANTITY_UNIT,
+                0.85,
+                [whole.start(), whole.end()],
+                whole.as_str(),
+                Some(correction.clone()),
+                "中外单位并注（参照 GB 3101）：同一量值应择一写法",
+                Some("numeric"),
+                Some("ZH_QUANTITY_UNIT"),
+                vec![Suggestion::new(correction, 0.85)],
+            ));
+        }
+    }
+    out
+}
+
+/// 序号检查：跳号/重号（不依赖 POS，token / 离线双路径共用）
+///
+/// 两类上下文：行首阿拉伯序号（`1.`/`1、`/`1．`）与 `第X章/节/篇/编/讲/条/部分`
+///（X 为阿拉伯或 1..=99 汉字数字）。每种上下文各自追踪上一个序号：`last+1`
+/// 续行；`==last` 判重号；跳号时「第X」上下文全量报、阿拉伯序号只报缺 ≤3
+/// 项（缺更多视为页码/表格碎片，防误报）；序号回退或归 1 视为列表重新开始；空行终止全部
+/// run。只报序号本身不改写内容（不编造位置）。
+fn detect_serial_no(text: &str) -> Vec<Error> {
+    use std::collections::HashMap;
+    let Ok(dot_re) = regex::Regex::new(r"^([0-9]{1,3})\s*[.、．]") else {
+        tracing::warn!("ZH_SERIAL_NO 行首模式编译失败，跳过");
+        return Vec::new();
+    };
+    let Ok(di_re) = regex::Regex::new(
+        r"^第\s*([0-9]{1,3}|[一二三四五六七八九十]{1,4})\s*(章|节|篇|编|讲|条|部分)",
+    ) else {
+        tracing::warn!("ZH_SERIAL_NO 第X模式编译失败，跳过");
+        return Vec::new();
+    };
+    let mut last_by_kind: HashMap<String, u32> = HashMap::new();
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.trim_end_matches('\r').trim().is_empty() {
+            last_by_kind.clear();
+            off += line.len() + 1;
+            continue;
+        }
+        let lead = line.len() - trimmed.len();
+        let hit: Option<(String, u32, usize, usize)> = if let Some(caps) = di_re.captures(trimmed) {
+            let num_txt = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            num_txt
+                .parse::<u32>()
+                .ok()
+                .or_else(|| parse_cn_int(num_txt))
+                .filter(|n| *n >= 1)
+                .map(|n| {
+                    (
+                        format!("第{}", caps.get(2).map(|m| m.as_str()).unwrap_or("")),
+                        n,
+                        caps.get(1).map(|m| m.start()).unwrap_or(0),
+                        caps.get(1).map(|m| m.end()).unwrap_or(0),
+                    )
+                })
+        } else {
+            dot_re.captures(trimmed).and_then(|caps| {
+                caps.get(1)
+                    .and_then(|m| {
+                        m.as_str()
+                            .parse::<u32>()
+                            .ok()
+                            .map(|n| (n, m.start(), m.end()))
+                    })
+                    .filter(|(n, ..)| *n >= 1)
+                    .map(|(n, s, e)| ("dot".to_string(), n, s, e))
+            })
+        };
+        if let Some((kind, n, rs, re_end)) = hit {
+            let base = off + lead;
+            let span = [base + rs, base + re_end];
+            if let Some(last) = last_by_kind.get(&kind).copied() {
+                let gap = n.saturating_sub(last + 1);
+                let (conf, message) = if n == last {
+                    (0.75, format!("序号重号：同上下文序号 {n} 连续出现两次"))
+                } else if gap > 0 && (kind != "dot" || gap <= 3) {
+                    (
+                        0.6,
+                        format!("序号跳号：上一序号为 {last}，本行为 {n}（中间缺 {gap} 项）"),
+                    )
+                } else {
+                    (0.0, String::new())
+                };
+                if conf > 0.0 {
+                    out.push(Error::new_with_meta(
+                        "zh",
+                        error_types::SERIAL_NO,
+                        conf,
+                        span,
+                        text[span[0]..span[1]].to_string(),
+                        None::<String>,
+                        message,
+                        Some("numeric"),
+                        Some("ZH_SERIAL_NO"),
+                        vec![],
+                    ));
+                }
+            }
+            last_by_kind.insert(kind, n);
+        }
+        off += line.len() + 1;
     }
     out
 }
@@ -1147,5 +1478,94 @@ mod tests {
         assert_eq!(&text[0..9], "你好。");
         assert_eq!(&text[9..16], "世界!");
         assert_eq!(&text[17..24], "再见?");
+    }
+
+    #[test]
+    fn serial_no_flags_gap_and_repeat() {
+        let e = detect_serial_no("1. 甲\n2. 乙\n4. 丙\n");
+        assert_eq!(e.len(), 1, "跳号应恰报一处: {e:?}");
+        assert_eq!(e[0].rule_id.as_deref(), Some("ZH_SERIAL_NO"));
+        assert_eq!(e[0].error_type, "serial_no");
+        assert!(e[0].message.contains("跳号"), "{}", e[0].message);
+        let e2 = detect_serial_no("1. 甲\n2. 乙\n2. 丙\n");
+        assert_eq!(e2.len(), 1, "重号应恰报一处: {e2:?}");
+        assert!(e2[0].message.contains("重号"), "{}", e2[0].message);
+        assert!(detect_serial_no("1. 甲\n2. 乙\n3. 丙\n").is_empty());
+        assert!(
+            detect_serial_no("1. 甲\n2. 乙\n1. 丙\n2. 丁\n").is_empty(),
+            "序号回退 = 列表重新开始，不报错"
+        );
+    }
+
+    #[test]
+    fn serial_no_blank_line_splits_and_chapter_runs() {
+        assert!(
+            detect_serial_no("第三章 总则\n内容。\n第五章 细则\n")
+                .iter()
+                .any(|e| e.message.contains("跳号"))
+        );
+        assert!(detect_serial_no("第一章\n第二章\n第三章\n").is_empty());
+        assert!(
+            detect_serial_no("1. 甲\n2. 乙\n\n1. 丙\n2. 丁\n").is_empty(),
+            "空行分隔两个列表，不应把第二个列表报成跳号"
+        );
+        // 阿拉伯序号上下文：缺 >3 项视为列表碎片/页码残留，不报
+        assert!(detect_serial_no("5. 甲\n10. 乙\n").is_empty());
+        assert!(
+            detect_serial_no("5. 甲\n8. 乙\n")
+                .iter()
+                .any(|e| e.message.contains("跳号")),
+            "缺 ≤3 项应报跳号"
+        );
+    }
+
+    #[test]
+    fn serial_no_span_is_byte_offset() {
+        let text = "一二三。\n3. 甲\n3. 乙\n";
+        let e = detect_serial_no(text);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(&text[e[0].span[0]..e[0].span[1]], "3");
+    }
+
+    #[test]
+    fn numeral_flags_wanwan_and_mixed() {
+        let e = detect_numeral("收益达3万万。");
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].error_type, "numeral");
+        assert_eq!(e[0].correction.as_deref(), Some("3亿"));
+        let e2 = detect_numeral("预算三千五百万 vs 3千五。");
+        assert_eq!(e2.len(), 1, "纯汉字写法不报: {e2:?}");
+        assert_eq!(e2[0].correction.as_deref(), Some("3500"));
+        let e3 = detect_numeral("共三十5人。");
+        assert_eq!(e3.len(), 1, "{e3:?}");
+        assert_eq!(e3[0].correction.as_deref(), Some("35"));
+        // 守卫：合法组合宁缺勿错
+        assert!(detect_numeral("会议3点开始，预算3千五百万。").is_empty());
+        assert!(
+            detect_numeral("距今3千九年。")
+                .iter()
+                .all(|e| !e.message.contains("万万"))
+        );
+        assert!(detect_numeral("损失 3500 万元。").is_empty());
+    }
+
+    #[test]
+    fn quantity_unit_range_and_pair() {
+        let e = detect_quantity_unit("粒径10~20mm均匀。");
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].error_type, "quantity_unit");
+        assert_eq!(e[0].correction.as_deref(), Some("10mm~20mm"));
+        let e2 = detect_quantity_unit("重量10公斤kg。");
+        assert_eq!(e2.len(), 1, "{e2:?}");
+        assert_eq!(e2[0].correction.as_deref(), Some("10公斤"));
+        // 合规双写式不应报任何错
+        assert!(detect_quantity_unit("粒径10mm~20mm。").is_empty());
+        assert!(detect_quantity_unit("跨度2015-2020年。").is_empty());
+        assert!(
+            detect_quantity_unit("参数10~20max。")
+                .iter()
+                .all(|e| e.rule_id.as_deref() != Some("ZH_QUANTITY_UNIT")),
+            "m 紧邻字母不算单位"
+        );
     }
 }

@@ -15,6 +15,10 @@
     {
       "id": "anomaly",
       "name": "异常（AI 文本污染）"
+    },
+    {
+      "id": "numeric",
+      "name": "数字·量值·序号"
     }
   ],
   "rules": [
@@ -175,6 +179,61 @@
         {
           "wrong": "微信小程序：掌上阜外医院",
           "right": "微信小程序“掌上阜外医院”"
+        }
+      ]
+    },
+    {
+      "id": "ZH_NUMERAL",
+      "category": "numeric",
+      "priority": 6,
+      "enabled": true,
+      "description": "数字用法规范（参照 GB/T 15835—2011）：万万并置、汉字与阿拉伯数字交叉混写；误报进 excludes",
+      "examples": [
+        {
+          "wrong": "3万万",
+          "right": "3亿"
+        },
+        {
+          "wrong": "3千五",
+          "right": "3500"
+        },
+        {
+          "wrong": "三十5",
+          "right": "35"
+        }
+      ]
+    },
+    {
+      "id": "ZH_QUANTITY_UNIT",
+      "category": "numeric",
+      "priority": 6,
+      "enabled": true,
+      "description": "量与单位书写（参照 GB 3101/GB/T 1.1）：数值区间单侧缺单位、中外单位并注；误报进 excludes",
+      "examples": [
+        {
+          "wrong": "10~20kg",
+          "right": "10kg~20kg"
+        },
+        {
+          "wrong": "10公斤kg",
+          "right": "10公斤"
+        }
+      ]
+    },
+    {
+      "id": "ZH_SERIAL_NO",
+      "category": "numeric",
+      "priority": 5,
+      "enabled": true,
+      "description": "序号跳号/重号检查：行首阿拉伯序号（1./1、）与 第X章/节/篇/编/讲/条/部分 同上下文 run；序号回退视为列表重新开始",
+      "examples": [
+        {
+          "wrong": "1.甲\n2.乙\n4.丙",
+          "right": "1.甲\n2.乙\n3.丙"
+        },
+        {
+          "wrong": "第三章\n第五章",
+          "right": "第三章\n第四章"
         }
       ]
     }

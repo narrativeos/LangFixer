@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **zh 数字/量值/序号三条规则通道**（分类法 v2 首批，EVOLUTION.md §11.11）：
+  新规则 `ZH_NUMERAL`（万万并置/阿拉伯-汉字数字混写，GB/T 15835—2011）、
+  `ZH_QUANTITY_UNIT`（数值区间单侧缺单位、中外单位并注，GB 3101/GB/T 1.1）、
+  `ZH_SERIAL_NO`（行首序号与「第X章/节/条」同上下文 run 跳号/重号），token/
+  离线双路径；lexicon 新增 `numeric` 分类，`error_types` 新常量 `numeral`/
+  `quantity_unit`/`serial_no`；停用/白名单经中央过滤自动继承。
 - **各层贡献度报告界面**（参赛需求「展示各层在评测报告中的贡献」）：新端点
   `GET /gec/eval/layers` 由 api-server 直读报告档案（`GEC_EVAL_REPORTS_DIR` >
   `datasets/eval_reports` > `src/datasets/eval_reports`，坏文件按条跳过），不依赖
