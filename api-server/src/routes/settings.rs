@@ -156,6 +156,8 @@ pub struct SettingsResponse {
     pub knowledge_enabled: bool,
     /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
     pub media: media_flow::settings::MediaSettings,
+    /// 文档级审校作业设置（块大小 / 并发 / 缓存 / 默认预算）
+    pub doc_jobs: crate::settings::DocJobSettings,
     /// 可用纠错模型预设列表（选择器；仅含 enabled 条目）
     pub models: Vec<ModelView>,
 }
@@ -185,6 +187,18 @@ pub struct UpdateSettingsRequest {
     pub knowledge_enabled: Option<bool>,
     /// 载体（图片 / PDF / Word）审校设置（部分更新；两端同构）
     pub media: Option<UpdateMediaRequest>,
+    /// 文档级审校作业设置（部分更新）
+    pub doc_jobs: Option<UpdateDocJobRequest>,
+}
+
+/// 文档级审校作业设置更新（字段均可缺省 = 保持不变）
+#[derive(Deserialize, Default)]
+pub struct UpdateDocJobRequest {
+    pub chunk_target: Option<usize>,
+    pub concurrency: Option<usize>,
+    pub cache: Option<bool>,
+    /// `full` | `economical`
+    pub budget: Option<String>,
 }
 
 /// 载体审校设置更新（字段均可缺省 = 保持不变）
@@ -283,6 +297,7 @@ fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsR
         llm_model_id: s.llm_model_id.clone(),
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
+        doc_jobs: s.doc_jobs.clone(),
         models: registry
             .enabled()
             .iter()
@@ -464,6 +479,32 @@ pub async fn put(
         }
         if let Some(v) = media.min_confidence {
             next.media.min_confidence = v.clamp(0.0, 1.0);
+        }
+    }
+    if let Some(doc_jobs) = &req.doc_jobs {
+        if let Some(v) = doc_jobs.chunk_target {
+            if !(50..=20000).contains(&v) {
+                return Err(ApiError::BadRequest("doc_jobs.chunk_target 应为 50-20000".into()));
+            }
+            next.doc_jobs.chunk_target = v;
+        }
+        if let Some(v) = doc_jobs.concurrency {
+            if !(1..=64).contains(&v) {
+                return Err(ApiError::BadRequest("doc_jobs.concurrency 应为 1-64".into()));
+            }
+            next.doc_jobs.concurrency = v;
+        }
+        if let Some(v) = doc_jobs.cache {
+            next.doc_jobs.cache = v;
+        }
+        if let Some(v) = &doc_jobs.budget {
+            let v = v.trim().to_ascii_lowercase();
+            if !matches!(v.as_str(), "full" | "economical") {
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.budget 无效（应为 full = 全量深度复查 / economical = 低风险块跳过）".into(),
+                ));
+            }
+            next.doc_jobs.budget = v;
         }
     }
     state.apply_settings(next.clone());

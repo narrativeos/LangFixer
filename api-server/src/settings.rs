@@ -70,6 +70,51 @@ pub struct AppSettings {
     /// **默认关闭**：P0 只上后端，未显式开启时不影响既有文本主链路。
     #[serde(default)]
     pub media: MediaSettings,
+    /// 文档级审校作业（10 万字+，doc-detect-flow）：块大小 / 并发 /
+    /// 块缓存 / 默认预算模式。环境变量回退 `GEC_LLM_CHUNK_TARGET`、
+    /// `GEC_LLM_CONCURRENCY`（`GEC_LLM_CHUNK_CHARS` 仅作用于即席分块路径）。
+    #[serde(default)]
+    pub doc_jobs: DocJobSettings,
+}
+
+/// 文档级审校作业设置（设置界面「文档审校」卡片；运行时即时生效）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DocJobSettings {
+    /// 目标块大小（字符；50–20000）
+    pub chunk_target: usize,
+    /// 块级 LLM 并发（1–64）
+    pub concurrency: usize,
+    /// 内容寻址块缓存（修订文档未变更块免重跑）
+    pub cache: bool,
+    /// 默认预算模式：`full`（全量深度复查）| `economical`（低风险块跳过）
+    pub budget: String,
+}
+
+impl Default for DocJobSettings {
+    fn default() -> Self {
+        Self {
+            chunk_target: gec_core::DEFAULT_CHUNK_CHARS,
+            concurrency: 8,
+            cache: true,
+            budget: "full".to_string(),
+        }
+    }
+}
+
+impl DocJobSettings {
+    /// 环境变量回退（设置文件不存在时）
+    fn from_env() -> Self {
+        let base = Self::default();
+        let read = |k: &str, d: usize| -> usize {
+            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        };
+        Self {
+            chunk_target: read("GEC_LLM_CHUNK_TARGET", base.chunk_target),
+            concurrency: read("GEC_LLM_CONCURRENCY", base.concurrency).max(1),
+            ..base
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -127,6 +172,7 @@ impl AppSettings {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
             media: MediaSettings::from_env(),
+            doc_jobs: DocJobSettings::from_env(),
         }
     }
 

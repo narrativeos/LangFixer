@@ -23,24 +23,21 @@ use crate::state::AppState;
 pub struct CreateReq {
     pub lang: String,
     pub text: String,
-    /// 目标块大小（字符，默认 `GEC_LLM_CHUNK_TARGET` > 1500）
+    /// 目标块大小（字符；缺省取设置 `doc_jobs.chunk_target`）
     #[serde(default)]
     pub chunk_target: Option<usize>,
-    /// 内容寻址块缓存（默认开）：修订文档的未变更块免重跑
-    #[serde(default = "default_true")]
-    pub cache: bool,
-    /// 预算模式：`full`（默认，全量深度复查）| `economical`
-    /// （低风险块跳过深度复查，覆盖率如实下降——用召回换成本）
+    /// 内容寻址块缓存（缺省取设置 `doc_jobs.cache`，默认开）：
+    /// 修订文档的未变更块免重跑
+    #[serde(default)]
+    pub cache: Option<bool>,
+    /// 预算模式：缺省取设置 `doc_jobs.budget`；请求显式值优先
+    /// （`full` 全量深度复查 | `economical` 低风险块跳过深度复查，覆盖率如实下降）
     #[serde(default)]
     pub budget: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn parse_budget(s: &Option<String>) -> Result<gec_core::DocBudget, ApiError> {
-    match s.as_deref().unwrap_or("full") {
+fn parse_budget(s: &Option<String>, default: &str) -> Result<gec_core::DocBudget, ApiError> {
+    match s.as_deref().unwrap_or(default) {
         "full" | "" => Ok(gec_core::DocBudget::All),
         "economical" => Ok(gec_core::DocBudget::SkipLowRisk),
         other => Err(ApiError::BadRequest(format!(
@@ -58,6 +55,7 @@ fn spawn_run(
     state: &AppState,
     id: &str,
     llm: Arc<gec_core::LlmGecEngine>,
+    concurrency: usize,
     use_cache: bool,
     budget: gec_core::DocBudget,
 ) -> Result<Arc<AtomicBool>, ApiError> {
@@ -77,7 +75,7 @@ fn spawn_run(
             store,
             llm,
             &job_id,
-            gec_core::docjob::default_concurrency(),
+            concurrency,
             use_cache,
             budget,
             cancel_bg,
@@ -101,15 +99,24 @@ pub async fn create(
     let llm = state
         .llm_detect_engine(&req.lang)
         .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
+    let settings = state.settings.read().unwrap().clone();
     let target = req
         .chunk_target
-        .unwrap_or_else(gec_core::docjob::default_chunk_target);
+        .unwrap_or(settings.doc_jobs.chunk_target)
+        .clamp(50, 20_000);
     let id = uuid::Uuid::new_v4().to_string();
     let chunks = state
         .doc_jobs
         .create_job(&id, &req.lang, &req.text, None, target)
         .map_err(internal)?;
-    spawn_run(&state, &id, llm, req.cache, parse_budget(&req.budget)?)?;
+    spawn_run(
+        &state,
+        &id,
+        llm,
+        settings.doc_jobs.concurrency,
+        req.cache.unwrap_or(settings.doc_jobs.cache),
+        parse_budget(&req.budget, &settings.doc_jobs.budget)?,
+    )?;
     Ok(Json(serde_json::json!({
         "job_id": id,
         "chunks": chunks,
@@ -245,7 +252,15 @@ pub async fn retry(
         .llm_detect_engine(&job.lang)
         .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
     let reset = state.doc_jobs.reset_failed_chunks(&id).map_err(internal)?;
-    spawn_run(&state, &id, llm, true, gec_core::DocBudget::All)?;
+    let settings = state.settings.read().unwrap().clone();
+    spawn_run(
+        &state,
+        &id,
+        llm,
+        settings.doc_jobs.concurrency,
+        settings.doc_jobs.cache,
+        gec_core::DocBudget::All,
+    )?;
     Ok(Json(serde_json::json!({ "ok": true, "reset_chunks": reset })))
 }
 

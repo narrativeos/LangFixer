@@ -3310,3 +3310,152 @@ async fn doc_job_flow_chunks_and_aggregates() {
     assert!(buf.contains("\"coverage\":1"));
 }
 
+#[tokio::test]
+async fn settings_doc_jobs_roundtrip() {
+    let _guard = env_guard();
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // 默认值面
+    let g: serde_json::Value = c
+        .get(format!("{base}/gec/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(g["doc_jobs"]["budget"], "full");
+    assert_eq!(g["doc_jobs"]["cache"], true);
+    assert!(g["doc_jobs"]["chunk_target"].as_u64().unwrap() >= 50);
+    // 部分更新即时生效
+    let res: serde_json::Value = c
+        .put(format!("{base}/gec/settings"))
+        .json(&serde_json::json!({
+            "doc_jobs": { "budget": "economical", "chunk_target": 800, "concurrency": 4 }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(res["doc_jobs"]["budget"], "economical");
+    assert_eq!(res["doc_jobs"]["chunk_target"], 800);
+    assert_eq!(res["doc_jobs"]["concurrency"], 4);
+    let g: serde_json::Value = c
+        .get(format!("{base}/gec/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(g["doc_jobs"]["budget"], "economical");
+    // 非法值 → 400（不能静默接受）
+    for body in [
+        serde_json::json!({ "doc_jobs": { "budget": "cheap" } }),
+        serde_json::json!({ "doc_jobs": { "chunk_target": 10 } }),
+        serde_json::json!({ "doc_jobs": { "concurrency": 0 } }),
+    ] {
+        let status = c
+            .put(format!("{base}/gec/settings"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, http::StatusCode::BAD_REQUEST, "非法设置应 400：{body}");
+    }
+    // 复原默认（设置文件在并行测试间共享）
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({
+            "doc_jobs": { "budget": "full", "chunk_target": 1500, "cache": true, "concurrency": 8 }
+        })),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn doc_job_budget_defaults_from_settings() {
+    let _guard = env_guard();
+    let llm = start_mock_llm_detect().await;
+    unsafe {
+        std::env::set_var("LLM_API_KEY", "sk-test");
+        std::env::set_var("LLM_BASE_URL", &llm);
+        std::env::set_var(
+            "LLM_PROMPTS_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../prompts")
+                .display()
+                .to_string(),
+        );
+    }
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // 设置默认预算为 economical → 创建请求不带 budget 也应继承
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({ "doc_jobs": { "budget": "economical" } })),
+    )
+    .await;
+    // 统计上干净的文本 → 低风险块被跳过（mock 报的错不改变本地风险分）
+    let text = "第一段描述了天气和日程安排，语句通顺且标点规范。\n\
+                第二段记录了会议结论与后续分工，同样没有任何异常信号。\n\
+                第三段是旅行见闻，描述了山川与城市的景色，行文平直。\n\
+                第四段总结了本季度的学习心得，句子长短适中，结构完整。";
+    let res: serde_json::Value = c
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({ "lang": "zh", "text": text, "chunk_target": 60 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = res["job_id"].as_str().unwrap().to_string();
+    let mut status = String::new();
+    for _ in 0..100 {
+        let v: serde_json::Value = c
+            .get(format!("{base}/gec/doc-jobs/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = v["status"].as_str().unwrap().to_string();
+        if status == "done" || status == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(status, "done", "作业应完成");
+    let r: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs/{id}/results"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        r["progress"]["skipped"].as_u64().unwrap() >= 1,
+        "economical 默认预算应跳过低风险块: {r}"
+    );
+    assert_eq!(r["complete"].as_bool(), Some(false), "有跳过即不完整");
+    assert!(r["coverage"].as_f64().unwrap() < 1.0);
+    // 复原默认
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({ "doc_jobs": { "budget": "full" } })),
+    )
+    .await;
+}
+
