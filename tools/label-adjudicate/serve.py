@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import threading
 import time
@@ -45,6 +46,55 @@ BUCKET_DESC = {
 GATE_MIN_REVIEWED = 58   # 每桶最少抽检条数（≈95% CI 纪律，与 zh_route_1k 同源）
 GATE_MAX_ERR = 0.02      # 抽检放弃率 ≤2% 才允许整桶升级
 SEED = "42"
+# 预筛信号（自动档的真实依据，不造规则）：
+#   no_error    — fix==片段且 why 判「此处无误/保留」：判无错记录误入队列，可批量放弃
+#   del_intent  — fix==片段但 why 讲「删除/多字/重复」：真错误、意图是删，导出归一为 delete
+#   noop_contra — fix==片段且 why 讲实质改错：rollout 解析缺陷（fix 未置空/未取真修正），
+#                 永不批量采纳，导出标 manual，待 v2.2 修归一化
+#   lex_ok      — 被易混词典/punct 映射背书（词表小，命中即硬信号）
+#   lex_contra  — 同片段词典另有权威修正：与模型矛盾，逐条看
+#   lex_blind   — 全角标点互换：词典无判据，维持原桶
+NO_ERROR_PAT = re.compile(r"无误|无错|没有错误|无需修改|无需调整|保留|原字正确|用字正确")
+DEL_INTENT_PAT = re.compile(r"删|多余|冗余|多出|重复")
+LEXICON_DEFAULT = Path(__file__).resolve().parents[2] / "lexicons" / "zh_gec_lexicon.json"
+
+
+class Lex:
+    def __init__(self, path: Path):
+        self.conf_pairs: set = set()
+        self.conf_char: dict = {}
+        self.punct_equiv: set = set()
+        self.punct_chars: set = set()
+        if not path.exists():
+            return
+        lex = json.loads(path.read_text(encoding="utf-8"))
+        for w, r, *_ in lex.get("confusables", []):
+            self.conf_pairs.add((w, r))
+            if len(w) == 1 and len(r) == 1:
+                self.conf_char.setdefault(w, set()).add(r)
+        for a, b in lex.get("punct_map", []):
+            self.punct_equiv.add(frozenset((a, b)))
+            self.punct_chars |= {a, b, chr(ord(a) - 0xFEE0) if "\uFF01" <= a <= "\uFF5E" else a}
+
+    def signal(self, frag: str, fix: str, why: str, typ: str) -> str:
+        if frag and frag == fix:
+            why = why or ""
+            if NO_ERROR_PAT.search(why):
+                return "no_error"
+            return "del_intent" if DEL_INTENT_PAT.search(why) else "noop_contra"
+        if typ == "typo" and frag:
+            if (frag, fix) in self.conf_pairs:
+                return "lex_ok"
+            alts = self.conf_char.get(frag)
+            if alts:
+                return "lex_ok" if fix in alts else "lex_contra"
+            # 多字词条不做逐条背书（frag 只是词内一字，词级对映在条级别无判据）
+        if typ == "punct":
+            if frozenset((frag, fix)) in self.punct_equiv:
+                return "lex_ok"
+            if frag in self.punct_chars and fix in self.punct_chars:
+                return "lex_blind"
+        return ""
 # 来源：rollout 报告的逐条口径（已更正版）。本工具同定义现算后若与它有小额差，
 # 属共识↔新增边界归属差异（总标注数一致），页面上并排展示不静默。
 REPORT_REF = {"new": 12970, "consensus": 12789}
@@ -65,8 +115,9 @@ def overlaps(a: int, b: int, g: dict) -> bool:
 
 
 class Data:
-    def __init__(self, data_dir: Path, state_dir: Path):
+    def __init__(self, data_dir: Path, state_dir: Path, lexicon: Path):
         self.data_dir, self.state_dir = data_dir, state_dir
+        self.lex = Lex(lexicon)
         self.items: list[dict] = []
         self.sum_consensus = 0
         self.rows_seen = 0
@@ -119,6 +170,7 @@ class Data:
         for e, is_new in zip(errs, new_flags):
             if not is_new:
                 continue
+            frag = row.get("src", "")[e["a"]:e["b"]]
             self.items.append({
                 "iid": f"{row['id']}#{e['a']}#{e['b']}",
                 "id": row["id"],
@@ -126,6 +178,8 @@ class Data:
                 "src": row.get("src", ""),
                 "a": e["a"],
                 "b": e["b"],
+                "frag": frag,
+                "signal": self.lex.signal(frag, e.get("fix", ""), e.get("why", ""), e.get("type", "")),
                 "type": e.get("type", "other"),
                 "fix": e.get("fix", ""),
                 "why": e.get("why", ""),
@@ -173,6 +227,24 @@ class Data:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             self.verdicts[iid] = rec
 
+    PROTECTED_ADOPT = ("no_error", "del_intent", "noop_contra")  # fix==片段的三档，批量采纳一律跳过
+
+    def bulk(self, its: list, verdict: str, reason: str) -> int:
+        """批量裁决当前筛选集（已裁决跳过；fix==片段三档采纳保护，须逐条）。"""
+        n = 0
+        with self.lock:
+            with open(self.state_dir / "adjudications.jsonl", "a", encoding="utf-8") as f:
+                for x in its:
+                    if x["iid"] in self.verdicts:
+                        continue
+                    if verdict == "adopt" and x["signal"] in self.PROTECTED_ADOPT:
+                        continue
+                    rec = {"iid": x["iid"], "verdict": verdict, "reason": reason, "at": int(time.time())}
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    self.verdicts[x["iid"]] = rec
+                    n += 1
+        return n
+
     def promote(self, bucket: str, note: str):
         st = self.bucket_stats()[bucket]
         if not st["gate_ok"] or st["promoted_at"]:
@@ -181,6 +253,13 @@ class Data:
             self.promoted[bucket] = {"promoted_at": int(time.time()), "note": note, "stats": st}
             (self.state_dir / "buckets_promoted.json").write_text(
                 json.dumps(self.promoted, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _signal_dist(its):
+    m: dict[str, int] = {}
+    for x in its:
+        m[x["signal"] or "none"] = m.get(x["signal"] or "none", 0) + 1
+    return dict(sorted(m.items(), key=lambda kv: -kv[1]))
 
 
 def _type_dist(its):
@@ -198,10 +277,13 @@ def filtered_items(qs) -> list[dict]:
     setf = qs.get("set", [""])[0]
     text = qs.get("q", [""])[0]
     status = qs.get("status", ["all"])[0]
+    signal = qs.get("signal", [""])[0]
     sample = qs.get("sample", [""])[0]
     its = DATA.items
     if bucket:
         its = [x for x in its if x["bucket"] == bucket]
+    if signal:
+        its = [x for x in its if (x["signal"] == "" if signal == "none" else x["signal"] == signal)]
     if setf:
         its = [x for x in its if x["set"] == setf]
     if text:
@@ -247,6 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                     "count_mismatch_rows": DATA.count_mismatch_rows,
                     "buckets": bs,
                     "sets": sorted({x["set"] for x in DATA.items}),
+                    "signals": _signal_dist(DATA.items),
                     "reviewed_total": len(DATA.verdicts),
                     "gate": {"min_reviewed": GATE_MIN_REVIEWED, "max_err": GATE_MAX_ERR},
                 }, ensure_ascii=False).encode())
@@ -262,8 +345,18 @@ class Handler(BaseHTTPRequestHandler):
                     out.append(y)
                 return self._send(200, json.dumps({"total": len(its), "offset": off, "items": out}, ensure_ascii=False).encode())
             if u.path == "/api/export":
-                adopted = [x | {"verdict": DATA.verdicts[x["iid"]]} for x in DATA.items if
-                           DATA.verdicts.get(x["iid"], {}).get("verdict") == "adopt"]
+                adopted = []
+                for x in DATA.items:
+                    v = DATA.verdicts.get(x["iid"])
+                    if not v or v["verdict"] != "adopt":
+                        continue
+                    y = x | {"verdict": v}
+                    if x["frag"] and x["frag"] == x["fix"]:
+                        # fix==原文的采纳：删除意图归一为 delete，其余标 manual 待修
+                        y["action"] = "delete" if x["signal"] == "del_intent" else "manual"
+                        if y["action"] == "delete":
+                            y["fix"] = ""
+                    adopted.append(y)
                 lines = [json.dumps(x, ensure_ascii=False) for x in adopted]
                 return self._send(200, ("\n".join(lines) + "\n").encode(),
                                   "application/x-ndjson; charset=utf-8")
@@ -279,6 +372,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/verdict":
                 DATA.record(body["iid"], body["verdict"], body.get("reason", ""))
                 return self._send(200, b'{"ok":true}')
+            if u.path == "/api/bulk":
+                n = DATA.bulk(filtered_items(parse_qs(u.query)), body["verdict"], body.get("reason", "预筛批量"))
+                return self._send(200, json.dumps({"done": n}).encode())
             if u.path == "/api/promote":
                 DATA.promote(body["bucket"], body.get("note", ""))
                 return self._send(200, b'{"ok":true}')
@@ -292,9 +388,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", default="~/tmp/dataset_v21")
     ap.add_argument("--state-dir", default=None, help="裁决 journal 目录（默认 = data-dir）")
+    ap.add_argument("--lexicon", default=str(LEXICON_DEFAULT))
     ap.add_argument("--port", type=int, default=8765)
     a = ap.parse_args()
-    DATA = Data(Path(a.data_dir).expanduser(), Path(a.state_dir or a.data_dir).expanduser())
+    DATA = Data(Path(a.data_dir).expanduser(), Path(a.state_dir or a.data_dir).expanduser(), Path(a.lexicon).expanduser())
     print(f"新增队列 {len(DATA.items)} 条（行新增计数和 {DATA.sum_row_new}，切分存疑行 {DATA.count_mismatch_rows}）")
     for b, s in DATA.bucket_stats().items():
         print(f"  {b:11s} {s['total']:6d}  {s['by_type']}")

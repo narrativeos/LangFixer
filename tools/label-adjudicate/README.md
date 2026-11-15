@@ -33,6 +33,18 @@ python3 tools/label-adjudicate/serve.py --state-dir /tmp/x --port 8765
   落在 state-dir（默认 = data-dir）；追加式，重启即续（done 必须落盘续跑）。
 - 污染纪律照旧：v21 标注器见过公开集，不得用于评测 Qwen3.8 同族模型。
 
+## 预筛信号（自动档，词表 = lexicons/zh_gec_lexicon.json，可 --lexicon 换）
+
+| 信号 | 判据 | 处置 |
+|---|---|---|
+| no_error 判无错误入 | fix==片段且 why 讲「无误/保留」 | 批量放弃，不入标签 |
+| del_intent 删除意图 | fix==片段且 why 讲「删/多字/重复」 | 真错误；逐条采纳，导出归一 delete（fix 置空） |
+| noop_contra 矛盾 | fix==片段但 why 讲实质改错 | rollout 解析缺陷（v2.2 修），永不批量采纳，导出标 manual |
+| lex_ok / lex_contra | 易混词典·标点映射背书/矛盾 | 背书可批量采纳；矛盾逐条 |
+| lex_blind | 全角标点互换，词典无判据 | 维持原桶 |
+
+批量采纳在服务端一律跳过 fix==片段三档；「批量放弃」对任何信号可用。
+
 ## 导出
 
 「导出已采纳」→ 已采纳新增（含 verdict/provenance）ndjson；共识部分不在

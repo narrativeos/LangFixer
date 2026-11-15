@@ -65,8 +65,19 @@ kbd { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:
         <option value="done">仅已裁决</option>
       </select>
       <input type="text" id="q" placeholder="搜索 id / 原文 / 修正">
+      <select id="signalSel">
+        <option value="">全部信号</option>
+        <option value="no_error">判无错误入</option>
+        <option value="del_intent">删除意图（fix=原文）</option>
+        <option value="noop_contra">矛盾：fix=原文</option>
+        <option value="lex_ok">词表/映射背书</option>
+        <option value="lex_contra">词典矛盾</option>
+        <option value="lex_blind">标点互换盲点</option>
+        <option value="none">无信号</option>
+      </select>
       <button id="btnSample" class="primary" title="该桶按种子 42 的确定性抽审队列">抽审队列</button>
       <button id="btnAll">全部队列</button>
+      <span id="bulkZone">批量(当前筛选待裁)：<button id="bulkAdopt" class="okb">采纳</button><button id="bulkReject" class="badb">放弃</button></span>
     </div>
     <div class="hint">键盘：<kbd>A</kbd> 采纳 · <kbd>R</kbd> 放弃 · <kbd>U</kbd> 存疑（当前焦点卡）；放弃率 ≤2% 且抽检 ≥58 条后桶才可整桶升级。</div>
     <div id="list"></div>
@@ -76,7 +87,8 @@ kbd { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:
   </section>
 </main>
 <script>
-const S = { bucket:'audit', set:'', status:'all', q:'', sample:false, offset:0, limit:20, total:0, state:null };
+const S = { bucket:'audit', set:'', status:'all', q:'', signal:'', sample:false, offset:0, limit:20, total:0, state:null };
+const SIG_ZH = { no_error:['判无错误入','#8a8f98'], del_intent:['意图:删除此片段','#e6a23c'], noop_contra:['矛盾 fix=原文·机件缺陷','#e5484d'], lex_ok:['词表背书','#22a35a'], lex_contra:['词典矛盾','#e5484d'], lex_blind:['标点互换·词典盲','#e6a23c'] };
 
 async function api(p, opts){ const r = await fetch(p, opts); if(!r.ok) throw new Error((await r.json()).error||r.status); return r.json(); }
 const TYPE_ZH = { typo:'错别字/字词', grammar:'语法', punct:'标点', consistency:'一致', cohesion:'衔接', fact:'事实' };
@@ -88,7 +100,7 @@ async function loadState(){
   S.state = await api('/api/state');
   const st=S.state;
   document.getElementById('totals').textContent =
-    `逐条新增 ${st.total_new} 条（行级计数和 ${st.sum_row_model_new}，切分存疑 ${st.count_mismatch_rows} 行）· 已裁决 ${st.reviewed_total} · 门槛 ≥${st.gate.min_reviewed} 条/桶、放弃率 ≤${(st.gate.max_err*100).toFixed(0)}%`;
+    `逐条新增 ${st.total_new} 条 · 信号 ${Object.entries(st.signals).map(([k,v])=>`${{no_error:'判无错',del_intent:'删除意图',noop_contra:'fix=原文矛盾',lex_ok:'背书',lex_contra:'词典矛盾',lex_blind:'标点盲点',none:'无信号'}[k]||k} ${v}`).join(' · ')} · 已裁决 ${st.reviewed_total} · 门槛 ≥${st.gate.min_reviewed} 条/桶、放弃率 ≤${(st.gate.max_err*100).toFixed(0)}%`;
   const nav=document.getElementById('buckets'); nav.innerHTML='';
   for(const [b,s] of Object.entries(st.buckets)){
     const d=document.createElement('div'); d.className='bkt'+(b===S.bucket?' active':'');
@@ -118,11 +130,13 @@ async function loadList(){
   document.getElementById('pageInfo').textContent=`${r.total} 条 · 第 ${Math.floor(r.offset/S.limit)+1} 页${S.sample?'（抽审队列·种子42）':''}`;
   const list=document.getElementById('list'); list.innerHTML='';
   for(const x of r.items){
-    const v=x.verdict;
+    const v=x.verdict; const sig=x.signal?`<span class="tag" style="color:${SIG_ZH[x.signal][1]};border-color:${SIG_ZH[x.signal][1]}">${SIG_ZH[x.signal][0]}</span>`:'';
+    const noop=x.frag&&x.frag===x.fix;
+    const fixLine=noop?(x.signal==='del_intent'?`<div class="fix" style="color:var(--warn,#e6a23c)">删除此片段「${esc(x.frag)}」 <span class="sub">${esc(x.why)}</span></div>`:x.signal==='no_error'?`<div class="fix sub">判无错：原文保留 <span>${esc(x.why)}</span></div>`:`<div class="fix" style="color:#e5484d">fix==原文（机件缺陷，采纳前逐条核对 why） <span class="sub">${esc(x.why)}</span></div>`):x.fix?`<div class="fix">建议 → <b>${esc(x.fix)}</b> <span class="sub">${esc(x.why)}</span></div>`:`<div class="fix sub">建议删除 <span>${esc(x.why)}</span></div>`;
     const c=document.createElement('div'); c.className='card'+(v?' done':''); c.tabIndex=0;
     c.innerHTML=`<div class="src">${hi(x)}</div>
-      <div class="sub">${esc(x.id)} · ${esc(x.set)} · ${TYPE_ZH[x.type]||esc(x.type)} · 金集此句已有 ${x.gold_n} 处 · ${esc(x.labeler)}/${esc(x.prompt_sha)}</div>
-      ${x.fix?`<div class="fix">建议 → <b>${esc(x.fix)}</b> <span class="sub">${esc(x.why)}</span></div>`:`<div class="fix sub">建议删除 <span>${esc(x.why)}</span></div>`}
+      <div class="sub">${sig} ${esc(x.id)} · ${esc(x.set)} · ${TYPE_ZH[x.type]||esc(x.type)} · 金集此句已有 ${x.gold_n} 处 · ${esc(x.labeler)}/${esc(x.prompt_sha)}</div>
+      ${fixLine}
       <div class="ops">
         <button class="okb${v&&v.verdict==='adopt'?' selected':''}">采纳 (A)</button>
         <button class="badb${v&&v.verdict==='reject'?' selected':''}">放弃 (R)</button>
@@ -146,8 +160,17 @@ async function loadList(){
   }
 }
 function al(m){ alert(m); }
-for(const [id,k] of [['setSel','set'],['statusSel','status'],['q','q']])
-  document.getElementById(id).addEventListener(id==='q'?'change':'change',e=>{ S[k]=e.target.value; S.offset=0; loadList(); });
+for(const [id,k] of [['setSel','set'],['statusSel','status'],['q','q'],['signalSel','signal']])
+  document.getElementById(id).addEventListener('change',e=>{ S[k]=e.target.value; S.offset=0; loadList(); });
+async function bulk(vd){
+  const p=new URLSearchParams({bucket:S.bucket,set:S.set,q:S.q,signal:S.signal,status:'todo'});
+  const r=await api('/api/items?'+p+'&limit=1'); if(!r.total){alert('筛选集内没有待裁条目');return;}
+  if(!confirm(`对当前筛选的 ${r.total} 条待裁条目批量「${vd==='adopt'?'采纳':'放弃'}」？（采纳会自动跳过 fix==原文三档：判无错/删除意图/矛盾）`))return;
+  const done=(await api('/api/bulk?'+p,{method:'POST',body:JSON.stringify({verdict:vd,reason:'预筛批量'})})).done;
+  alert(`已裁决 ${done} 条`); loadState().then(loadList);
+}
+document.getElementById('bulkAdopt').onclick=()=>bulk('adopt');
+document.getElementById('bulkReject').onclick=()=>bulk('reject');
 document.getElementById('btnSample').onclick=()=>{ S.sample=true; S.offset=0; loadList(); };
 document.getElementById('btnAll').onclick=()=>{ S.sample=false; S.offset=0; loadList(); };
 document.getElementById('prev').onclick=()=>{ S.offset=Math.max(0,S.offset-S.limit); loadList(); };
