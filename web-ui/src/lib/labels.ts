@@ -27,6 +27,8 @@ export const ERROR_TYPE_LABELS: Record<string, string> = {
   numeral: '数字差错',
   quantity_unit: '量和单位',
   serial_no: '序号检查',
+  // zh/ja 共用：中文 T 族「语序不当」与日文语序错误同一码（此前误归在日文块下）
+  word_order: '语序错误',
   // 英文管线
   article: '冠词错误',
   agreement: '一致错误',
@@ -46,7 +48,6 @@ export const ERROR_TYPE_LABELS: Record<string, string> = {
   particle: '助词错误',
   conjugation: '活用错误',
   honorific: '敬语错误',
-  word_order: '语序错误',
   // 兜底类别
   other: '其他',
 }

@@ -343,6 +343,9 @@ html.desktop .main-area > .manage-pane {
 .summary-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .summary-bar .total { font-size: 13px; color: var(--text-2); }
 .summary-bar .total b { font-size: 15px; color: var(--text); }
+/* 细分类型过滤行（汇总条之下第二级） */
+.type-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -6px 0 12px; }
+.type-bar-label { font-size: 12px; color: var(--text-2); }
 
 .error-item {
   position: relative; overflow: hidden;

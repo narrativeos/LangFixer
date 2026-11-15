@@ -18,6 +18,7 @@ import {
   buildMergedGroups,
   buildSoloGroups,
   summarizeCategories,
+  summarizeTypes,
   type MergedGroup,
 } from '../lib/errorGroups'
 import { errorTypeLabel } from '../lib/labels'
@@ -27,16 +28,34 @@ const store = useGecStore()
 // 汇总条分类计数（category 缺省归入 other）
 const summary = computed(() => summarizeCategories(store.errors))
 
-// 分类过滤（纯前端展示过滤）：点击汇总条分类标签切换；空 = 全部
+// 两级过滤（纯前端展示过滤）：粗分类（category 5 类）→ 细分类型（error_type，
+// 即分型架构的 17 类 T 族在界面上的投影）；空 = 不过滤
 // 保留原始下标 i 作各反馈状态 key —— 过滤只影响展示，不影响状态映射
-const visible = computed(() =>
+const catFiltered = computed(() =>
   store.errors
     .map((e, i) => ({ i, e }))
     .filter(({ e }) => !store.categoryFilter || (e.category || 'other') === store.categoryFilter),
 )
+/** 细分类型汇总：在当前分类作用域内按 error_type 计数（种类 ≤1 时不渲染过滤行） */
+const typeSummary = computed(() => summarizeTypes(catFiltered.value.map(({ e }) => e)))
+const visible = computed(() =>
+  store.typeFilter
+    ? catFiltered.value.filter(({ e }) => e.error_type === store.typeFilter)
+    : catFiltered.value,
+)
 function toggleCategory(k: string) {
   store.categoryFilter = store.categoryFilter === k ? '' : k
 }
+function toggleType(k: string) {
+  store.typeFilter = store.typeFilter === k ? '' : k
+}
+// 两级过滤级联：换分类后旧类型多半不在新作用域内 → 清类型过滤，避免列表「莫名变空」
+watch(
+  () => store.categoryFilter,
+  () => {
+    store.typeFilter = ''
+  },
+)
 
 // ── 桌面规范（macOS HIG）：错误条目右键菜单（原生弹出；Web 形态 no-op） ──
 async function onItemContext(i: number) {
@@ -134,11 +153,12 @@ watch(
   },
 )
 
-// 新检测替换错误列表 → 同类合并展开状态随新列表重置
+// 新检测替换错误列表 → 同类合并展开状态与细分类型过滤随新列表重置
 watch(
   () => store.errors,
   () => {
     for (const k of Object.keys(expanded)) delete expanded[k]
+    store.typeFilter = ''
   },
 )
 
@@ -173,7 +193,7 @@ watch(
   <div v-else ref="listRef">
     <div class="summary-bar">
       <span class="total">
-        <template v-if="store.categoryFilter">
+        <template v-if="store.categoryFilter || store.typeFilter">
           筛选后 <b>{{ visible.length }}</b> / 共 {{ store.errors.length }} 处问题
         </template>
         <template v-else>
@@ -213,7 +233,7 @@ watch(
         <el-switch v-model="mergeEnabled" size="small" active-text="合并同类" />
       </span>
       <el-tooltip
-        content="批量采纳当前筛选作用域内的全部错误（选了分类 = 该分类；未选 = 全部）；已反馈与无修正文本的条目自动跳过"
+        content="批量采纳当前筛选作用域内的全部错误（选了分类/细分类型 = 对应作用域；未选 = 全部）；已反馈与无修正文本的条目自动跳过"
         placement="top"
       >
         <el-button
@@ -222,11 +242,32 @@ watch(
           plain
           class="batch-adopt-btn"
           :disabled="pendingCount === 0 || !!batch.scope"
-          @click="batchAdopt(visible, store.categoryFilter ? `「${CAT_LABELS[store.categoryFilter] ?? store.categoryFilter}」分类` : '全部')"
+          @click="batchAdopt(visible, store.categoryFilter ? `「${CAT_LABELS[store.categoryFilter] ?? store.categoryFilter}」分类` : store.typeFilter ? `「${errorTypeLabel(store.typeFilter)}」类型` : '全部')"
         >
           {{ batch.scope ? `采纳中 ${batch.done}/${batch.total}…` : `批量采纳${pendingCount > 0 ? `（${pendingCount}）` : ''}` }}
         </el-button>
       </el-tooltip>
+    </div>
+    <!-- 细分类型过滤行：横向分型的第二级；按型反馈/路由数据积累后可挂按型收益徽章 -->
+    <div v-if="typeSummary.length > 1" class="type-bar">
+      <span class="type-bar-label">细分类型</span>
+      <el-tag
+        v-for="t in typeSummary"
+        :key="t.key"
+        size="small"
+        effect="plain"
+        class="cat-tag"
+        :class="{ active: store.typeFilter === t.key }"
+        role="button"
+        tabindex="0"
+        :aria-pressed="store.typeFilter === t.key"
+        :title="`按细分类型筛选：${errorTypeLabel(t.key)}（点按可取消）`"
+        @click="toggleType(t.key)"
+        @keydown.enter="toggleType(t.key)"
+        @keydown.space.prevent="toggleType(t.key)"
+      >
+        {{ errorTypeLabel(t.key) }} {{ t.count }}
+      </el-tag>
     </div>
     <div
       v-for="g in listGroups"
@@ -525,7 +566,11 @@ watch(
       </div>
     </div>
     <div v-if="visible.length === 0" class="filtered-empty">
-      该分类下无错误 — 点击上方「全部」恢复显示
+      {{
+        store.typeFilter
+          ? '该细分类型下没有错误 — 点按同名类型标签或上方「全部」恢复显示'
+          : '该分类下无错误 — 点击上方「全部」恢复显示'
+      }}
     </div>
   </div>
 </template>

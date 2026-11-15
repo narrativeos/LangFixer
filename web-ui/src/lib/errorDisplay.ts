@@ -5,6 +5,7 @@
  * 全部无副作用（instanceContext 接收 text 参数而非读 store）。
  */
 import type { ErrorItem } from '../types'
+import { PLAIN_LAYER_LABELS } from './labels'
 
 export const CAT_LABELS: Record<string, string> = {
   grammar: '语法',
@@ -21,15 +22,10 @@ export const CAT_TYPES: Record<string, 'danger' | 'warning' | 'primary' | 'info'
   other: 'info',
 }
 
-/** 来源层显示（徽章 + tooltip），与后端 `Error.source` / `LayerReport.layer` 同词表 */
-export const SOURCE_LABELS: Record<string, string> = {
-  rule: '本地检查',
-  decision: '快速定案',
-  statistical: '本地检查',
-  knowledge: '知识查询',
-  feature: '快速定案',
-  llm: 'AI 复查',
-}
+/** 来源层显示（徽章 + tooltip），与后端 `Error.source` / `LayerReport.layer` 同词表。
+ *  人话词表唯一源在 labels.ts PLAIN_LAYER_LABELS（此前两处各维护一张同值表、
+ *  已漂移过一次——收敛单源防再漂移） */
+export const SOURCE_LABELS: Record<string, string> = PLAIN_LAYER_LABELS
 export const SOURCE_TIPS: Record<string, string> = {
   rule: '该错误由本地检查检出（内置规则与词表，结果最确定）',
   decision: '该错误由快速定案检出（处理规则覆盖不到的模糊情况）',

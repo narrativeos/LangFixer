@@ -101,6 +101,8 @@ export const useGecStore = defineStore('gec', {
     targetLanguage: '',
     /** 分类过滤（纯前端展示过滤，作用于检测结果列表；空 = 不过滤；不再作为检测参数下发） */
     categoryFilter: '',
+    /** 细分类型过滤（error_type 维度，分类过滤之下的第二级；空 = 不过滤） */
+    typeFilter: '',
     /** 检查模式（内部 level，对用户展示为 快速检查/标准检查/深度扫描）：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底；L3 未启用时回退决策模型弃权语义）；3 = + 强制 LLM */
     level: draft.level ?? 1,
     /** 决策模型（vegaml）层启用状态——该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）；
