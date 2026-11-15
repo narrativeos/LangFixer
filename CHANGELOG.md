@@ -26,6 +26,14 @@
   池臂跑满后另实：原始 llm_hit 信号饱和（82% 行非空），需∩gold 背书再入标签
   （§11.12 补三）。
 
+- **route_label v2 机件：按型背书白名单 + word_order 降级**（EVOLUTION.md
+  §11.12 补四；均默认关不改旧配方）：`router_labels.py --hit-types` 仅白内
+  检出入 llm_review（白名单由 gold 侧按型精确率定，punctuation 类 14% 滤除），
+  `--wo-exempt` 纯 word_order 检出型 gold 句降 rule_decide（高精确 81% 低召回
+  42%→规则/专项侧）。按型收益矩阵首批成表；标签配方迭代使 cache 口径锚点
+  41.7%→45.7%（对 random 差距 −6.9→−2.9pp），oracle 同步创新高 65.6%，
+  按型条件化方向被数据连续验证。
+
 - **zh 错误分类法 v2 落地：LLM 细类型不再坍缩**（EVOLUTION.md §11.11）：
   `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/
   关联词/指代→各自细类型码，语义逻辑不通转正为 `logic` 常量），

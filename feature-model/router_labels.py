@@ -199,6 +199,12 @@ def main() -> None:
     ap.add_argument("--llm-limit", type=int, default=500)
     ap.add_argument("--llm-workers", type=int, default=1,
                     help="--llm-run 并发请求数（单流实测 ~9s/行，串行 1200 行≈ 3h）")
+    ap.add_argument("--hit-types", default="",
+                    help="llm_hit 按型背书白名单（逗号分隔 v2 型码；非空时仅白内检出入 llm_review，"
+                         "空=旧配方不过滤）。白名单用 gold 侧按型精确率定（§11.12 补三）")
+    ap.add_argument("--wo-exempt", action="store_true",
+                    help="gold=1 且 llm 检出型全为 word_order 的行降为 rule_decide（高精确低召回型"
+                         "走规则/专项侧，不入 LLM 预算；需配合 --llm-out 的型信息）")
     ap.add_argument("--llm-cache-out", default="/tmp/router_llm_arm_{split}.jsonl",
                     help="--llm-run 直跑结果的检出缓存落盘（eval 侧 --llm-cache 可用；支持 {split}）")
     ap.add_argument("--out", default="", help="输出路径模板（含 {split} 占位；默认 /tmp/router_labels_{split}.jsonl）")
@@ -231,25 +237,43 @@ def main() -> None:
         out_p = Path(args.out.format(split=split) if args.out
                      else f"/tmp/router_labels_{split}.jsonl")
         stat = {"llm_review": 0, "rule_decide": 0, "skip": 0,
-                "sig_rule": 0, "sig_lex": 0, "sig_llm": 0, "sig_floor": 0}
+                "sig_rule": 0, "sig_lex": 0, "sig_llm": 0, "sig_floor": 0,
+                "wo_exempt": 0}
+        hitset = {t.strip() for t in args.hit_types.split(",") if t.strip()}
+        n_hit_filtered = 0
         with out_p.open("w", encoding="utf-8") as f:
             for i, r in enumerate(rows):
                 text = r["text"]
                 hits = correct.find_zh_hits(text)
                 safe = [h for h in hits if not getattr(h, "advisory", False)]
                 errors = llm_cache.get(r["id"], []) if llm_cache else []
+                errors_route = ([e for e in errors
+                                 if e.get("error_type") in hitset]
+                                if hitset else errors)
+                if hitset and errors and not errors_route:
+                    n_hit_filtered += 1
 
                 signals: list[str] = []
                 if safe:
                     signals.append("rule_hit")
                 if hits and not safe:
                     signals.append("lexical_hit")
-                if errors:
+                if errors_route:
                     signals.append("llm_hit")
 
                 if int(r.get("label", 0)) == 1:
-                    route = "rule_decide" if safe else "llm_review"
-                elif errors or hits:
+                    if not safe and args.wo_exempt:
+                        types_all = {e["error_type"] for e in errors
+                                     if e.get("error_type") in V2_PASSTHROUGH}
+                        if types_all == {"word_order"}:
+                            signals.append("wo_exempt")
+                            stat["wo_exempt"] += 1
+                            route = "rule_decide"
+                        else:
+                            route = "llm_review"
+                    else:
+                        route = "rule_decide" if safe else "llm_review"
+                elif errors_route or hits:
                     route = "llm_review"
                 elif args.floor_every > 0 and i % args.floor_every == 0:
                     route, _ = "llm_review", signals.append("floor")
@@ -267,7 +291,7 @@ def main() -> None:
                 stat[route] += 1
                 stat["sig_rule"] += bool(safe)
                 stat["sig_lex"] += bool(hits and not safe)
-                stat["sig_llm"] += bool(errors)
+                stat["sig_llm"] += bool(errors_route)
                 stat["sig_floor"] += "floor" in signals
 
         n = sum(stat[k] for k in ("llm_review", "rule_decide", "skip"))
@@ -277,7 +301,10 @@ def main() -> None:
               f"(skipped 如实入账，不算覆盖率)")
         print(f"  signals: rule {stat['sig_rule']} / lexical {stat['sig_lex']} / "
               f"llm {stat['sig_llm']} / floor {stat['sig_floor']}"
-              + ("" if llm_cache or args.llm_run else "  [LLM 臂未跑：标签=gold∪lexical∪floor]"))
+              + ("" if llm_cache or args.llm_run else "  [LLM 臂未跑：标签=gold∪lexical∪floor]")
+              + (f"  [按型背书滤除 {n_hit_filtered} 行纯白名单外 llm_hit]" if hitset else "")
+              + (f"  [wo_exempt 降级 {stat['wo_exempt']} 行纯 word_order 型 gold 句]"
+                 if args.wo_exempt else ""))
 
 
 if __name__ == "__main__":
