@@ -40,6 +40,7 @@ import json
 import os
 import random
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -144,16 +145,22 @@ def run_llm_arm(rows: list[dict], limit: int, cache_out: str,
             base + "/chat/completions",
             data=body, headers={"Content-Type": "application/json",
                                 "Authorization": f"Bearer {key}"})
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                content = json.loads(resp.read())["choices"][0]["message"]["content"]
-            items = json.loads(content[content.find("["):content.rfind("]") + 1])
-            return r["id"], [{"error_type": map_cec_type(it.get("error_type", "")),
-                              "original": it.get("original", "")}
-                             for it in items if isinstance(it, dict)]
-        except Exception as e:  # noqa: BLE001
-            print(f"WARN llm row {r['id']} failed: {e}", file=sys.stderr)
-            return r["id"], None
+        # 服务端 502/500 阵发浪：重试 3 次退避，标签制备可穿越阵发故障
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    content = json.loads(resp.read())["choices"][0]["message"]["content"]
+                items = json.loads(content[content.find("["):content.rfind("]") + 1])
+                return r["id"], [{"error_type": map_cec_type(it.get("error_type", "")),
+                                  "original": it.get("original", "")}
+                                 for it in items if isinstance(it, dict)]
+            except Exception as e:  # noqa: BLE001
+                last = e
+                time.sleep(3 * (attempt + 1))
+        print(f"WARN llm row {r['id']} failed after 3 attempts: {last}",
+              file=sys.stderr)
+        return r["id"], None
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         futs = [ex.submit(one, r) for r in todo]
