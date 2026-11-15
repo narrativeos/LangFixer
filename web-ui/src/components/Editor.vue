@@ -3,6 +3,7 @@ import { computed, watch } from 'vue'
 import { randomSessionId } from '../lib/format'
 import { computePipelineLayers } from '../lib/pipeline'
 import { guideFor } from '../lib/guide'
+import { modeLabel } from '../lib/labels'
 import { isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
 
@@ -53,11 +54,11 @@ const pipelineLayers = computed(() =>
 
 // 检查模式用户语言命名（Phase 0 术语翻译 + 信息减负）：级联内部细节
 // （规则层编号 / 决策模型 / L3 特征模型 / LLM）退出主界面，收进「详情」tooltip；
-// 主界面只留一句人话的执行方式描述。
+// 主界面只留一句人话的执行方式描述；模式名单源在 labels.ts modeLabel。
 const modeLabels: Record<number, string> = {
-  1: '快速检查（即时，本地规则）',
-  2: '标准检查（推荐）',
-  3: '深度扫描（较慢，召回更高）',
+  1: `${modeLabel(1)}（即时，本地规则）`,
+  2: `${modeLabel(2)}（推荐）`,
+  3: `${modeLabel(3)}（较慢，召回更高）`,
 }
 const modeHint = computed(() =>
   store.level === 1

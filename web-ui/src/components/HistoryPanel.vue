@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { errMsg } from '../lib/err'
-import { errorTypeLabel, plainLayerLabel } from '../lib/labels'
+import { errorTypeLabel, modeLabel, plainLayerLabel } from '../lib/labels'
 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
@@ -52,9 +52,7 @@ function paramsLabel(item: { params_json?: string | null }): string {
     }
     const parts: string[] = []
     if (p.force_llm) parts.push('全文 AI 复查')
-    else if (p.level && p.level > 2) parts.push('深度扫描')
-    else if (p.level && p.level > 1) parts.push('标准检查')
-    else parts.push('快速检查')
+    else parts.push(modeLabel(p.level ?? 1))
     if (p.category) parts.push(p.category)
     if (p.model_version) parts.push(`模型 ${p.model_version}`)
     return parts.join(' · ')

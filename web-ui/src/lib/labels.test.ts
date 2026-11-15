@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorTypeLabel, layerStatusLabel } from './labels'
+import { errorTypeLabel, layerStatusLabel, modeLabel } from './labels'
 
 describe('errorTypeLabel', () => {
   it('已收录类型返回中文', () => {
@@ -10,6 +10,16 @@ describe('errorTypeLabel', () => {
   })
   it('未收录类型回落原文（不吞信息）', () => {
     expect(errorTypeLabel('weird_future_type')).toBe('weird_future_type')
+  })
+})
+
+describe('modeLabel', () => {
+  it('level → 人话模式名，越界钳位不吞信息', () => {
+    expect(modeLabel(1)).toBe('快速检查')
+    expect(modeLabel(2)).toBe('标准检查')
+    expect(modeLabel(3)).toBe('深度扫描')
+    expect(modeLabel(0)).toBe('快速检查')
+    expect(modeLabel(9)).toBe('深度扫描')
   })
 })
 

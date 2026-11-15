@@ -70,6 +70,22 @@ export function layerStatusLabel(status: string): string {
 }
 
 /**
+ * 检查模式人话名（level → 展示名，唯一源）：内部 level 是实现细节，
+ * 界面统一说 快速检查/标准检查/深度扫描；描述性后缀（「（推荐）」等）留在各组件。
+ * 历史上四处硬编码已漂移风险，收敛至此（EVOLUTION 评审建议）。
+ */
+export const MODE_LABELS: Record<number, string> = {
+  1: '快速检查',
+  2: '标准检查',
+  3: '深度扫描',
+}
+export function modeLabel(level: number): string {
+  if (level >= 3) return MODE_LABELS[3]
+  if (level <= 1) return MODE_LABELS[1]
+  return MODE_LABELS[level]
+}
+
+/**
  * 层级人话词表（UX_REVIEW 原则 2「术语说人话」+ 桌面 HIG 渐进披露）：
  * 主界面（检测路径 / 历史详情 / 管线摘要）统一用它；内部键名（rule/feature/llm…）
  * 与引擎名只出现在 tooltip、设置页与运营页。一个概念一个名字：

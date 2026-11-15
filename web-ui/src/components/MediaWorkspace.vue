@@ -16,7 +16,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import { CAT_LABELS, CAT_TYPES, confBand } from '../lib/errorDisplay'
-import { layerStatusLabel, plainLayerLabel } from '../lib/labels'
+import { layerStatusLabel, modeLabel, plainLayerLabel } from '../lib/labels'
 import {
   advancedBlockNote,
   buildReportBody,
@@ -542,9 +542,9 @@ onBeforeUnmount(() => {
       </label>
       <label class="param">检查模式
         <el-select v-model="level" size="small" style="width: 118px">
-          <el-option :value="1" label="快速检查" />
-          <el-option :value="2" label="标准检查" />
-          <el-option :value="3" label="深度扫描" />
+          <el-option :value="1" :label="modeLabel(1)" />
+          <el-option :value="2" :label="modeLabel(2)" />
+          <el-option :value="3" :label="modeLabel(3)" />
         </el-select>
       </label>
       <el-switch v-model="forceLlm" size="small" active-text="强制 LLM 兜底" />

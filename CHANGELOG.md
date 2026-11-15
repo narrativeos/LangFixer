@@ -38,7 +38,9 @@
   分类（5 大类）之下新增「细分类型」过滤行（error_type 维度，17 类 T 族），
   与分类过滤级联（换分类自动清类型过滤、新检测重置）；批量采纳作用域
   文案同步；层显示词表收敛单源（errorDisplay.SOURCE_LABELS 改为复用
-  labels.ts 人话表，消除双头维护漂移风险；word_order 注释归位 zh/ja 共用）。
+  labels.ts 人话表，消除双头维护漂移风险；word_order 注释归位 zh/ja 共用）；
+  检查模式名收敛 labels.ts `modeLabel` 单源（原 Editor/HistoryPanel/
+  MediaWorkspace/SettingsPanel 四处硬编码，描述性后缀仍在各组件）。
 
 - **zh 错误分类法 v2 落地：LLM 细类型不再坍缩**（EVOLUTION.md §11.11）：
   `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/

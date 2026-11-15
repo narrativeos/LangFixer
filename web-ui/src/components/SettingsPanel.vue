@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, nextTick } from 'vue'
 import { errMsg } from '../lib/err'
+import { modeLabel } from '../lib/labels'
 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, isTauri } from '../api/client'
@@ -862,9 +863,9 @@ async function runTest(target: SettingsTestTarget) {
         </el-form-item>
         <el-form-item label="检查模式（默认）">
           <el-select v-model="mediaLevel" style="width: 200px">
-            <el-option :value="1" label="快速检查" />
-            <el-option :value="2" label="标准检查" />
-            <el-option :value="3" label="深度扫描" />
+            <el-option :value="1" :label="modeLabel(1)" />
+            <el-option :value="2" :label="modeLabel(2)" />
+            <el-option :value="3" :label="modeLabel(3)" />
           </el-select>
           <el-switch
             v-model="mediaForceLlm"
