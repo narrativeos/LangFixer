@@ -1072,13 +1072,27 @@ gold 行直跑模式 `eval_router_arms.py --llm-run-gold`（池外行按 src 分
 检出召回按型严不均：spelling 93.5% / blend 83.1% / …… / **word_order 41.7%**；
 clean 行检出非空率 56%（成本信号，span 对齐口径下偏保守）。
 归因：gold 存在性代理标签不含「LLM 实际检得出」维度，router 头优先送检的恰是
-word_order 重仓句，而 LLM 对该型只捡回四成→预算被低收益句占住；random 无此
+word_order 重仓句，而 LLM 对该型只捾回四成→预算被低收益句占住；random 无此
 系统性错配。这不是路由不可学，而是**标签信息面缺陷的定量实证**。
-下一步：池 LLM 臂直跑（llm_hit 入 route_label，已在跑）后重赛；另「按型条件化
+下一步：池 LLM 臂直跑（llm_hit 入 route_label）后重赛；另「按型条件化
 路由」值得单试（word_order 降权或改走规则/专项侧）。本局仅换检出口径、
 标签配方不变，oracle 结论不受影响。复现：
 `eval_router_arms.py --llm-run-gold --gold-llm-limit 400 --llm-workers 4`（需 LLM_*）
 → `eval_router_arms.py --llm-cache /tmp/router_llm_arm_gold.jsonl --only-cached`。
+
+**补二：Cycle 1 重赛（次日，llm_hit 入标签；池臂查实 744/1200=62%，
+服务端 HTTP 500/502 阵发浪 + 超时剔除，重试退避已入库）**：
+- oracle 口径：总体 **PASS**，锚点 router 65.4% / histgb 64.7% / random 64.0%，
+  优势幅度较首跑拓宽（+0.7/+1.4pp vs 此前 +0.5/+1.0）；分层仍 7/8 FAIL（薄金标）。
+- cache 口径（同 398 已查实行）：仍 FAIL（router 44.0% < random 48.6%）但结构
+  变清：**≤20% 预算段 router 压倒 histgb/random（+5.5/+1.6pp）**，30% 以上段被
+  random 反超——llm_hit 标签教会了头部「LLM 赢得在哪」，但中预算段仍被
+  word_order 低召回（41.7%）句占住。分层 FAIL 5→4（collocation/logic 转正）。
+- 处方明确→按型条件化路由：route 目标乘 P(LLM 检出 | 型) 收益矩阵（本局实测
+  已有首批行），word_order 类降权或改走规则/专项侧；Cycle 2（生产日志
+  收益矩阵自更新）是同一处方的数据化版本。
+复现追加：`router_labels.py --split train --llm-out /tmp/router_llm_arm_train.jsonl`
+→ 重跑两套 eval（cache 集需先 `--llm-run-gold` 制备，已落盘则直接复用）。
 
 ### 11.14 分型分层架构小结与自学习周期（2026-11-16，在研方向定调）
 
@@ -1102,7 +1116,7 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 | 周期 | 回路形态 | 状态 |
 |---|---|---|
 | Cycle 0 | 规则+词典+gold 代理标签→三臂 harness 入库（oracle 口径） | 已就位 |
-| Cycle 1 | LLM 臂直跑→llm_hit 入 route_label→重赛（路由器学预测「复查这句有收益」） | 本批：标签制备中 |
+| Cycle 1 | LLM 臂直跑→llm_hit 入 route_label→重赛（路由器学预测「复查这句有收益」） | 已重赛（oracle 幅度拓宽；cache 口径处方=按型条件化，§11.12 补二） |
 | Cycle 2 | 生产日志（路由决策+LLM 检出+用户采纳/拒绝）→错题本/偏好沉淀→按型收益矩阵直接更新，低收益型由数据发现修正（word_order 偏置即实证） | 待接入 |
 | Cycle 3 | jev route 头（首 token logprob）替换代理头，自学习标签即蒸馏目标，路由内进生成模型一遍过 | 终局形态 |
 
