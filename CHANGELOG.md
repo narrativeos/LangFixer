@@ -6,6 +6,16 @@
 
 ### 新增
 
+- **Cycle 2 收益矩阵消费端（`tools/cycle2-matrix/matrix.py`）**：写侧三本账
+  早已在产（detect_history.errors_json 检出+来源层、layers_json 路由决策账、
+  feedback_log 全层采纳/拒绝留痕），零 Rust 改动；消费端 join 成按型收益矩阵
+  （precision=adopt/(adopt+reject)、yield=每千句复查换回的真修正、复查句
+  ran/backfill/skip 三口径不双计、feedback 无外键按 original+14 天窗回指且
+  命中/落空两列并报）；达门槛型输出 `--hit-types` 串回喂路由，报告文案内化
+  §13 #12（低 precision 型不降级，出口是预算权重/型头）；错题本
+  error_book.jsonl=被拒 LLM 检出含原句（负例蒸馏原料）。e2e 合成库验证通过；
+  dev 实库 llm 侧反馈 0 条、矩阵全薄——机件等账，账等生产使用。周期表
+  Cycle 2 行改「机件就位」（§11.12 补六）。
 - **gold 侧型标签（`tools/true-gold/gold_types.py` + `router_labels.py
   --gold-types`）**：补四处方落地——text→v2 型码两通道并集（datasets 行级
   error_type 与 eval 侧同源映射 ∪ true_gold 编辑级六类经 v22 行 join；

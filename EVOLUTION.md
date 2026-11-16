@@ -1157,6 +1157,20 @@ collocation 53.9→60.5、对 random 差距 −2.9→−4.0pp。归因：WO 每�
 --hit-types spelling,missing_component,redundant_component,collocation,blend,
 conjunction,logic,word_order,reference --wo-exempt --gold-types …` → 两套 eval。
 
+**补六：Cycle 2 消费端就位——生产日志→按型收益矩阵（tools/cycle2-matrix）**：
+
+排查发现写侧三本账**早已在产**（不用改一行 Rust）：detect_history.errors_json
+（检出+来源层）、layers_json（各层 ran/skipped——路由决策账；旧行无此列）、
+feedback_log（adopt/reject 全层留痕，含 LLM 兜底）。缺的只是消费端：
+`matrix.py` 把三本账 join 成按型矩阵（precision=adopt/(adopt+reject)；
+yield=每千句复查换回的真修正；feedback 无外键，按 original+14 天窗回指，
+命中/落空如实两列并报）；达门槛型出 `--hit-types` 串回喂路由（低 precision
+型**不降级**，走预算权重/型头——§13 #12 约束内化进报告文案）。
+错题本导出 = 被拒 LLM 检出含原句（负例蒸馏原料）。e2e（合成库）：复查句计数
+（ran/backfill/skip 三口径）、层账回指命中/落空、rule 反馈不误入、空库不炸
+全验。dev 实例实跑：llm 侧反馈 0 条、矩阵全薄——**机件等账，账等生产使用**；
+周期表 Cycle 2 行同步改「机件就位」。
+
 ### 11.14 分型分层架构小结与自学习周期（2026-11-16，在研方向定调）
 
 **架构一句话**：横向分型（§11.11 的 17 类 T 族细分）× 纵向分层（规则定案档 →
@@ -1180,7 +1194,7 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 |---|---|---|
 | Cycle 0 | 规则+词典+gold 代理标签→三臂 harness 入库（oracle 口径） | 已就位 |
 | Cycle 1 | LLM 臂直跑→llm_hit 入 route_label→重赛（路由器学预测「复查这句有收益」） | 已重赛（oracle 幅度拓宽；cache 口径处方=按型条件化，§11.12 补二） |
-| Cycle 2 | 生产日志（路由决策+LLM 检出+用户采纳/拒绝）→错题本/偏好沉淀→按型收益矩阵直接更新，低收益型由数据发现修正（word_order 偏置即实证） | 待接入 |
+| Cycle 2 | 生产日志（路由决策+LLM 检出+用户采纳/拒绝）→错题本/偏好沉淀→按型收益矩阵直接更新，低收益型由数据发现修正（word_order 偏置即实证） | 机件就位（写侧已在产；消费端 tools/cycle2-matrix，§11.12 补六；dev 库 llm 侧零反馈，账等生产喂） |
 | Cycle 3 | jev route 头（首 token logprob）替换代理头，自学习标签即蒸馏目标，路由内进生成模型一遍过 | 终局形态 |
 
 **基础设施教训（ Cycle 1 实跑）**：自学习周期的瓶颈是**标签制备吞吐与可靠性**：
