@@ -21,6 +21,13 @@ gold 侧型信息按句子文本 join 进池行，两条通道按句取并集：
 ~/tmp/true_gold/gold_types.jsonl。router_labels.py --gold-types 消费。
 附带 join 覆盖报告：池 label=1 行命中率 + 纯 word_order 行数
 （= 补四说「不可见」的那部分）+ true_gold 标签吸收数。
+
+--counts-out（§11.14 补二方案 A′）：同一次扫描顺带产出计数标签
+{text, counts:{v2型:n}, spans:[[a,b,v2型],…]}。型多重集只从一条代码路径
+数出（不另起第二本账）：编辑级通道（通道 2）逐条计数；行级通道（通道 1）
+对该文本无编辑级记录时每型计 1（NACGEC 行级型覆盖该行全部编辑）；
+两通道都命中的文本只信编辑级（v22 行的 gold 就是 datasets 行，叠加采纳
++漏标真错，是超集，再计会双计）。
 """
 from __future__ import annotations
 
@@ -71,17 +78,27 @@ def add(text_map: dict, text: str, typ: str) -> None:
         text_map.setdefault(text, set()).add(typ)
 
 
+def byte_to_char(src: str, b: int) -> int:
+    """与 eval_router_arms.py 同法（datasets gold 编辑是字节 span）。"""
+    return len(src.encode("utf-8")[:b].decode("utf-8"))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--true-gold", default="~/tmp/true_gold/true_gold.jsonl")
     ap.add_argument("--v22-dir", default="~/tmp/dataset_v22")
     ap.add_argument("--pool-dir", default=str(HERE.parent.parent.parent / "jev-gec" / "data" / "pools" / "zh_v2"))
     ap.add_argument("--out", default="~/tmp/true_gold/gold_types.jsonl")
+    ap.add_argument("--counts-out", default="~/tmp/true_gold/gold_counts.jsonl",
+                    help="计数标签 {text, counts, spans}（方案 A′ 型头蒸馏目标）")
     a = ap.parse_args()
     out_p = Path(a.out).expanduser()
     out_p.parent.mkdir(parents=True, exist_ok=True)
 
     text_map: dict[str, set] = {}
+    ch1_spans: dict[str, list] = {}   # 通道 1：text → [[a,b,v2型]]
+    ch2_counts: dict[str, dict] = {}
+    ch2_spans: dict[str, list] = {}
 
     # 通道 1：datasets 行级 error_type（与 eval 侧 load_eval 同映射）
     ds_texts = set()
@@ -97,6 +114,11 @@ def main() -> None:
             typ = NACGEC_TYPE.get(et, DATASET_DEFAULT_TYPE.get(nm, "untyped")) \
                 if et else DATASET_DEFAULT_TYPE.get(nm, "untyped")
             add(text_map, e["src"], typ)
+            if typ in RL.V2_PASSTHROUGH:
+                for ed in e["edits"]:
+                    a0 = byte_to_char(e["src"], ed["span"][0])
+                    b0 = byte_to_char(e["src"], ed["span"][1])
+                    ch1_spans.setdefault(e["src"], []).append([a0, b0, typ])
     n_ds = len(text_map)
 
     # 通道 2：true_gold 编辑级型（v22 行 id → src 文本）
@@ -124,12 +146,38 @@ def main() -> None:
             n_miss_row += 1
             continue
         add(text_map, text, GOLD6_TO_V2[t])
+        v2 = GOLD6_TO_V2[t]
+        ch2_counts.setdefault(text, {})
+        ch2_counts[text][v2] = ch2_counts[text].get(v2, 0) + 1
+        if g.get("unit") == "char":
+            a0, b0 = g["pos"], g["pos"] + 1
+        else:
+            a0, b0 = g["a"], g["b"]
+        ch2_spans.setdefault(text, []).append([a0, b0, v2])
         n_absorb += 1
 
     with out_p.open("w", encoding="utf-8") as f:
         for text, ts in sorted(text_map.items()):
             f.write(json.dumps({"text": text, "types": sorted(ts)},
                                ensure_ascii=False) + "\n")
+
+    # 计数标签（编辑级优先，行级只补编辑级未覆盖的文本）
+    counts_p = Path(a.counts_out).expanduser()
+    n_counts = 0
+    with counts_p.open("w", encoding="utf-8") as f:
+        for text in sorted(text_map):
+            if text in ch2_counts:
+                counts, spans = ch2_counts[text], ch2_spans[text]
+            else:
+                counts = {t: 1 for t in text_map[text]}
+                spans = ch1_spans.get(text, [])
+            if not counts:
+                continue
+            f.write(json.dumps({"text": text, "counts": counts, "spans": spans},
+                               ensure_ascii=False) + "\n")
+            n_counts += 1
+    print(f"counts → {counts_p}：{n_counts:,} 句有计数标签"
+          f"（编辑级 {len(ch2_counts):,} 句 / 行级补充 {n_counts - len(ch2_counts):,}）")
 
     # ── join 覆盖报告 ──
     print(f"gold_types → {out_p}：{len(text_map):,} 句有型"

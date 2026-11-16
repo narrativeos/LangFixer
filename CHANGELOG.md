@@ -6,6 +6,10 @@
 
 ### 新增
 
+- **路由第四臂 router_ev（方案 A′ 落地，EVOLUTION §11.14 补三）**：每型 Poisson
+  计数头（蒸馏 gold_counts 型多重集）× p̂(t) 求和打分；缓存口径锚点总体
+  **PASS**（54.6% vs router 44.6/histgb 40.9/random 48.6，非 oracle 首次）；
+  gold_types.py --counts-out 同扫描产出计数+spans；p̂ 测量面待 train 缓存扩容。
 - **分型分层三空白量化实验与方案定案（EVOLUTION §11.14 补二）**：①句内同族多
   错 61.3%（≥2 错句内，10 型口径）→ 型头定为每型期望计数头 A′+稀型先验 C，
   非 presence 二值；②must 桶 consistency/cohesion 的 ±6 窗口规则可达性

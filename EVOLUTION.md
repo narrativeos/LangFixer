@@ -1261,6 +1261,30 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 载轨迹表与 ±6 窗口谓词，语篇回归层按双重门（语篇提示+上下文判不了才检索），
 打扰率单过 ≤2% 闸门不入三臂曲线。
 
+**补三：方案 A′ 落地首跑——router_ev 臂非 oracle 首次 PASS（同日）**：
+
+- 机件：gold_types.py 加 --counts-out（同一次扫描数出型多重集
+  {text,counts,spans}，14,235 句，不另起第二本账；编辑级 10,590 句优先，行级
+  只补 3,645）；eval_router_arms.py 加第四臂 router_ev：每型 Poisson 计数头
+  （HistGBRegressor，正例 <head-min-pos=100 退先验常数；blend 76/reference 79/
+  redundant 38 三型退先验）× p̂(t)（train 侧 spans×train LLM 缓存重合；
+  <50 span 退全体均值 0.880）；打分 EV(句)=Σ p̂(t)·n̂_t。旧 router 臂保留同表
+  A/B；不带 --counts 时三臂曲线与补七锚点逐位一致（重构零行为变更）。
+- **缓存口径锚点：总体 PASS**——router_ev 54.6% / router 44.6% / histgb 40.9% /
+  random 48.6%（gold 621，已验证子集；分层 FAIL 3：blend/redundant/spelling
+  小 cells）= 非 oracle 口径路由臂首次 PASS，且低预算段优势最大
+  （20–50% 调用率 +8~+21% vs histgb）。对比 oracle 口径：router_ev 65.2%
+  仍 PASS 但仅 +0.5 vs histgb（分层 FAIL 5）——oracle 下排序价值收敛于
+  P(有错)，histgb 本就在排它；EV 臂的真增量在「LLM 改得对」维度，只有缓存
+  口径看得见。两口径均坐实：**路由目标该是期望净收益而非命中金句**。
+- **p̂(t) 测量面饥饿（待补）**：train LLM 缓存仅 1,200 行，实测量只有
+  grammar 0.961 / spelling 0.886，余型全走 0.880 先验——即本次胜利主要由计数头
+  Σ n̂_t（多重集信息，= 实验1 预告的 61.3% 多错信息）贡献，p̂ 分化尚未上场；
+  word_order 降权（wo_exempt 的 EV 化替代表达）需 p̂(word_order) 真测量才生效。
+  下一步：扩 train 侧 LLM 缓存（端点夜跑）后重赛，p̂ 增益与计数头增益分开入账。
+- 产物：~/tmp/true_gold/{gold_counts.jsonl, eval_router_ev_cache.txt,
+  eval_router_ev_oracle.txt}。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/

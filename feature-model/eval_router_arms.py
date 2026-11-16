@@ -214,6 +214,16 @@ def main() -> None:
     ap.add_argument("--floor-every", type=int, default=0,
                     help="路由臂采样地板：每 N 句强制 1 句复查（0=关，成本计入调用率）")
     ap.add_argument("--seed", type=int, default=20261115)
+    ap.add_argument("--counts", default="",
+                    help="gold_counts.py 产物 {text,counts,spans}：加第四臂 router_ev"
+                         "（每型计数头 n̂_t × p̂(t) 求和打分，§11.14 补二方案 A′）")
+    ap.add_argument("--gain-cache", default="",
+                    help="train 侧 LLM 检出缓存（测 p̂(t) 用；配 --counts。"
+                         "不可用 gold 侧缓存：那是评测集，泄密）")
+    ap.add_argument("--head-min-pos", type=int, default=100,
+                    help="计数头最少正例句数，不足则退稀型先验（常数均值）")
+    ap.add_argument("--p-min-n", type=int, default=50,
+                    help="p̂(t) 最少可测 span 数，不足则退全体均值先验")
     ap.add_argument("--include-inpool", action="store_true",
                     help="含训练池内评测句（污染绝对值 optimistic；仅看横向对照时用）")
     ap.add_argument("--nproc", type=int, default=8)
@@ -294,6 +304,57 @@ def main() -> None:
     rng = random.Random(args.seed)
     s_rand = np.asarray([rng.random() for _ in rows])
 
+    # ── router_ev 臂（方案 A′）：EV(句)=Σ p̂(t)·n̂_t，计数头从 gold_counts 蒸馏 ──
+    s_ev = None
+    p_report: list[tuple] = []
+    if args.counts:
+        if not args.gain_cache:
+            sys.exit("--counts 需 --gain-cache（p̂(t) 必须 train 侧，gold 侧泄密）")
+        import router_labels as RL_mod
+        gc: dict[str, dict] = {}
+        for l in Path(args.counts).expanduser().read_text(encoding="utf-8").splitlines():
+            if l.strip():
+                r2 = json.loads(l)
+                gc[r2["text"]] = r2
+        gain = llm_cache_load(args.gain_cache)
+        v2t = sorted(RL_mod.V2_PASSTHROUGH)
+        tot_t = {t: 0 for t in v2t}
+        cov_t = {t: 0 for t in v2t}
+        n_meas = 0
+        for r in routed:
+            e = gc.get(r["text"])
+            if not e or r["text"] not in gain:
+                continue
+            gs = gain[r["text"]]
+            n_meas += 1
+            for a0, b0, t in e.get("spans", []):
+                tot_t[t] += 1
+                if any(s <= b0 and a0 <= ee for s, ee in gs):
+                    cov_t[t] += 1
+        all_p = sum(cov_t.values()) / max(1, sum(tot_t.values()))
+        p_hat = {t: (cov_t[t] / tot_t[t] if tot_t[t] >= args.p_min_n else all_p)
+                 for t in v2t}
+        from sklearn.ensemble import HistGradientBoostingRegressor
+        s_ev = np.zeros(len(rows), dtype=np.float64)
+        for t in v2t:
+            y = np.asarray([gc.get(r["text"], {}).get("counts", {}).get(t, 0)
+                            for r in routed], dtype=float)
+            n_pos = int((y > 0).sum())
+            if n_pos >= args.head_min_pos:
+                h = HistGradientBoostingRegressor(loss="poisson", max_iter=250,
+                                                  learning_rate=0.1, random_state=0)
+                h.fit(Xp, y)
+                n_hat = h.predict(Xe)
+                mode = "poisson头"
+            else:
+                n_hat = np.full(len(rows), float(y.mean()))
+                mode = "先验常数"
+            s_ev += p_hat[t] * np.maximum(n_hat, 0.0)
+            if n_pos or tot_t[t]:
+                p_report.append((t, tot_t[t], cov_t[t], p_hat[t], n_pos, mode))
+        print(f"[router_ev] p̂(t) 测量面：train 池∩缓存∩计数标签 {n_meas}/{len(routed)} 行；"
+              f"全体先验 p̂={all_p:.3f}", file=sys.stderr)
+
     oracle = not args.llm_cache
     llm = llm_cache_load(args.llm_cache) if args.llm_cache else None
     if args.only_cached:
@@ -330,7 +391,10 @@ def main() -> None:
 
     def curve(rate):
         out = {}
-        for arm, sc in (("histgb", s_gate), ("random", s_rand), ("router", s_route)):
+        arms = {"histgb": s_gate, "random": s_rand, "router": s_route}
+        if s_ev is not None:
+            arms["router_ev"] = s_ev
+        for arm, sc in arms.items():
             reviewed = arm_indices(sc, rate, random.Random(args.seed),
                                    args.floor_every if arm == "router" else 0)
             eff = 100.0 * len(reviewed) / len(rows)
@@ -338,48 +402,67 @@ def main() -> None:
             out[arm] = (cov, tot, eff)
         return out
 
+    if p_report:
+        print("## 收益矩阵 p̂(t)（train 侧：计数 spans × train LLM 缓存重合）+ 计数头")
+        print("| 型 | 可测 span | 检出 | p̂ | 头正例句 | 头形态 |")
+        print("|---|---|---|---|---|---|")
+        for t, n_t, c_t, p, n_pos, mode in sorted(p_report, key=lambda x: -x[3]):
+            flag = "" if n_t >= args.p_min_n else " ⚠先验"
+            print(f"| {t} | {n_t} | {c_t} | {p:.3f}{flag} | {n_pos} | {mode} |")
+        print()
+
+    arms_all = ["histgb", "random", "router"] + (["router_ev"] if s_ev is not None else [])
+    ref_arm = "router_ev" if s_ev is not None else "router"
     print("## 等调用率曲线（总体 gold 编辑召回）")
-    print(f"| 调用率 | histgb | random | router | router−histgb | router−random |")
-    print("|---|---|---|---|---|---|")
+    print("| 调用率 | " + " | ".join(arms_all)
+          + f" | {ref_arm}−histgb | {ref_arm}−random |")
+    print("|---" * (len(arms_all) + 3) + "|")
     for rate in grid:
         c = curve(rate)
-        rc = [c[a][0] / max(1, c[a][1]) for a in ("histgb", "random", "router")]
+        rc = {a: c[a][0] / max(1, c[a][1]) for a in arms_all}
         mark = " ←锚" if abs(rate - ANCHOR) < 1e-9 else ""
-        print(f"| {rate:g}%{mark} | {rc[0]:.1%} | {rc[1]:.1%} | **{rc[2]:.1%}** | "
-              f"{rc[2]-rc[0]:+.1%} | {rc[2]-rc[1]:+.1%} |")
+        cells = " | ".join(
+            (f"**{rc[a]:.1%}**" if a == ref_arm else f"{rc[a]:.1%}") for a in arms_all)
+        print(f"| {rate:g}%{mark} | {cells} | "
+              f"{rc[ref_arm]-rc['histgb']:+.1%} | {rc[ref_arm]-rc['random']:+.1%} |")
     print(f"> skip 率 = 1 − 调用率（预算模式；**skipped ≠ covered**，如实入覆盖率账）。\n")
 
-    print(f"## 锚点 {ANCHOR}% 分层判定（router ≥ 另两臂？）")
+    print(f"## 锚点 {ANCHOR}% 分层判定（{ref_arm} ≥ 另两臂？）")
     scores = {"histgb": s_gate, "random": s_rand, "router": s_route}
+    if s_ev is not None:
+        scores["router_ev"] = s_ev
 
     def reviewed_of(arm: str, rate: float) -> set[int]:
         return arm_indices(scores[arm], rate, random.Random(args.seed),
                            args.floor_every if arm == "router" else 0)
 
-    print("| 类型 | gold | histgb | random | router | 判定 |")
-    print("|---|---|---|---|---|---|")
+    print("| 类型 | gold | " + " | ".join(arms_all) + " | 判定 |")
+    print("|---" * (len(arms_all) + 3) + "|")
     fails = 0
     for t in sorted(gold_types, key=lambda x: -type_gold[x]):
         if not type_gold[t]:
             continue
         rr = []
-        for arm in ("histgb", "random", "router"):
+        for arm in arms_all:
             cov, tot = recall_at(rows, reviewed_of(arm, ANCHOR), oracle, llm,
                                  edit_filter=lambda r, j, t=t: r["type"] == t)
             rr.append(cov / max(1, tot))
         if type_gold[t] < args.min_gold:
             verdict = f"金标 {type_gold[t]} < {args.min_gold}，跳过"
         else:
-            ok = rr[2] + 1e-12 >= rr[0] and rr[2] + 1e-12 >= rr[1]
+            ok = rr[arms_all.index(ref_arm)] + 1e-12 >= rr[0] and rr[arms_all.index(ref_arm)] + 1e-12 >= rr[1]
             fails += not ok
             verdict = "PASS" if ok else "FAIL"
-        print(f"| {t} | {type_gold[t]} | {rr[0]:.1%} | {rr[1]:.1%} | {rr[2]:.1%} | {verdict} |")
+        print(f"| {t} | {type_gold[t]} | " + " | ".join(f"{x:.1%}" for x in rr) + f" | {verdict} |")
     c = curve(ANCHOR)
     rec = {a: c[a][0] / max(1, c[a][1]) for a in scores}
-    ok_all = rec["router"] >= rec["histgb"] - 1e-12 and rec["router"] >= rec["random"] - 1e-12
-    print(f"\n**总体判定：{'PASS' if ok_all else 'FAIL'}**（锚点召回 router {rec['router']:.1%} / "
-          f"histgb {rec['histgb']:.1%} / random {rec['random']:.1%}，"
-          f"gold {c['router'][1]}；分层 FAIL {fails}）")
+    for a in ["router", "router_ev"]:
+        if a not in rec:
+            continue
+        ok_a = rec[a] >= rec["histgb"] - 1e-12 and rec[a] >= rec["random"] - 1e-12
+        print(f"\n**总体判定（{a}）：{'PASS' if ok_a else 'FAIL'}**（锚点召回 "
+              + " / ".join(f"{k} {rec[k]:.1%}" for k in arms_all)
+              + f"，gold {c[a][1]}；分层 FAIL {fails}）")
     print(f"\n> level 3 全 LLM 兜底臂不在本 harness 空间（漏报兜底立场不变，§11.10）；")
     print(f"> histgb 为本地代理臂（9.8k 金标基座训练），弱于生产门控——PASS 是下界意义，")
     print(f"> 上线前按 §11.10 与生产门控同数据重赛。")
