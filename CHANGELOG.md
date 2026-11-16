@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **v2 级 true gold 合并器**（`tools/true-gold/merge.py`）：true gold =
+  共识 ∪ 已采纳模型新增 ∪ 金集真错，噪声/reject 进 excluded，门控未见
+  进规则通道（rule-candidates 带 ctx，运行时命中由用户判断，判断回流
+  同一本 gold journal）。裁决 journal 为空时出按桶默认版，抽检推进后
+  重跑收紧。首跑：标签行 12,542（共识 10,156 + 金集真错 2,386），
+  gold 字符覆盖 20,053/38,924 = 51.5%，零重叠；两本 journal 响应性
+  e2e 验证通过。类型分布（typo 5,994/grammar 3,495/cohesion 324/
+  consistency 205/punct 99/fact 39）即 route_label 重生成的输入。
 - **金集灰区裁决页（gold-adjudicate）**：对 v2.2 未命中的 21,257 个
   gold 字符（`~/tmp/grey_zone/`）尽量自动裁决：回退（v2.1 已给 fix）
   2,386 默认真错带旧 fix/type；两轮均问均否 8,649 默认噪声（采纳走
