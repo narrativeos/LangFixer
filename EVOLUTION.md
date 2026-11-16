@@ -1171,6 +1171,17 @@ yield=每千句复查换回的真修正；feedback 无外键，按 original+14 �
 全验。dev 实例实跑：llm 侧反馈 0 条、矩阵全薄——**机件等账，账等生产使用**；
 周期表 Cycle 2 行同步改「机件就位」。
 
+**补七：gold 重建后重跑，anchors 不动（2026-11-16，notes §S）**。五桶各抽
+58 条均未过 2% 门禁（tools/adjudicate-audit README：auto_real 3.4 /
+auto_noise 25.9 / auto 6.9 / must 17.2 / audit 20.7），不整桶采信；adopt
+131 进 gold，v2.2 插入残片复读由 merge 新增 dup_artifact 前置拦 1,060
+（人工 adopt 覆盖 2 = fix 尾字 off-by-one 真错；单字动词 AA 重叠豁免）。
+重跑 gold_types→labels→eval：两锚点 **44.6/64.1 与补五逐位相同**，分层表
+同构。归因：gold 重建改的是资产与坐标系，决策面输入（llm 缓存 × 背书
+白名单 × 降级集）未变→anchors 不动，#12 再确认；要动 anchors 得动决策面
+本身（jev 型头/收益矩阵）。运维坑：eval 的 --llm-cache 必须指
+router_llm_arm_gold，错配 train 缓存会把评测集过滤成空集除零崩。
+
 ### 11.14 分型分层架构小结与自学习周期（2026-11-16，在研方向定调）
 
 **架构一句话**：横向分型（§11.11 的 17 类 T 族细分）× 纵向分层（规则定案档 →

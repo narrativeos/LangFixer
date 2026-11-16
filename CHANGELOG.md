@@ -40,6 +40,16 @@
   gold 字符覆盖 20,053/38,924 = 51.5%，零重叠；两本 journal 响应性
   e2e 验证通过。类型分布（typo 5,994/grammar 3,495/cohesion 324/
   consistency 205/punct 99/fact 39）即 route_label 重生成的输入。
+- **merge 前置复读拦截 dup_artifact + 抽检后 gold 重建重跑**（§S）：
+  五桶各抽 58 条全部未过 2% 门禁（auto_real 3.4 / auto_noise 25.9 /
+  label auto 6.9 / must 17.2 / audit 20.7），不整桶采信；adopt 131 进
+  gold。v2.2 插入残片复读定性为渲染归一化缺陷（抽检 reject 主因），
+  以「fix 前缀==span 左侧邻接 ∥ 后缀==右侧邻接」规则入 merge 前置：首跑
+  拦 1,060（人工 adopt 覆盖 2 均为 fix 尾字 off-by-one 真错；单字动词 AA
+  重叠「讲讲」类守卫豁免）；标签行 12,686（共识 10,156 + 采纳 131 + 金集
+  真错 2,399），pending 7,376→6,176，coverage 51.55%。
+  重跑 gold_types+labels+eval：两锚点 44.6/64.1 与补五逐位相同——gold
+  重建改资产与坐标系，不动 anchors（决策面输入未变），§13 #12 再确认。
 - **金集灰区裁决页（gold-adjudicate）**：对 v2.2 未命中的 21,257 个
   gold 字符（`~/tmp/grey_zone/`）尽量自动裁决：回退（v2.1 已给 fix）
   2,386 默认真错带旧 fix/type；两轮均问均否 8,649 默认噪声（采纳走
