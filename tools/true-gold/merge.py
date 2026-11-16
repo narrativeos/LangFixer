@@ -29,6 +29,32 @@ PART_DEFAULT = {"回退": ("real", "gold-real-default"),
                 "问了被否": ("noise", "gold-noise-default"),
                 "门控未见": ("mark", "gate-unseen-mark")}
 
+# AA 重叠词单字（渐→渐渐 一类合法重叠，插入判读会误报，走原通道）
+REDUP_CHARS = set("渐慢刚常仅纷恰往连单")
+
+
+def dup_artifact(src: str, a: int, b: int, fix: str):
+    """fix 与编辑位置邻接文本复读 → v2.2 渲染归一化缺陷，非语义标注。
+
+    抽检实证（tools/adjudicate-audit README）：句内已有「不但」，标注器又在邻位
+    插「不」；「2022年」插「022」；「一路口」在其起点前整段复读。判据：
+    fix 前缀 == span 左侧等长邻接文本，或 fix 后缀 == span 右侧等长邻接文本。
+    命中返回复读片段，未命中返回 None。
+    """
+    if not fix:
+        return None
+    if len(fix) == 1 and fix in REDUP_CHARS:   # 单字重叠词交给人工/pending，不误剔
+        return None
+    n = len(fix)
+    for k in range(1, n + 1):
+        if a - k >= 0 and src[a - k:a] == fix[:k]:
+            # 单字整段复读且非纯插入 → 多为 AA 重叠（讲讲/看看），不判
+            if not (n == 1 and a != b):
+                return fix[:k]
+        if src[b:b + k] == fix[n - k:]:
+            return fix[n - k:]
+    return None
+
 
 def load_rows(d: Path, ver: str) -> dict:
     rows = {}
@@ -73,6 +99,7 @@ def main():
     gold, excl, rules = [], [], []
     st = {"consensus_edits": 0, "model_new_pending": 0, "model_new_adopted": 0,
           "model_new_rejected": 0, "gold_real": 0, "noise": 0, "rule": 0,
+          "dup_artifacts": 0, "dup_artifacts_human_adopt": 0, "dup_suspect_consensus": 0,
           "gold_chars": 0, "labeled_chars": 0, "gold_labeled_chars": 0, "type_dist": {}}
     lab_chars, lab_gold = set(), set()
     for rid, r in v22.items():
@@ -83,19 +110,30 @@ def main():
         for e in r["model_errors"]:
             es = set(range(e["a"], e["b"]))
             iid = f"{rid}#{e['a']}#{e['b']}"
+            fix = e.get("fix", "")
+            dup = dup_artifact(src, e["a"], e["b"], fix)
             if es & gset:                       # 逐条口径：命中 gold = 共识
+                if dup:                         # gold 已确认字符，只计数不拦
+                    st["dup_suspect_consensus"] += 1
                 st["consensus_edits"] += 1
                 gold.append({"id": rid, "unit": "edit", "a": e["a"], "b": e["b"],
-                             "fix": e.get("fix", ""), "type": e.get("type", ""),
+                             "fix": fix, "type": e.get("type", ""),
                              "action": "label", "source": "consensus"})
                 lab_chars.update((rid, c) for c in es)
                 lab_gold.update((rid, c) for c in es & gset)
             else:
                 verdict = model_v.get(iid)
-                if verdict == "adopt":
+                if dup:                         # 复读拦截先于裁决：规则可信度高于漏检
+                    st["dup_artifacts"] += 1
+                    if verdict == "adopt":
+                        st["dup_artifacts_human_adopt"] += 1
+                    excl.append({"iid": iid, "action": "dup-artifact",
+                                 "dup": dup,
+                                 "source": "dup-check" + ("-human-adopt" if verdict == "adopt" else "")})
+                elif verdict == "adopt":
                     st["model_new_adopted"] += 1
                     gold.append({"id": rid, "unit": "edit", "a": e["a"], "b": e["b"],
-                                 "fix": e.get("fix", ""), "type": e.get("type", ""),
+                                 "fix": fix, "type": e.get("type", ""),
                                  "action": "label", "source": "model-adopted"})
                     lab_chars.update((rid, c) for c in es)  # 新增在 gold 字符之外
                 elif verdict == "reject":
@@ -103,9 +141,12 @@ def main():
                     excl.append({"iid": iid, "action": "reject", "source": "model-new"})
                 else:
                     st["model_new_pending"] += 1
-        for e in r["model_errors"]:             # 类型分布按共识/采纳编辑
-            if (set(range(e["a"], e["b"])) & gset
-                    or model_v.get(f"{rid}#{e['a']}#{e['b']}") == "adopt"):
+        for e in r["model_errors"]:             # 类型分布按实际进 gold 的编辑
+            es = set(range(e["a"], e["b"]))
+            cons = bool(es & gset)
+            if not cons and e.get("fix") and dup_artifact(src, e["a"], e["b"], e["fix"]):
+                continue                        # 被复读拦截的不计型
+            if cons or model_v.get(f"{rid}#{e['a']}#{e['b']}") == "adopt":
                 t = e.get("type", "") or "unknown"
                 st["type_dist"][t] = st["type_dist"].get(t, 0) + 1
 
@@ -153,6 +194,8 @@ def main():
           f"（另标 gold 外字符 {st['labeled_chars'] - st['gold_labeled_chars']:,}）")
     print(f"待抽检模型新增 {st['model_new_pending']:,} · 金集噪声 {st['noise']:,}"
           f" · 规则候选 {st['rule']:,}")
+    print(f"复读拦截 {st['dup_artifacts']:,}（含人工 adopt 覆盖 {st['dup_artifacts_human_adopt']:,}）"
+          f" · 共识内复读存疑 {st['dup_suspect_consensus']:,}")
     print("类型分布:", json.dumps(st["type_dist"], ensure_ascii=False))
 
 

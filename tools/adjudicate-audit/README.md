@@ -24,4 +24,6 @@
 
 五桶各审 58 条，全部未过 2% 门禁：auto_real 3.4% / auto_noise 25.9% / label auto 6.9% / must 17.2% / audit 20.7%。
 系统性缺陷三类：插入残片复读（v2.2 渲染归一化 bug，reject 主因）、"问了被否"桶约 26% 真错、删除类 D-anchor 少量坏锚点。
-处置：不整桶采信；adopt 行以 label=1 进 merge；复读类由 merge 前置校验拦截；uncertain 走 mark→用户命中通道。
+处置：不整桶采信；adopt 行以 label=1 进 merge；uncertain 走 mark→用户命中通道；
+复读类由 `tools/true-gold/merge.py` 的 `dup_artifact` 前置拦截（已入库，首跑拦截 1,060，
+其中人工 adopt 覆盖 2；单字动词 AA 重叠「讲讲/看看」类经守卫豁免；测试 `test_dup_artifact.py`）。
