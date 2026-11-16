@@ -1128,6 +1128,35 @@ gap 不在标签机件内，要么 gold 侧型标签接入，要么等 Cycle 2 �
 被数据连续验证**，复现：`router_labels.py --split train --llm-out …
 --hit-types <表内白名单> --wo-exempt` → 两套 eval。
 
+**补五：gold 侧型标签接入——gap 从此可见，「全量 wo 降级」判死
+（2026-11-16，--gold-types 机件）**：
+
+`tools/true-gold/gold_types.py`：text→v2 型码，两通道并集——datasets 行级
+error_type（ast 抽取 eval 侧映射，同源不复制）∪ true_gold 编辑级六类经 v22
+行 join 回文本（typo→spelling、grammar→grammar、punct→punctuation、
+cohesion→logic、consistency→reference；**fact 独立通道不映射**、
+gold-unknown 跳过）。产出 14,167 句有型；池 train label=1 4,870 句文本 join
+命中 4,400（90.3%），其中**纯 word_order 110 句** = 补四不可见部分的本体
+（其 --wo-exempt 只触及 12 句）。
+
+`router_labels.py --gold-types`：gold 型并入 `error_types`（与 LLM 型并集，
+joined 行 4,400/4,400 superset 验证）；--wo-exempt 判定改为「llm 型 ∪ gold 型
+纯 word_order」→ 降级 12→106 行（104 行 gold 侧新可见；原 12 行中 10 行因
+gold 侧还有别型不再降——并集语义下型证据更诚实）。复现纠偏：补四实际
+白名单从 982 行缓存唯一反解 = 含 word_order/reference、不含标点/anomaly
+（照笔记清单跑对不上账；对表后标签逐行一致 llm 785/floor 1396）。
+
+迭代曲线（cache/oracle 锚点）：45.7/65.6 → **44.6/64.1**，两口径
+−1.1~−1.5pp、总体 FAIL；word_order 层 26.9→25.0（降级连本层都没赚）、
+collocation 53.9→60.5、对 random 差距 −2.9→−4.0pp。归因：WO 每句期望仍为正
+（召回 41.7% × 精确 80.6%），63.1% 预算处边际收益≈ 1:1，腾预算抵不过跳过
+可检句的代价——**标签侧静态降级近乎纯亏**（入 §13 #12）。gold 侧型标签
+真正赚在坐标系而非降级：4,400 池行直接带型（jev 头型头的蒸馏目标/收益
+矩阵输入），降级处方的正确出口是 Cycle 2 收益矩阵按型条件化与型头。
+复现：`gold_types.py` → `router_labels.py --split train --llm-out …
+--hit-types spelling,missing_component,redundant_component,collocation,blend,
+conjunction,logic,word_order,reference --wo-exempt --gold-types …` → 两套 eval。
+
 ### 11.14 分型分层架构小结与自学习周期（2026-11-16，在研方向定调）
 
 **架构一句话**：横向分型（§11.11 的 17 类 T 族细分）× 纵向分层（规则定案档 →
@@ -1178,6 +1207,7 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 | 9 | zh 规则层 4 条规则（MISSING_SUBJECT / PUNCTUATION / DE_DA_DE / CONFUSABLE） | **全部停用** | 全量 1137 句纯规则：185 预测 / 0 TP / 185 FP | §Phase 1（2026-10-17） |
 | 10 | vegaml 决策模型回到产品路径 | **退役**（保留实验代码；产品面入口已于 2026-11-02 移除） | 选型未落地、95% 正类 + 评测池自训练、被 L3 严格覆盖、生产 11555 次检测贡献 0 | §11.4 |
 | 11 | 零样本换决策模型救活门控（laya/chdec/largha/AnyJev 等生态臂） | **否**（路径关闭；微调主线 kev 不变） | 四个家族零样本 zh AUC 均 0.50±0.02（kev 唯一 0.75+）；校准救不了判别；同底座（Qwen3.5）不保证信号——症结在决策训练分布无语言质量信号 | §11.5、§11.8；**后续**：自建 `jev-gec` P0–P3c 已完成——response-based KD 判死（三教师对照 ≤0.60，见 §11.9），转 3090 Track-A LoRA |
+| 12 | word_order 在标签侧全量降级 rule_decide（--wo-exempt × gold 侧型标签，补四处方的完整形态） | **否** | 降级 12→106 行后 45.7/65.6 → 44.6/64.1（cache/oracle 锚点，均 FAIL）；word_order 分层自身 26.9→25.0；WO 每句期望为正（41.7%×80.6%），63.1% 预算处腾预算≈边际 1:1 抵不过跳过可检句 | §11.12 补五；降级收益的正确出口 = Cycle 2 收益矩阵按型条件化/型头，非标签开关 |
 
 > #1 是最容易复发的一条：**「灰区率下降」不等于收益**。任何扩表/换语料的提案，
 > 验收口径必须是「**等漏检下的放行率**」——先跑 `eval_ngram_table_ab.py`（AUC 不升或

@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **gold 侧型标签（`tools/true-gold/gold_types.py` + `router_labels.py
+  --gold-types`）**：补四处方落地——text→v2 型码两通道并集（datasets 行级
+  error_type 与 eval 侧同源映射 ∪ true_gold 编辑级六类经 v22 行 join；
+  cohesion→logic、consistency→reference、fact 不映射）。池 train label=1
+  join 命中 4,400/4,870（90.3%），纯 word_order 110 句从此可见。实验结论：
+  全量 wo 降级两口径 −1.1~−1.5pp 判死（§13 #12）；型标签价值在
+  error_types 坐标系（4,400 行带型，蒸馏/收益矩阵输入）而非降级。
+  同时从 982 行缓存唯一反解出补四实际白名单（含 word_order/reference）。
 - **规则通道（rule-channel）**：true-gold 规则候选的消费端四件——
   规则族谓词（标点惯例自适应/叠用/严式时间/地名共现）、量化器（族×
   候选召回/点火/已标免问/纯打扰每万字）、运行时命中即问

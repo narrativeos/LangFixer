@@ -23,7 +23,12 @@
 
 可选 LLM 臂直跑（--llm-run，端点取 LLM_BASE_URL/LLM_MODEL/LLM_API_KEY，
 prompt 用 prompts/zh_detect_prompt.json 的 JSON 契约）；默认不跑（成本高），
-此时 error_types 为空、route 字段仅由 gold∪lexical∪floor 决定。
+此时 error_types 仅由 gold 侧型标签（若有）决定。
+
+gold 侧型标签（--gold-types，tools/true-gold/gold_types.py 产物）：按句子
+文本 join 的 {text, types}，仅对 label=1 行生效并并入 error_types。补四处方：
+LLM 臂检不出的行（如 word_order 58% 漏检）在池侧从此可见，--wo-exempt
+得以降级全部纯 word_order gold 行而非仅 LLM 恰好检出的可见部分。
 
 用法:
     cd feature-model
@@ -203,8 +208,12 @@ def main() -> None:
                     help="llm_hit 按型背书白名单（逗号分隔 v2 型码；非空时仅白内检出入 llm_review，"
                          "空=旧配方不过滤）。白名单用 gold 侧按型精确率定（§11.12 补三）")
     ap.add_argument("--wo-exempt", action="store_true",
-                    help="gold=1 且 llm 检出型全为 word_order 的行降为 rule_decide（高精确低召回型"
-                         "走规则/专项侧，不入 LLM 预算；需配合 --llm-out 的型信息）")
+                    help="gold=1 且型证据（llm 检出 ∪ gold 侧型标签）全为 word_order 的行降为 "
+                         "rule_decide（高精确低召回型走规则/专项侧，不入 LLM 预算；型信息来自 "
+                         "--llm-out 与 --gold-types 任一）")
+    ap.add_argument("--gold-types", default="",
+                    help="gold 侧型标签 jsonl {text, types}（tools/true-gold/gold_types.py 产物）；"
+                         "label=1 行按文本 join 并入 error_types，并参与 --wo-exempt 判定")
     ap.add_argument("--llm-cache-out", default="/tmp/router_llm_arm_{split}.jsonl",
                     help="--llm-run 直跑结果的检出缓存落盘（eval 侧 --llm-cache 可用；支持 {split}）")
     ap.add_argument("--out", default="", help="输出路径模板（含 {split} 占位；默认 /tmp/router_labels_{split}.jsonl）")
@@ -217,6 +226,11 @@ def main() -> None:
     if args.llm_out:
         for r in load_jsonl(Path(args.llm_out)):
             llm_cache[r["id"]] = r.get("errors", [])
+    gold_types: dict[str, set] = {}
+    if args.gold_types:
+        for r in load_jsonl(Path(args.gold_types).expanduser()):
+            gold_types[r["text"]] = {t for t in r.get("types", [])
+                                     if t in V2_PASSTHROUGH}
 
     for split in [s.strip() for s in args.split.split(",") if s.strip()]:
         pool_p = Path(args.pool_dir) / f"{split}.jsonl"
@@ -238,7 +252,7 @@ def main() -> None:
                      else f"/tmp/router_labels_{split}.jsonl")
         stat = {"llm_review": 0, "rule_decide": 0, "skip": 0,
                 "sig_rule": 0, "sig_lex": 0, "sig_llm": 0, "sig_floor": 0,
-                "wo_exempt": 0}
+                "wo_exempt": 0, "wo_exempt_gold": 0, "gold_typed": 0}
         hitset = {t.strip() for t in args.hit_types.split(",") if t.strip()}
         n_hit_filtered = 0
         with out_p.open("w", encoding="utf-8") as f:
@@ -261,13 +275,19 @@ def main() -> None:
                 if errors_route:
                     signals.append("llm_hit")
 
+                types_g = (gold_types.get(text, set())
+                           if int(r.get("label", 0)) == 1 else set())
+                if types_g:
+                    stat["gold_typed"] += 1
                 if int(r.get("label", 0)) == 1:
                     if not safe and args.wo_exempt:
-                        types_all = {e["error_type"] for e in errors
+                        types_llm = {e["error_type"] for e in errors
                                      if e.get("error_type") in V2_PASSTHROUGH}
-                        if types_all == {"word_order"}:
+                        if types_llm | types_g == {"word_order"}:
                             signals.append("wo_exempt")
                             stat["wo_exempt"] += 1
+                            if types_llm != {"word_order"}:
+                                stat["wo_exempt_gold"] += 1
                             route = "rule_decide"
                         else:
                             route = "llm_review"
@@ -280,11 +300,9 @@ def main() -> None:
                 else:
                     route = "skip"
 
-                if errors:
-                    types = sorted({e["error_type"] for e in errors
-                                    if e.get("error_type") in V2_PASSTHROUGH})
-                else:
-                    types = []
+                types = sorted(({e["error_type"] for e in errors
+                                 if e.get("error_type") in V2_PASSTHROUGH}
+                                | types_g))
                 f.write(json.dumps({**r, "route_label": route,
                                     "signals": signals, "error_types": types},
                                    ensure_ascii=False) + "\n")
@@ -303,8 +321,10 @@ def main() -> None:
               f"llm {stat['sig_llm']} / floor {stat['sig_floor']}"
               + ("" if llm_cache or args.llm_run else "  [LLM 臂未跑：标签=gold∪lexical∪floor]")
               + (f"  [按型背书滤除 {n_hit_filtered} 行纯白名单外 llm_hit]" if hitset else "")
-              + (f"  [wo_exempt 降级 {stat['wo_exempt']} 行纯 word_order 型 gold 句]"
-                 if args.wo_exempt else ""))
+              + (f"  [wo_exempt 降级 {stat['wo_exempt']} 行纯 word_order 型 gold 句"
+                 f"，其中 gold 侧型标签新可见 {stat['wo_exempt_gold']} 行]"
+                 if args.wo_exempt else "")
+              + (f"  [gold 侧型标签并入 {stat['gold_typed']} 行]" if args.gold_types else ""))
 
 
 if __name__ == "__main__":
