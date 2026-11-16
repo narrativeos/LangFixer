@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **金集灰区裁决页（gold-adjudicate）**：对 v2.2 未命中的 21,257 个
+  gold 字符（`~/tmp/grey_zone/`）尽量自动裁决：回退（v2.1 已给 fix）
+  2,386 默认真错带旧 fix/type；两轮均问均否 8,649 默认噪声（采纳走
+  ≥58/≤2% 抽检门）；门控未见 10,222 不硬判，默认标记导出为规则候选
+  （`action=rule-candidate`，后续落规则引擎由用户运行时命中判断）。
+  裁决 journal 落盘续跑，快捷键 R/N/M，批量按桶默认判。
+  顺手修了 dump_grey.py 的引用错位（多 edit 行内 gold a/b 误取循环变量，
+  影响 8,985 条记录，已重生成分区不变）。
 - **裁决页泛化支持 dataset_v2x 队列**（v2.2 rollout 收尾）：
   `tools/label-adjudicate/serve.py` 数据装载从 `*_v21.jsonl` 泛化为
   `*_v2*.jsonl`（排除 review_queue），版本从文件名尾缀识别并映射
