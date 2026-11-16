@@ -14,7 +14,8 @@
   否则按字符区间与 gold_edits 的重合启发切分，并统计与行计数不一致的行数。
 - 裁决 journal 追加落盘（done 必须落盘续跑——运维教训），重启即恢复。
 
-用法：python3 serve.py [--data-dir ~/tmp/dataset_v21] [--state-dir 同上] [--port 8765]
+用法：python3 serve.py [--data-dir ~/tmp/dataset_v22] [--state-dir 同上] [--port 8765]
+支持 dataset_v2x 任意图本（从文件名尾缀识别，队列现算不信任行级字段）。
 """
 from __future__ import annotations
 
@@ -97,7 +98,8 @@ class Lex:
         return ""
 # 来源：rollout 报告的逐条口径（已更正版）。本工具同定义现算后若与它有小额差，
 # 属共识↔新增边界归属差异（总标注数一致），页面上并排展示不静默。
-REPORT_REF = {"new": 12970, "consensus": 12789}
+REPORT_REF = {"v21": {"new": 12970, "consensus": 12789},   # rollout 更正后逐条口径
+               "v22": {"new": 7376, "consensus": 10156}}  # 片段+第二通道配方
 
 
 def bucket_of(t: str) -> str:
@@ -125,15 +127,18 @@ class Data:
         self.sum_row_new = 0
         self.verdicts: dict[str, dict] = {}
         self.promoted: dict[str, dict] = {}
+        self.report_ref: dict = {}
         self.lock = threading.Lock()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._load()
 
     # ── 装载 ─────────────────────────────────────────────
     def _load(self):
-        files = sorted(self.data_dir.glob("*_v21.jsonl"))
+        files = sorted(f for f in self.data_dir.glob("*_v2*.jsonl") if "review_queue" not in f.name)
         if not files:
-            sys.exit(f"未找到 {self.data_dir}/*_v21.jsonl")
+            sys.exit(f"未找到 {self.data_dir}/*_v2*.jsonl")
+        m = re.search(r"_(v\w+)\.jsonl$", files[0].name)
+        self.report_ref = REPORT_REF.get(m.group(1) if m else "", {})
         for fp in files:
             with open(fp, encoding="utf-8") as f:
                 for line in f:
@@ -322,7 +327,7 @@ class Handler(BaseHTTPRequestHandler):
                 bs = DATA.bucket_stats()
                 return self._send(200, json.dumps({
                     "total_new": len(DATA.items),
-                    "report_ref": REPORT_REF,
+                    "report_ref": DATA.report_ref,
                     "total_labels": len(DATA.items) + DATA.sum_consensus,
                     "sum_row_model_new": DATA.sum_row_new,
                     "rows": DATA.rows_seen,
@@ -386,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global DATA
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", default="~/tmp/dataset_v21")
+    ap.add_argument("--data-dir", default="~/tmp/dataset_v22")
     ap.add_argument("--state-dir", default=None, help="裁决 journal 目录（默认 = data-dir）")
     ap.add_argument("--lexicon", default=str(LEXICON_DEFAULT))
     ap.add_argument("--port", type=int, default=8765)

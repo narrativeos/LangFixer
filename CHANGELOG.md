@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **裁决页泛化支持 dataset_v2x 队列**（v2.2 rollout 收尾）：
+  `tools/label-adjudicate/serve.py` 数据装载从 `*_v21.jsonl` 泛化为
+  `*_v2*.jsonl`（排除 review_queue），版本从文件名尾缀识别并映射
+  `REPORT_REF` 逐条口径参照（v21: 12,970/12,789；v22: 7,376/10,156），
+  默认 `--data-dir` 切到 `~/tmp/dataset_v22`。v22 队列端到端验证：
+  total_new 7,376、labels 17,532、行计数不一致 0，分档 auto 934 /
+  must 849 / audit 5,593；v22 无 fix==原文 缺陷，预筛信号仅剩
+  lex_ok 115 / lex_blind 62（v21 各信号兼容性回归通过）。
 - **路由三臂评测 harness**（EVOLUTION.md §11.12，分支 feat/router-harness）：
   `feature-model/router_labels.py` 在 jev zh_v2 池上产句级路由标签（格式对齐
   池行，配方 = gold∪LLM∪lexical∪采样地板并集，§11.10）；
