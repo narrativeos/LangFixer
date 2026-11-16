@@ -6,6 +6,13 @@
 
 ### 新增
 
+- **分型分层三空白量化实验与方案定案（EVOLUTION §11.14 补二）**：①句内同族多
+  错 61.3%（≥2 错句内，10 型口径）→ 型头定为每型期望计数头 A′+稀型先验 C，
+  非 presence 二值；②must 桶 consistency/cohesion 的 ±6 窗口规则可达性
+  42–52%（span 内仅 17.7%）→ ZEN 轨迹表谓词定为 ±6 窗口式；③规则臂同词典
+  离线复刻实测 recall 0.3%/precision 11.1%，punct 子通道语料毒（需文档标点风
+  格门）→ 规则臂定位坐实为前置扣除层+高敏感事实核查挂钩，EV(t) 以实测小值
+  入收益矩阵。
 - **Cycle 2 收益矩阵消费端（`tools/cycle2-matrix/matrix.py`）**：写侧三本账
   早已在产（detect_history.errors_json 检出+来源层、layers_json 路由决策账、
   feedback_log 全层采纳/拒绝留痕），零 Rust 改动；消费端 join 成按型收益矩阵
