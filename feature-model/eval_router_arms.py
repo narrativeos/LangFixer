@@ -226,6 +226,9 @@ def main() -> None:
                     help="计数头最少正例句数，不足则退稀型先验（常数均值）")
     ap.add_argument("--p-min-n", type=int, default=50,
                     help="p̂(t) 最少可测 span 数，不足则退全体均值先验")
+    ap.add_argument("--ev-uniform-p", action="store_true",
+                    help="router_ev 臂 p̂(t) 全设全体均值常数：归因用——与真 p̂"
+                         "重赛差 = p̂ 分化增益（其余同=计数头贡献，§11.14 补三）")
     ap.add_argument("--rule-subtract", action="store_true",
                     help="规则臂前置扣除：规则定案档（safe 非 advisory）已覆盖的"
                          "编辑从曲线扣除，只评残差；头部报扣除量与提示档打扰账"
@@ -340,6 +343,10 @@ def main() -> None:
         all_p = sum(cov_t.values()) / max(1, sum(tot_t.values()))
         p_hat = {t: (cov_t[t] / tot_t[t] if tot_t[t] >= args.p_min_n else all_p)
                  for t in v2t}
+        if args.ev_uniform_p:
+            p_hat = {t: all_p for t in v2t}
+            print(f"[ev-uniform-p] p̂(t) 全部强制 = {all_p:.3f}（归因对照组）",
+                  file=sys.stderr)
         from sklearn.ensemble import HistGradientBoostingRegressor
         s_ev = np.zeros(len(rows), dtype=np.float64)
         for t in v2t:
