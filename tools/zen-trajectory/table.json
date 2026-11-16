@@ -1,40 +1,38 @@
 {
   "meta": {
-    "version": 1,
+    "version": 2,
     "window": [-6, 6],
-    "semantics": "行命中=谓词在编辑 span 的 ±6 字符窗口内出现 → 该候选句入对应检查通道（路由信号，非判定）；谓词一律 ±6 窗口式（EVOLUTION §11.14 补二实验2 定案：span 内可见仅 17.7%，±6 升至 42–52%）",
-    "anchor": "编辑 span [a,b)；插入编辑 b==a 时窗口锚在 a、fix 文本并入窗口右缘（与补二实验2 同口径）",
-    "source": "must 桶四族（review_queue_new_errors.jsonl consistency/cohesion，§11.14 补二）",
-    "note": "首版=在场谓词（可达性账）；冲突/配对谓词（指代矛盾、不但…而且断对、时序倒挂）在第二版入表，见 rows[].next"
+    "semantics": "kind=present 行=在场信号（首版口径，路由账）；kind=conflict 行=真冲突判定（v2）：锚点必须与窗口内另一token构成冲突证据，不是 mere presence。锚定模式：error-anchored=编辑 span+fix 为锚（must 桶/裁决前筛），standalone=每个 anchor token 为锚（干净语料打扰账）",
+    "anchor": "编辑 span [a,b)；插入编辑 b==a 时窗口锚在 a、fix 文本并入窗口右缘（与补二实验2 同口径）；conj_break 例外取整句 scope（关联词对跨分句是常态，±6 装不下——偏离窗口定案的显式声明）",
+    "source": "must 桶四族（review_queue_new_errors.jsonl consistency/cohesion，§11.14 补二）；v2 谓词=表 rows[].next 挂账落地",
+    "verdict_gate": "打扰账闸门：standalone 命中行占比（干净语料任何冲突谓词命中=送上下文检查）"
   },
   "rows": [
-    {
-      "id": "pron",
-      "family": "代词",
-      "pattern": "[他她它其这那]",
-      "emits": {"channel": "cohesion", "check": "指代一致（同先行语同形代词）"},
-      "next": "v2: 跨句同代词计数≥2 且编辑句内指代存疑 → conflict 谓词"
-    },
-    {
-      "id": "num",
-      "family": "数字",
-      "pattern": "\\d|[一二两三]|第",
-      "emits": {"channel": "consistency", "check": "数量/序号前后一致"},
-      "next": "v2: 邻近窗口同实体数量不等 → conflict 谓词"
-    },
-    {
-      "id": "conj",
-      "family": "关联词",
-      "pattern": "因为|所以|虽然|但是|而且|然而|因此|不但|不仅|并且|可是|不过|于是|则",
-      "emits": {"channel": "cohesion", "check": "关联词配对完整（不但…而且/因为…所以）"},
-      "next": "v2: 前半在场后半 ±N 句缺席 → 断对谓词"
-    },
-    {
-      "id": "time",
-      "family": "时间",
-      "pattern": "\\d+年|当时|以前|后来|曾经",
-      "emits": {"channel": "consistency", "check": "时间线一致"},
-      "next": "v2: 年份单调性/当时-以前 时序倒挂谓词"
-    }
+    {"id": "pron", "family": "代词", "kind": "present", "pattern": "[他她它其这那]",
+     "emits": {"channel": "cohesion", "check": "指代一致（同先行语同形代词）"}, "next": "见 pron_straddle"},
+    {"id": "num", "family": "数字", "kind": "present", "pattern": "\\d|[一二两三]|第",
+     "emits": {"channel": "consistency", "check": "数量/序号前后一致"}, "next": "见 num_samediff"},
+    {"id": "conj", "family": "关联词", "kind": "present", "pattern": "因为|所以|虽然|但是|而且|然而|因此|不但|不仅|并且|可是|不过|于是|则",
+     "emits": {"channel": "cohesion", "check": "关联词配对完整（不但…而且/因为…所以）"}, "next": "见 conj_break"},
+    {"id": "time", "family": "时间", "kind": "present", "pattern": "\\d+年|当时|以前|后来|曾经",
+     "emits": {"channel": "consistency", "check": "时间线一致"}, "next": "见 time_yearpair"},
+
+    {"id": "pron_straddle", "family": "代词", "kind": "conflict", "pred": "straddle_pair",
+     "groups": ["他|她|它|其", "这|那"],
+     "emits": {"channel": "cohesion", "check": "±6 内同组异指代词跨编辑位（他↔她/它、这↔那）"}},
+    {"id": "num_samediff", "family": "数字", "kind": "conflict", "pred": "num_same_unit_diff",
+     "num_re": "(\\d+|[一二三四五六七八九十两])\\s*(年|月|日|号|次|个|岁|人|万|亿|条|项)",
+     "emits": {"channel": "consistency", "check": "±6 内同单位异数值（三年…二年 / 12次…13次）"}},
+    {"id": "conj_break", "family": "关联词", "kind": "conflict", "pred": "conj_pair_break",
+     "pairs": [["因为", "所以|因此"], ["虽然", "但是|但|可是|却"], ["不但|不仅", "而且|也|还|并"],
+               ["如果", "就|那么|则"], ["即使|即便", "也|还"], ["尽管", "但|可是|却"],
+               ["既然", "就|那么|也"], ["无论|不管", "都|也|还"], ["只有", "才"],
+               ["只要", "就"], ["与其", "不如"], ["宁可", "也|都"]],
+     "weak_pairs": [["因为", "所以|因此"], ["如果", "就|那么|则"]],
+     "_note_weak": "v2 首跑打扰账：12对全量 conj_break 干净行命中 7.32%（超闸门）、金标 4.3% 反低于基线=配对缺失是中文常态；weak_pairs=同句合法省略高发的弱义务对，强子集单列考核",
+     "emits": {"channel": "cohesion", "check": "关联词前半在场、配对后半整句缺席（断对）"}},
+    {"id": "time_yearpair", "family": "时间", "kind": "conflict", "pred": "year_pair",
+     "year_re": "(\\d{1,4})\\s*年",
+     "emits": {"channel": "consistency", "check": "±6 内双年份并存（改一留一=日期不一致高发）"}}
   ]
 }

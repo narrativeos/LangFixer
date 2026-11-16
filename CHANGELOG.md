@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **ZEN 轨迹表 v2 冲突谓词（`tools/zen-trajectory/`，EVOLUTION §11.14 补六）**：
+  table.json v2 四冲突谓词（straddle_pair/num_same_unit_diff/year_pair/
+  conj_pair_break 整句 scope）+ 双锚定引擎（error-anchored/standalone）；
+  三段校验定案：冲突谓词不获得独立路由通道（gold 锚定对 clean 基线无 lift、
+  打扰 9.64%/4.75% 超 ≤2% 闸门；仅 year_pair 10× lift 但召回 0.4%），
+  present 证据口径保留且逐位不变；已入 §13 否定表 #13。
 - **ZEN 轨迹表首版（`tools/zen-trajectory/`，EVOLUTION §11.14 补五）**：声明式
   判定表（四族 ±6 窗口谓词→consistency/cohesion 通道）+ 在场命中账引擎，
   逐条轨迹账落盘；must 桶可达性与补二实验2 逐位一致（52.3%/42.4%）；
