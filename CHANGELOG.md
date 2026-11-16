@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **规则通道（rule-channel）**：true-gold 规则候选的消费端四件——
+  规则族谓词（标点惯例自适应/叠用/严式时间/地名共现）、量化器（族×
+  候选召回/点火/已标免问/纯打扰每万字）、运行时命中即问
+  （adjudicate.py --check）、用户判断回写同一本 gold journal（--record，
+  merge 重跑自动吸收）。量化结论：静态规则对 mark 桶只回收 0.6%
+  （主体是漏字/搭配/语序类，规则结构上够不着），定位调整为未来文本
+  的高敏感事实核查要点（打扰 ≤31/万字）；mark 主体留给 rollout 与
+  知识源通道。e2e：命中→回写→merge 吸收（2,386→2,387）验证通过。
 - **v2 级 true gold 合并器**（`tools/true-gold/merge.py`）：true gold =
   共识 ∪ 已采纳模型新增 ∪ 金集真错，噪声/reject 进 excluded，门控未见
   进规则通道（rule-candidates 带 ctx，运行时命中由用户判断，判断回流
