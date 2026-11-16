@@ -86,9 +86,17 @@ def main() -> None:
     if not os.environ.get("LLM_BASE_URL") or not os.environ.get("LLM_MODEL"):
         sys.exit("需 LLM_BASE_URL / LLM_MODEL（/ LLM_API_KEY）环境变量")
 
+    # 落盘集=测量面全量（含 done/seed 回填）：中途被杀后重启，_dump_cache 不再
+    # 把 .expand 截成只含本轮增量（2026-11-16 实踩：kill 后旧成果仅剩内存副本）
+    face_rows = [r for r in pool if r["text"] in gc_texts]
+    if a.limit:
+        allow = {r["id"] for r in todo}
+        face_rows = [r for r in face_rows
+                     if r["id"] in allow or r["id"] in done or r["id"] in seed_new]
+
     t0 = time.time()
-    got = RL.run_llm_arm(todo, len(todo), str(expand_p),
-                         seed_out=seed_new, workers=a.workers)
+    got = RL.run_llm_arm(face_rows, len(face_rows), str(expand_p),
+                         seed_out={**done, **seed_new}, workers=a.workers)
     merged = dict(done)
     merged.update({k: v for k, v in got.items() if k not in done})
     tmp = str(cache_p) + ".merged.tmp"
@@ -103,7 +111,7 @@ def main() -> None:
         expand_p.unlink()
     n_face_after = sum(1 for r in pool
                        if r["text"] in gc_texts and r["id"] in merged)
-    print(f"[expand] 本轮新增 {len(got) - len(seed_new):,} 行，耗时 "
+    print(f"[expand] 本轮新增 {len(got) - len(done) - len(seed_new):,} 行，耗时 "
           f"{(time.time() - t0) / 60:.0f} 分钟；测量面覆盖 {n_face_after}/{n_face}"
           f"（{n_face_after / max(1, n_face):.1%}）→ {cache_p}")
     print("[expand] 重出 p̂/router_ev 见本文件 docstring 尾部命令。")
