@@ -1316,6 +1316,18 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 - 产物：`tools/type-layer-experiments/{rule_offline.py,rule_probe.py}`、
   `~/tmp/true_gold/{rule_probe.json, eval_router_ev_cache_rulesub.txt}`。
 
+**补五：归因分账与 ZEN 轨迹表首版（同日）**：
+
+- **归因（--ev-uniform-p）**：p̂(t) 全设全体均值常数重赛，锚点与真 p̂ 逐位同
+  （均 54.6%）→ 补三胜利 **100% 由计数头贡献，p̂ 分化增益当前为 0**（测量面
+  饥饿：grammar/spelling 两型真 p̂ 与先验差不到 0.08）；夜跑收齐后重赛修正。
+- **ZEN 轨迹表首版（tools/zen-trajectory/）**：table.json 声明行（四族→
+  ±6 窗口谓词→通道）+ trajectory.py 只做在场命中账，落逐条轨迹账
+  `{id,src,span,fires,span_visible}`；must 桶复算与补二实验2 逐位一致
+  （consistency 243 可达 52.3%，cohesion 509 可达 42.4%，span 内均 17.7%）。
+  首版=路由信号非冲突判定；v2 谓词（指代矛盾/关联词断对/年份时序）在
+  rows[].next 挂账；打扰率 ≤2% 闸门待生产接线后实测。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/

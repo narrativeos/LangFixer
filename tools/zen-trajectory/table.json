@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "version": 1,
+    "window": [-6, 6],
+    "semantics": "行命中=谓词在编辑 span 的 ±6 字符窗口内出现 → 该候选句入对应检查通道（路由信号，非判定）；谓词一律 ±6 窗口式（EVOLUTION §11.14 补二实验2 定案：span 内可见仅 17.7%，±6 升至 42–52%）",
+    "anchor": "编辑 span [a,b)；插入编辑 b==a 时窗口锚在 a、fix 文本并入窗口右缘（与补二实验2 同口径）",
+    "source": "must 桶四族（review_queue_new_errors.jsonl consistency/cohesion，§11.14 补二）",
+    "note": "首版=在场谓词（可达性账）；冲突/配对谓词（指代矛盾、不但…而且断对、时序倒挂）在第二版入表，见 rows[].next"
+  },
+  "rows": [
+    {
+      "id": "pron",
+      "family": "代词",
+      "pattern": "[他她它其这那]",
+      "emits": {"channel": "cohesion", "check": "指代一致（同先行语同形代词）"},
+      "next": "v2: 跨句同代词计数≥2 且编辑句内指代存疑 → conflict 谓词"
+    },
+    {
+      "id": "num",
+      "family": "数字",
+      "pattern": "\\d|[一二两三]|第",
+      "emits": {"channel": "consistency", "check": "数量/序号前后一致"},
+      "next": "v2: 邻近窗口同实体数量不等 → conflict 谓词"
+    },
+    {
+      "id": "conj",
+      "family": "关联词",
+      "pattern": "因为|所以|虽然|但是|而且|然而|因此|不但|不仅|并且|可是|不过|于是|则",
+      "emits": {"channel": "cohesion", "check": "关联词配对完整（不但…而且/因为…所以）"},
+      "next": "v2: 前半在场后半 ±N 句缺席 → 断对谓词"
+    },
+    {
+      "id": "time",
+      "family": "时间",
+      "pattern": "\\d+年|当时|以前|后来|曾经",
+      "emits": {"channel": "consistency", "check": "时间线一致"},
+      "next": "v2: 年份单调性/当时-以前 时序倒挂谓词"
+    }
+  ]
+}

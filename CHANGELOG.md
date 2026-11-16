@@ -6,6 +6,10 @@
 
 ### 新增
 
+- **ZEN 轨迹表首版（`tools/zen-trajectory/`，EVOLUTION §11.14 补五）**：声明式
+  判定表（四族 ±6 窗口谓词→consistency/cohesion 通道）+ 在场命中账引擎，
+  逐条轨迹账落盘；must 桶可达性与补二实验2 逐位一致（52.3%/42.4%）；
+  v2 冲突谓词已在表内挂账。
 - **规则臂前置扣除入账（EVOLUTION §11.14 补四）**：`rule_offline.py` 单一
   台账复刻（含 punct 文档风格门，语料毒账 7,587→1,219，punct 通道精度
   0.03%→9.5%）+ `rule_probe.py` 离线 EV（recall 0.3%/precision 10.5%，定案
