@@ -1285,6 +1285,37 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 - 产物：~/tmp/true_gold/{gold_counts.jsonl, eval_router_ev_cache.txt,
   eval_router_ev_oracle.txt}。
 
+**补四：规则臂前置扣除入 cycle2-matrix（同日）**：
+
+- 机件三件套：① `rule_offline.py` 单一台账复刻（experiments 补二锚点与探针
+  共用；punct_mode legacy|gated，gated=文档标点风格门全角占比≥0.5）；
+  ② `rule_probe.py` 离线 EV → `~/tmp/true_gold/rule_probe.json`；
+  ③ matrix.py 分臂（矩阵键 arm/type；whitelist/yield 只出自 llm 臂，规则臂
+  入矩阵不出白名单不算 yield，打扰账由离线 EV 嵌入 `rule_arm_offline`）；
+  ④ eval `--rule-subtract`（规则定案档 safe 非 advisory 命中的编辑从曲线扣除
+  只评残差；提示档打扰账入报告头）。不带 flag 时三臂与补三锚点逐位一致。
+- **风格门纠偏（补二预期写反了一处）**：实测 22,456 docs 中 91% 过门（门开），
+  legacy punct 7,587 命中中 84% 来自被门挡掉的 9% 半角风格文档——语料毒在
+  门外不在门内；门后 punct 通道精度 2/7,587（0.03%）→ ~9.5%。
+- 离线 EV（dataset_v22 全量）：recall vs 原始金 88/33,357=**0.3%**；
+  precision vs true_gold 207/1,977=**10.5%**；定案档打扰 6.4 字符/万字，
+  提示档 10.3；TP 分型 typo 122/grammar 52/punct 27/cohesion 4/consistency 2。
+- matrix 分臂实跑（dev 库）：规则臂检出 grammar 926/punctuation 533/
+  spelling 64/anomaly 8/word_order 5，反馈 6 条（anomaly adopt×2、
+  grammar/punct reject×6）——旧版 `source='llm'` 过滤把规则臂反馈全部隐藏，
+  分臂后首次入账。
+- **残差曲线结论（已验证子集 398 句，gold 621）**：规则定案扣除仅 **1/621
+  编辑（0.2%）**≈探针下界；提示档打扰 13.5 字符/万字、∩金标 1/29=3.4%；
+  残差锚点 router_ev 54.5% PASS（=全量−0.1，分层 FAIL 3 不变）。
+  → 规则臂前置扣除的**预算节省≈ 0**：它挣的不是预算而是零成本确定性（免
+  端点依赖、免打扰用户）+高敏感事实核查挂钩；真正吃 LLM 预算的是 advisory
+  灰区（转弃权）——打扰账自此在报告头常驻。价值主张从「省预算」改校为
+  「免费定案+挂钩」，路由预算分配不受它影响。
+- 回归：不带 flag 三臂逐位=补三锚点；p̂ 测量面随夜跑分批合并 611→791 行，
+  锚点未动（胜利仍由计数头主导，p̂ 分化增益待夜跑收齐后重赛归因）。
+- 产物：`tools/type-layer-experiments/{rule_offline.py,rule_probe.py}`、
+  `~/tmp/true_gold/{rule_probe.json, eval_router_ev_cache_rulesub.txt}`。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/

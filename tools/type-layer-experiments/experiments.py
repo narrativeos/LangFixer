@@ -1,4 +1,4 @@
-import json, re, collections, os
+import json, re, collections, os, sys
 
 HOME = os.path.expanduser("~")
 V22 = f"{HOME}/tmp/dataset_v22"
@@ -75,52 +75,8 @@ for t in ("consistency","cohesion"):
     print("   span命中分族:", dict(fams))
 
 print("="*30, "实验3: 规则臂下界（confusables+punct+anomaly, 同一本lexicon）")
-CONF = []
-for e in LEX["confusables"]:
-    if isinstance(e, dict):
-        CONF.append((e["wrong"], e["right"], e.get("condition", {})))
-    else:
-        CONF.append((e[0], e[1], None))
-PMAP = {p[0]: p[1] for p in LEX["punct_map"]}
-ANOM = [p for r in LEX["rules"] if r.get("category")=="anomaly" for p in r.get("patterns",[])]
-ANOM = [(re.compile(p["pattern"]), p.get("strong", False)) for p in ANOM]
-CJK = lambda ch: "\u4e00" <= ch <= "\u9fff"
-
-def rule_hits(src):
-    hits = []  # (a,b,kind)
-    for wrong, right, cond in CONF:
-        start = 0
-        while True:
-            i = src.find(wrong, start)
-            if i < 0: break
-            ok = True
-            if cond:
-                if "context_regex" in cond:
-                    win = src[max(0,i-2): i+len(wrong)+2]
-                    ok = re.search(cond["context_regex"], win) is not None
-                if ok and "next_text" in cond:
-                    j = i + len(wrong)
-                    ok = j < len(src) and src[j] in cond["next_text"]
-            if ok: hits.append((i, i+len(wrong), "conf"))
-            start = i + 1
-    for i, ch in enumerate(src):
-        if ch in PMAP and ((i>0 and CJK(src[i-1])) or (i+1<len(src) and CJK(src[i+1]))):
-            hits.append((i, i+1, "punct"))
-    # anomaly: sentence split, terminator included
-    sents = []; s = 0
-    for i, ch in enumerate(src):
-        if ch in "。！？!?\n":
-            sents.append((s, i+1)); s = i+1
-    if s < len(src): sents.append((s, len(src)))
-    for a, b in sents:
-        seg = src[a:b].lstrip()
-        if seg and seg[0] in "「『“\"'《【(" : continue  # in-quote guard (approx)
-        best = None
-        for pat, strong in ANOM:
-            if pat.search(seg): best = strong; break
-        if best is not None:
-            hits.append((a + src[a:b].find(seg), b, "anomaly"))
-    return hits
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rule_offline import rule_hits   # 同一本 lexicon 的唯一复刻（legacy punct 口径）
 
 # true_gold chars per id for precision
 tgold_chars = collections.defaultdict(set)
@@ -153,7 +109,7 @@ for r in v22_rows():
         t = tg_type.get(r["id"], {}).get(x, "?"); by_type[t][1] += 1
     hits = rule_hits(src)
     hitc = set()
-    for a, b, kind in hits:
+    for a, b, kind, tier in hits:
         comp_stats[kind]["total"] += b - a
         hitc.update(range(a, b))
         for x in range(a, b):
@@ -174,7 +130,7 @@ for r in v22_rows():
     goldc=set()
     for e in r["gold_edits"]: goldc.update(range(e["a"],e["b"]))
     hc=set()
-    for a,b,k in rule_hits(src): hc.update(range(a,b))
+    for a,b,k,_t in rule_hits(src): hc.update(range(a,b))
     gold_hit[r["_set"]] += len(goldc & hc)
 for st in sorted(set(k for k in rec_chars if k!="ALL")):
     if rec_chars[st]:

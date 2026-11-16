@@ -122,9 +122,11 @@ def load_eval(name: str) -> list[dict]:
             typ, edits = None, []
         hits = correct.find_zh_hits(src)
         safe = [h for h in hits if not getattr(h, "advisory", False)]
+        adv = [h for h in hits if getattr(h, "advisory", False)]
         cover_rule = [any(h.span[0] <= ce[1] and ce[0] <= h.span[1] for h in safe)
                       for ce in edits]
         rows.append({"text": src, "edits": edits, "cover_rule": cover_rule,
+                     "adv_spans": [h.span for h in adv],
                      "type": typ if edits else typ, "src_name": name})
     return rows
 
@@ -224,6 +226,10 @@ def main() -> None:
                     help="计数头最少正例句数，不足则退稀型先验（常数均值）")
     ap.add_argument("--p-min-n", type=int, default=50,
                     help="p̂(t) 最少可测 span 数，不足则退全体均值先验")
+    ap.add_argument("--rule-subtract", action="store_true",
+                    help="规则臂前置扣除：规则定案档（safe 非 advisory）已覆盖的"
+                         "编辑从曲线扣除，只评残差；头部报扣除量与提示档打扰账"
+                         "（§11.14 补四）")
     ap.add_argument("--include-inpool", action="store_true",
                     help="含训练池内评测句（污染绝对值 optimistic；仅看横向对照时用）")
     ap.add_argument("--nproc", type=int, default=8)
@@ -365,8 +371,30 @@ def main() -> None:
         print(f"WARN 已验证子集口径：{len(rows)}/{n_all} 句（其余行 LLM 臂未查实，不入曲线）",
               file=sys.stderr)
     grid = [float(x) for x in args.grid.split(",")]
+
+    # ── 规则前置扣除口径（§11.14 补四）：残差过滤 + 打扰账 ──
+    resid = None
+    resid_note = ""
+    if args.rule_subtract:
+        resid = lambda r, j: not r["cover_rule"][j]
+        n_edits = sum(len(r["edits"]) for r in rows)
+        n_sub = sum(sum(r["cover_rule"]) for r in rows)
+        adv_chars = adv_gold = 0
+        for r in rows:
+            goldc = {c for a, b in r["edits"] for c in range(a, max(b, a + 1))}
+            for s, e in r["adv_spans"]:
+                adv_chars += e - s
+                adv_gold += len(goldc & set(range(s, e)))
+        resid_note = (f"残差曲线：已扣规则定案 {n_sub}/{n_edits} 编辑"
+                      f"（{n_sub / max(1, n_edits):.1%}）；提示档（advisory）打扰 "
+                      f"{1e4 * adv_chars / max(1, sum(len(r['text']) for r in rows)):.1f}"
+                      f" 字符/万字，∩金标 "
+                      f"{adv_gold}/{adv_chars}={adv_gold / max(1, adv_chars):.1%}")
+
     gold_types = sorted({r["type"] for r in rows if r["edits"] and r["type"]})
-    type_gold = {t: sum(len(r["edits"]) for r in rows if r["edits"] and r["type"] == t)
+    type_gold = {t: sum(1 for r in rows if r["type"] == t
+                        for j in range(len(r["edits"]))
+                        if (resid is None or resid(r, j)))
                  for t in gold_types}
 
     # ── 报告 ──
@@ -380,9 +408,12 @@ def main() -> None:
           f"{'（含池内）' if args.include_inpool else ''} |")
     print(f"| LLM 检出口径 | {'oracle 上限（三臂同假设，横向可比）' if oracle else '真实缓存 ' + args.llm_cache} |")
     print(f"| 路由臂地板 | {'每 ' + str(args.floor_every) + ' 句强制复查' if args.floor_every else '关'} |")
-    print(f"| 基准锚点 | HistGB 生产门控 {ANCHOR}% 调用率（§11.10） |\n")
+    print(f"| 基准锚点 | HistGB 生产门控 {ANCHOR}% 调用率（§11.10） |")
+    if args.rule_subtract:
+        print(f"| 规则前置扣除 | {resid_note} |")
+    print()
 
-    print("## 金标分层")
+    print("## 金标分层" + ("（残差：已扣规则定案覆盖）" if resid else ""))
     print("| 类型 | gold 编辑 | 判定 |")
     print("|---|---|---|")
     for t, c in sorted(type_gold.items(), key=lambda x: -x[1]):
@@ -398,7 +429,7 @@ def main() -> None:
             reviewed = arm_indices(sc, rate, random.Random(args.seed),
                                    args.floor_every if arm == "router" else 0)
             eff = 100.0 * len(reviewed) / len(rows)
-            cov, tot = recall_at(rows, reviewed, oracle, llm)
+            cov, tot = recall_at(rows, reviewed, oracle, llm, edit_filter=resid)
             out[arm] = (cov, tot, eff)
         return out
 
@@ -445,7 +476,8 @@ def main() -> None:
         rr = []
         for arm in arms_all:
             cov, tot = recall_at(rows, reviewed_of(arm, ANCHOR), oracle, llm,
-                                 edit_filter=lambda r, j, t=t: r["type"] == t)
+                                 edit_filter=lambda r, j, t=t: r["type"] == t
+                                 and (resid is None or resid(r, j)))
             rr.append(cov / max(1, tot))
         if type_gold[t] < args.min_gold:
             verdict = f"金标 {type_gold[t]} < {args.min_gold}，跳过"

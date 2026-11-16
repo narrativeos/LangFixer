@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **规则臂前置扣除入账（EVOLUTION §11.14 补四）**：`rule_offline.py` 单一
+  台账复刻（含 punct 文档风格门，语料毒账 7,587→1,219，punct 通道精度
+  0.03%→9.5%）+ `rule_probe.py` 离线 EV（recall 0.3%/precision 10.5%，定案
+  打扰 6.4/万字）；cycle2-matrix 分臂（whitelist/yield 只出自 llm 臂；dev 库
+  规则臂反馈 6 条首次入账）；eval `--rule-subtract` 残差曲线：扣除仅 0.2%，
+  规则臂价值定调=免费定案+事实核查挂钩而非预算节省。
 - **路由第四臂 router_ev（方案 A′ 落地，EVOLUTION §11.14 补三）**：每型 Poisson
   计数头（蒸馏 gold_counts 型多重集）× p̂(t) 求和打分；缓存口径锚点总体
   **PASS**（54.6% vs router 44.6/histgb 40.9/random 48.6，非 oracle 首次）；
