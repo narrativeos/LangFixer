@@ -1345,6 +1345,36 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
   §11.14 补四出口）。收紧过程如实入账：conj 弱/强拆是对打扰账的第一轮响应，
   拆后仍不过闸即判死，不再调参找绿灯。
 
+**补七：夜跑收工——p̂ 测量面 96.2%，归因终版定账（2026-11-17，工具链
+`tools/tonight-queue/{run_tonight.sh,run_recovery.sh}`）**：
+
+- **测量面补齐**：train LLM 缓存扩容两轮夜跑（本机 vLLM Qwen3.8 tp4）：第一轮
+  +2,159 行（429 限流失败 2,248）、第二轮回收 +1,033 行（超时失败 193）——
+  611→**4,877/5,070（96.2%）**，缓存 5,466 行。断点修复（.expand 落盘集=
+  测量面全量自包含集）经两次中断实踩验证：第二轮 seed 3,844 完整续跑，
+  零丢失（对照 11-16 旧逻辑 kill 丢 1,644 行）。剩余 193 行不追：v2(75.8%)→
+  v3(96.2%) 锚点仅动 0.1pp，结论已收敛。
+- **归因修正（补五欠账清偿）**：eval 侧 p̂ 测量 4,917 行后重赛两遍——真 p̂
+  锚点 router_ev **55.2% PASS**，uniform-p 对照 **54.6%** → **p̂ 分化增益 =
+  +0.6pp**（补五「增益当前为 0」修正为「+0.6pp」）；计数头增益 +10.0pp
+  （54.6−44.6）仍为主体（router_ev 总增量 +10.6 中约 94% 是计数头）。
+  锚点 histgb 40.9 / random 48.6 / router 44.6 逐位未动；分层 FAIL 仍 3
+  （blend/redundant/spelling 小 cells）。
+- **p̂(t) 终版分型表（attribute_p 分侧，全体先验 0.916）**：grammar 0.955 /
+  spelling 0.934 / reference 0.932（先验转正）/ punct 0.908 / logic 0.859 /
+  missing 0.764 / blend 0.721 / collocation 0.683 / redundant 0.559（⚠先验，
+  span 34 不足）/ **word_order 0.550（门盲侧 0.000）**。→ **wo_exempt 退役
+  判定坐实**：p̂(word_order) 显著低于先验，EV 已自动降权，标签侧开关无必要
+  （与 §13#12 同向）。p̂ 对总分的直接贡献虽小（+0.6pp），其价值兑现点在
+  **分型侧定权**而非总体曲线。
+- **v2.3 rollout 收账**：共识 9,202 · 新增 6,733（队列待抽检）· 漏标 22,313 ·
+  自动判无需处理 4,718；类型分布 grammar 36,780 / typo 26,547 / cohesion 5,301 /
+  punct 5,033 / consistency 1,720 / fact 405；产物 `~/tmp/dataset_v23/`（9 集
+  + `review_queue_new_errors.jsonl`）。
+- 产物：`~/tmp/true_gold/{eval_router_ev_cache_v3.txt, eval_router_ev_uniformp_v3.txt,
+  p_attribution_v3.txt}`；复现 `feature-model/eval_router_arms.py`（docstring 尾部
+  命令）+ `tools/type-layer-experiments/attribute_p.py`。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/

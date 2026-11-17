@@ -6,6 +6,13 @@
 
 ### 新增
 
+- **router_ev 归因终版定账（`tools/tonight-queue/`，EVOLUTION §11.14 补七）**：
+  train LLM 缓存扩容夜跑把 p̂ 测量面从 611 行补到 4,877/5,070（96.2%，缓存
+  5,466 行；`.expand` 自包含落盘经两次中断零丢失）；`_v3` 终版重赛：真 p̂
+  锚点 router_ev 55.2% PASS / uniform-p 对照 54.6% → p̂ 分化增益 0→**+0.6pp**，
+  计数头 +10.0pp 仍为主体；p̂(word_order)=0.550 显著低于先验 0.916 →
+  **wo_exempt 退役判定坐实**；v2.3 rollout 收账（共识 9,202/新增 6,733/
+  漏标 22,313）入 `~/tmp/dataset_v23/`。
 - **ZEN 轨迹表 v2 冲突谓词（`tools/zen-trajectory/`，EVOLUTION §11.14 补六）**：
   table.json v2 四冲突谓词（straddle_pair/num_same_unit_diff/year_pair/
   conj_pair_break 整句 scope）+ 双锚定引擎（error-anchored/standalone）；
