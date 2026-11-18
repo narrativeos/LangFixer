@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // 知识源导入向导：登记源 → 逐块挖掘（轮询进度）→ 草稿审阅 → 归并预览 → 一键发布
-import { reactive, ref, watch, onBeforeUnmount } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, reactive, ref, watch, onBeforeUnmount } from 'vue'
 import { errMsg } from '../lib/err'
+import { errorTypeLabel } from '../lib/labels'
+import { LButton, LCheckbox, LDialog, LPopover, LProgress, LSelect, LTable, LTag, toast } from '../ui'
 import { api } from '../api/client'
 import type {
   ApplyReport,
@@ -24,6 +25,12 @@ const busy = ref(false)
 const error = ref('')
 const llmEnabled = ref(false)
 
+// 紧凑编号步骤条（无 EP steps；点已完成的步骤可返回）
+const stepLabels = ['登记源', '逐块挖掘', '草稿审阅', '一键发布', '完成']
+function goStep(i: number) {
+  if (i >= 1 && i < step.value && step.value < 4) step.value = i
+}
+
 // ---- 步骤①：登记源 ----
 const form = reactive({
   source_id: '',
@@ -34,6 +41,17 @@ const form = reactive({
   license_scope: 'internal_test',
   text: '',
 })
+
+const langOptions = [
+  { value: 'en', label: 'en' },
+  { value: 'zh', label: 'zh' },
+  { value: 'ja', label: 'ja' },
+]
+const licenseOptions = [
+  { value: 'internal_test', label: 'internal_test（仅内部测试）' },
+  { value: 'licensed', label: 'licensed（授权）' },
+  { value: 'public', label: 'public（公开）' },
+]
 
 // 书本文件上传（epub/docx/pdf 等二进制；txt/md 仍走正文文本框）
 const fileData = ref<{ name: string; data: Uint8Array } | null>(null)
@@ -60,6 +78,50 @@ let rulesTimer: number | undefined
 // ---- 步骤⑤：发布 ----
 const token = ref('')
 const report = ref<ApplyReport | null>(null)
+
+const progress = computed(() =>
+  session.value && session.value.chunks_total
+    ? session.value.chunks_done / session.value.chunks_total
+    : 0,
+)
+
+// LTable 列定义（slot 覆盖的列 key 不必对应行字段）
+const draftColumns = [
+  { key: 'seq', label: '#', width: '50px' },
+  { key: 'action', label: '归并预判', width: '200px' },
+  { key: 'error_type', label: '错误类型', width: '110px' },
+  { key: 'title', label: '标题' },
+  { key: 'cefr', label: 'CEFR', width: '70px' },
+  { key: 'location', label: '出处', width: '150px' },
+]
+const ruleDraftColumns = [
+  { key: 'rule_id', label: '规则行 ID', width: '190px' },
+  { key: 'attribution', label: '归因', width: '150px' },
+  { key: 'cefr', label: 'CEFR', width: '70px' },
+  { key: 'remedial', label: '讲解' },
+]
+const newPointColumns = [
+  { key: 'point_id', label: '新点 ID', width: '140px' },
+  { key: 'error_type', label: '错误类型', width: '120px' },
+  { key: 'title', label: '标题' },
+  { key: 'cefr', label: 'CEFR', width: '70px' },
+]
+const rulePlanColumns = [
+  { key: 'rule_id', label: '规则行 ID', width: '200px' },
+  { key: 'action', label: '动作', width: '110px' },
+  { key: 'content', label: '内容' },
+]
+
+const actionTone: Record<string, 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  endorse: 'ok',
+  create: 'warn',
+  covered: 'neutral',
+}
+const ruleActionTone: Record<string, 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  new: 'ok',
+  replace: 'warn',
+  conflict: 'neutral',
+}
 
 function stopPolling() {
   if (pollTimer !== undefined) {
@@ -167,6 +229,12 @@ function clearFile() {
 
 function toggleAllChapters(all: boolean) {
   selectedChapters.value = all ? (preview.value?.chapters ?? []).map((c) => c.index) : []
+}
+
+function toggleChapter(idx: number) {
+  const i = selectedChapters.value.indexOf(idx)
+  if (i >= 0) selectedChapters.value.splice(i, 1)
+  else selectedChapters.value.push(idx)
 }
 
 async function startIngest() {
@@ -285,7 +353,7 @@ async function publish() {
     report.value = await api.publishIngest(sourceId.value, token.value || undefined)
     step.value = 4
     emit('published')
-    ElMessage.success(`知识源 ${report.value.source_id} 已发布，归因富化即时生效`)
+    toast(`知识源 ${report.value.source_id} 已发布，归因富化即时生效`, 'ok')
   } catch (e) {
     error.value = errMsg(e)
   } finally {
@@ -293,20 +361,12 @@ async function publish() {
   }
 }
 
-async function discard() {
-  try {
-    await ElMessageBox.confirm(
-      '放弃后草稿全部丢弃（生效知识库不受影响），可重新导入。',
-      `放弃导入会话 ${sourceId.value}？`,
-      { type: 'warning', confirmButtonText: '放弃会话', cancelButtonText: '返回' },
-    )
-  } catch {
-    return
-  }
+// 放弃会话：LPopover 行内确认（对话框配额外）
+async function doDiscard() {
   stopPolling()
   try {
     await api.discardIngest(sourceId.value)
-    ElMessage.info('导入会话已放弃')
+    toast('导入会话已放弃', 'info')
     emit('update:modelValue', false)
   } catch (e) {
     error.value = errMsg(e)
@@ -322,6 +382,11 @@ const statusLabel: Record<string, string> = {
   mined: '挖掘完成（待审阅）',
   failed: '已中断（熔断/重启）',
 }
+const statusTone: Record<string, 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  running: 'neutral',
+  mined: 'ok',
+  failed: 'danger',
+}
 const actionLabel: Record<string, string> = {
   endorse: '背书既有点',
   create: '新概念 → 造新点',
@@ -330,100 +395,108 @@ const actionLabel: Record<string, string> = {
 </script>
 
 <template>
-  <el-dialog
-    :model-value="modelValue"
+  <LDialog
+    :visible="modelValue"
     title="导入知识源（语法书 → 知识库）"
-    width="880px"
-    :close-on-click-modal="false"
-    @update:model-value="emit('update:modelValue', $event)"
+    width="min(880px, calc(100vw - 48px))"
+    @update:visible="emit('update:modelValue', $event)"
   >
-    <el-steps :active="step" finish-status="success" align-center class="steps">
-      <el-step title="登记源" />
-      <el-step title="逐块挖掘" />
-      <el-step title="草稿审阅" />
-      <el-step title="一键发布" />
-      <el-step title="完成" />
-    </el-steps>
+    <ol class="steps">
+      <li v-for="(label, i) in stepLabels" :key="label" class="step">
+        <button
+          type="button"
+          class="step-btn"
+          :class="{ 'is-done': i < step, 'is-active': i === step }"
+          :disabled="!(i >= 1 && i < step && step < 4)"
+          :aria-current="i === step ? 'step' : undefined"
+          @click="goStep(i)"
+        >
+          <span class="step-num">{{ i + 1 }}</span>{{ label }}
+        </button>
+      </li>
+    </ol>
 
-    <el-alert v-if="error" type="error" :closable="false" :title="error" class="w-alert" />
-    <el-alert
-      v-if="step === 0 && !llmEnabled"
-      type="warning"
-      :closable="false"
-      show-icon
-      title="LLM 未配置：知识源挖掘由内置 agent 执行，请先在「设置」中配置 LLM"
-      class="w-alert"
-    />
+    <div v-if="error" class="w-alert">{{ error }}</div>
+    <div v-if="step === 0 && !llmEnabled" class="l-banner w-alert">
+      LLM 未配置：知识源挖掘由内置 agent 执行，请先在「设置」中配置 LLM
+    </div>
 
     <!-- ① 登记源 -->
     <div v-if="step === 0" class="w-body">
-      <el-form label-width="90px" @submit.prevent>
-        <el-form-item label="书名" required>
-          <el-input v-model="form.title" placeholder="如：英语语法指南（第三版）" />
-        </el-form-item>
-        <el-form-item label="源 ID" required>
-          <el-input v-model="form.source_id" placeholder="如：src-mybook-v3（小写字母/数字/-/_）" />
-        </el-form-item>
-        <el-form-item label="作者 / 版次">
-          <el-input v-model="form.author" placeholder="作者" style="width: 220px" />
-          <el-input v-model="form.edition" placeholder="版次" style="width: 180px; margin-left: 8px" />
-        </el-form-item>
-        <el-form-item label="语言 / 许可">
-          <el-select v-model="form.lang" style="width: 90px">
-            <el-option label="en" value="en" />
-            <el-option label="zh" value="zh" />
-            <el-option label="ja" value="ja" />
-          </el-select>
-          <el-select v-model="form.license_scope" style="width: 180px; margin-left: 8px">
-            <el-option value="internal_test" label="internal_test（仅内部测试）" />
-            <el-option value="licensed" label="licensed（授权）" />
-            <el-option value="public" label="public（公开）" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="正文">
-          <div class="text-col">
-            <input type="file" accept=".epub,.txt,.md,.markdown,.docx,.pdf,.text" @change="onFile" />
-            <el-input
-              v-model="form.text"
-              type="textarea"
-              :rows="8"
-              placeholder="上传 .epub/.docx/.pdf/.txt/.md 书本文件（自动解析章节），或粘贴纯文本正文（分块后逐块交给内置 agent 挖掘）"
+      <form class="w-form" @submit.prevent>
+        <div class="field">
+          <span class="field-label" title="必填">书名 *</span>
+          <LInput v-model="form.title" placeholder="如：英语语法指南（第三版）" />
+        </div>
+        <div class="field">
+          <span class="field-label" title="必填">源 ID *</span>
+          <LInput v-model="form.source_id" placeholder="如：src-mybook-v3（小写字母/数字/-/_）" />
+        </div>
+        <div class="field">
+          <span class="field-label">作者 / 版次</span>
+          <span class="field-row">
+            <LInput v-model="form.author" placeholder="作者" />
+            <LInput v-model="form.edition" placeholder="版次" />
+          </span>
+        </div>
+        <div class="field">
+          <span class="field-label">语言 / 许可</span>
+          <span class="field-row">
+            <LSelect
+              class="fld-lang"
+              :model-value="form.lang"
+              :options="langOptions"
+              @update:model-value="form.lang = String($event)"
             />
-          </div>
-        </el-form-item>
-      </el-form>
+            <LSelect
+              :model-value="form.license_scope"
+              :options="licenseOptions"
+              @update:model-value="form.license_scope = String($event)"
+            />
+          </span>
+        </div>
+        <div class="field field--top">
+          <span class="field-label">正文</span>
+          <span class="text-col">
+            <input type="file" accept=".epub,.txt,.md,.markdown,.docx,.pdf,.text" class="file-input" @change="onFile" />
+            <textarea
+              v-model="form.text"
+              class="l-input l-textarea"
+              rows="8"
+              placeholder="上传 .epub/.docx/.pdf/.txt/.md 书本文件（自动解析章节），或粘贴纯文本正文（分块后逐块交给内置 agent 挖掘）"
+            ></textarea>
+          </span>
+        </div>
+      </form>
       <div v-if="preview" class="doc-preview">
         <p class="w-title">
           解析预览：{{ preview.title }}
-          <el-tag size="small">{{ preview.format }}</el-tag>
-          <el-tag size="small" type="info">{{ preview.chapters.length }} 章 · {{ preview.char_count }} 字</el-tag>
-          <el-button size="small" link type="danger" @click="clearFile">移除文件</el-button>
+          <LTag>{{ preview.format }}</LTag>
+          <LTag>{{ preview.chapters.length }} 章 · {{ preview.char_count }} 字</LTag>
+          <LButton size="sm" variant="ghost" @click="clearFile">移除文件</LButton>
         </p>
-        <el-alert
-          v-for="(w, i) in preview.warnings"
-          :key="i"
-          type="warning"
-          :closable="false"
-          :title="w"
-          class="w-alert"
-        />
+        <div v-for="(w, i) in preview.warnings" :key="i" class="l-banner w-alert">{{ w }}</div>
         <p class="sub">
           勾选参与导入的章节（默认全选；试跑可只勾前几章控制成本）
-          <el-button size="small" link type="primary" @click="toggleAllChapters(true)">全选</el-button>
-          <el-button size="small" link type="primary" @click="toggleAllChapters(false)">清空</el-button>
+          <LButton size="sm" variant="ghost" @click="toggleAllChapters(true)">全选</LButton>
+          <LButton size="sm" variant="ghost" @click="toggleAllChapters(false)">清空</LButton>
         </p>
-        <el-checkbox-group v-model="selectedChapters" class="chapter-grid">
-          <el-checkbox v-for="c in preview.chapters" :key="c.index" :value="c.index">
-            #{{ c.index }} {{ c.heading || '（无标题）' }} · {{ c.chars }} 字
-          </el-checkbox>
-        </el-checkbox-group>
+        <div class="chapter-grid">
+          <LCheckbox
+            v-for="c in preview.chapters"
+            :key="c.index"
+            :model-value="selectedChapters.includes(c.index)"
+            :label="`#${c.index} ${c.heading || '（无标题）'} · ${c.chars} 字`"
+            @update:model-value="toggleChapter(c.index)"
+          />
+        </div>
       </div>
-      <el-alert v-else-if="previewing" type="info" :closable="false" title="正在解析文件…" class="w-alert" />
+      <div v-else-if="previewing" class="l-banner w-alert">正在解析文件…</div>
       <div class="w-actions">
-        <el-button @click="close">取消</el-button>
-        <el-button type="primary" :loading="busy" :disabled="!llmEnabled" @click="startIngest">
+        <LButton @click="close">取消</LButton>
+        <LButton variant="primary" :loading="busy" :disabled="!llmEnabled" @click="startIngest">
           开始导入（分块 + 逐块挖掘）
-        </el-button>
+        </LButton>
       </div>
     </div>
 
@@ -432,37 +505,39 @@ const actionLabel: Record<string, string> = {
       <template v-if="session">
         <p class="w-title">
           {{ session.source.title }}（{{ session.source.lang }}）·
-          <el-tag size="small" :type="session.status === 'failed' ? 'danger' : session.status === 'mined' ? 'success' : 'info'">
+          <LTag :tone="statusTone[session.status] ?? 'neutral'">
             {{ statusLabel[session.status] || session.status }}
-          </el-tag>
+          </LTag>
         </p>
-        <el-progress
-          :percentage="session.chunks_total ? Math.round((session.chunks_done / session.chunks_total) * 100) : 0"
-          :status="session.status === 'failed' ? 'exception' : session.status === 'mined' ? 'success' : undefined"
-        />
+        <LProgress :value="progress" />
         <p class="sub">
           已完成 {{ session.chunks_done }}/{{ session.chunks_total }} 块
           <template v-if="session.chunks_failed">（失败 {{ session.chunks_failed }} 块）</template>
           · 已入区草稿 {{ session.drafts.length }} 条
         </p>
-        <el-alert
-          v-for="(e, i) in session.errors"
-          :key="i"
-          type="warning"
-          :closable="false"
-          :title="e"
-          class="w-alert"
-        />
+        <div v-for="(e, i) in session.errors" :key="i" class="w-alert">{{ e }}</div>
       </template>
       <div class="w-actions">
-        <el-button @click="discard">放弃会话</el-button>
-        <el-button
-          type="primary"
+        <LPopover align="end">
+          <template #trigger="{ toggle }">
+            <LButton @click="toggle()">放弃会话</LButton>
+          </template>
+          <template #default="{ close: closePop }">
+            <p class="pop-title">放弃导入会话 {{ sourceId }}？</p>
+            <p class="pop-text">放弃后草稿全部丢弃（生效知识库不受影响），可重新导入。</p>
+            <div class="pop-actions">
+              <LButton size="sm" @click="closePop()">返回</LButton>
+              <LButton size="sm" variant="danger" @click="closePop(); doDiscard()">放弃会话</LButton>
+            </div>
+          </template>
+        </LPopover>
+        <LButton
+          variant="primary"
           :disabled="!session || session.status === 'running' || session.drafts.length === 0"
           @click="toDrafts"
         >
           审阅草稿
-        </el-button>
+        </LButton>
       </div>
     </div>
 
@@ -472,78 +547,50 @@ const actionLabel: Record<string, string> = {
         共 {{ drafts.length }} 条草稿；内置 agent 已对齐既有点——同一知识点跨书按 1:N 背书，
         只有新概念造新点（点 ID 不随书变）。
       </p>
-      <el-table :data="drafts" size="small" max-height="380">
-        <el-table-column prop="seq" label="#" width="50" />
-        <el-table-column label="归并预判" width="200">
-          <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="row.action === 'create' ? 'warning' : row.action === 'covered' ? 'info' : 'success'"
-            >
-              {{ actionLabel[row.action] }} → {{ row.point_id }}
-            </el-tag>
+      <div class="table-scroll table-mid">
+        <LTable :columns="draftColumns" :rows="drafts" row-key="seq" compact>
+          <template #col-action="{ row }">
+            <LTag :tone="actionTone[row.action] ?? 'neutral'">{{ actionLabel[row.action] }} → {{ row.point_id }}</LTag>
           </template>
-        </el-table-column>
-        <el-table-column label="错误类型" width="110">
-          <template #default="{ row }">{{ row.draft.error_type }}</template>
-        </el-table-column>
-        <el-table-column label="标题" min-width="200">
-          <template #default="{ row }">{{ row.draft.title }}</template>
-        </el-table-column>
-        <el-table-column label="CEFR" width="70">
-          <template #default="{ row }">{{ row.draft.cefr || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="出处" width="150">
-          <template #default="{ row }">{{ row.draft.location || '—' }}</template>
-        </el-table-column>
-      </el-table>
+          <template #col-error_type="{ row }">{{ errorTypeLabel(row.draft.error_type) }}</template>
+          <template #col-title="{ row }">{{ row.draft.title }}</template>
+          <template #col-cefr="{ row }">{{ row.draft.cefr || '—' }}</template>
+          <template #col-location="{ row }">{{ row.draft.location || '—' }}</template>
+        </LTable>
+      </div>
       <div class="rules-block">
-        <el-divider />
         <p class="w-title">
           归因规则派生（可选）
-          <el-tag v-if="session?.rules_status === 'mined'" size="small" type="success">已派生 {{ session.rule_drafts.length }} 条</el-tag>
-          <el-tag v-else-if="session?.rules_status === 'running'" size="small" type="info">派生中 {{ session.rules_done }}/{{ session.rules_total }} 批</el-tag>
-          <el-tag v-else-if="session?.rules_status === 'failed'" size="small" type="danger">派生中断</el-tag>
+          <LTag v-if="session?.rules_status === 'mined'" tone="ok">已派生 {{ session.rule_drafts.length }} 条</LTag>
+          <LTag v-else-if="session?.rules_status === 'running'">派生中 {{ session.rules_done }}/{{ session.rules_total }} 批</LTag>
+          <LTag v-else-if="session?.rules_status === 'failed'" tone="danger">派生中断</LTag>
         </p>
         <p class="sub">
           内置 agent 按错误类型从知识点派生决策表候选行（新手层/老手层归因 + 讲解文案）；
           发布时随知识点一并写入决策表（同 ID 内置/他源行自动跳过）。
         </p>
-        <el-button
+        <LButton
           :disabled="!session || session.rules_status === 'running'"
           :loading="session?.rules_status === 'running'"
           @click="deriveRules"
         >
           {{ session?.rule_drafts?.length ? '重新派生规则' : '派生归因规则' }}
-        </el-button>
-        <el-alert
-          v-for="(e, i) in session?.rules_errors ?? []"
-          :key="i"
-          type="warning"
-          :closable="false"
-          :title="e"
-          class="w-alert"
-        />
-        <el-table v-if="session?.rule_drafts?.length" :data="session.rule_drafts" size="small" max-height="220">
-          <el-table-column label="规则行 ID" width="190">
-            <template #default="{ row }">
+        </LButton>
+        <div v-for="(e, i) in session?.rules_errors ?? []" :key="i" class="w-alert">{{ e }}</div>
+        <div v-if="session?.rule_drafts?.length" class="table-scroll table-short">
+          <LTable :columns="ruleDraftColumns" :rows="session.rule_drafts" row-key="seq" compact>
+            <template #col-rule_id="{ row }">
               {{ row.draft.error_type }}_{{ row.draft.novice === true ? 'novice' : row.draft.novice === false ? 'hand' : 'any' }}
             </template>
-          </el-table-column>
-          <el-table-column label="归因" width="150">
-            <template #default="{ row }">{{ row.draft.attribution }}</template>
-          </el-table-column>
-          <el-table-column label="CEFR" width="70">
-            <template #default="{ row }">{{ row.draft.cefr || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="讲解" min-width="240">
-            <template #default="{ row }">{{ row.draft.remedial }}</template>
-          </el-table-column>
-        </el-table>
+            <template #col-attribution="{ row }">{{ row.draft.attribution }}</template>
+            <template #col-cefr="{ row }">{{ row.draft.cefr || '—' }}</template>
+            <template #col-remedial="{ row }">{{ row.draft.remedial }}</template>
+          </LTable>
+        </div>
       </div>
       <div class="w-actions">
-        <el-button @click="step = 1">返回</el-button>
-        <el-button type="primary" @click="toPublish">下一步（归并预览）</el-button>
+        <LButton @click="step = 1">返回</LButton>
+        <LButton variant="primary" @click="toPublish">下一步（归并预览）</LButton>
       </div>
     </div>
 
@@ -555,129 +602,254 @@ const actionLabel: Record<string, string> = {
           既有点追加背书 <b>{{ plan.endorsements.length }}</b> ·
           已覆盖跳过 <b>{{ plan.already_covered }}</b>
         </p>
-        <el-table v-if="plan.new_points.length" :data="plan.new_points" size="small" max-height="220">
-          <el-table-column prop="point_id" label="新点 ID" width="140" />
-          <el-table-column prop="error_type" label="错误类型" width="120" />
-          <el-table-column prop="title" label="标题" min-width="220" />
-          <el-table-column prop="cefr" label="CEFR" width="70" />
-        </el-table>
+        <div v-if="plan.new_points.length" class="table-scroll table-short">
+          <LTable :columns="newPointColumns" :rows="plan.new_points" row-key="point_id" compact>
+            <template #col-error_type="{ row }">{{ errorTypeLabel(row.error_type) }}</template>
+          </LTable>
+        </div>
         <p v-if="plan.endorsements.length" class="sub">
           背书既有点：{{ plan.endorsements.map((e) => e.point_id).join('、') }}
         </p>
-        <template v-if="rulesPlan">
-          <el-divider />
+        <div v-if="rulesPlan" class="rules-block">
           <p class="w-title">
             决策表规则：新增 <b>{{ rulesPlan.new }}</b> ·
             本源替换 <b>{{ rulesPlan.replaced }}</b> ·
             冲突跳过 <b>{{ rulesPlan.conflicts }}</b>
           </p>
-          <el-table :data="rulesPlan.rows" size="small" max-height="200">
-            <el-table-column prop="rule_id" label="规则行 ID" width="200" />
-            <el-table-column label="动作" width="110">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.action === 'conflict' ? 'info' : row.action === 'replace' ? 'warning' : 'success'">
+          <div class="table-scroll table-short">
+            <LTable :columns="rulePlanColumns" :rows="rulesPlan.rows" row-key="rule_id" compact>
+              <template #col-action="{ row }">
+                <LTag :tone="ruleActionTone[row.action] ?? 'neutral'">
                   {{ row.action === 'new' ? '新增行' : row.action === 'replace' ? '替换本源' : '冲突跳过' }}
-                </el-tag>
+                </LTag>
               </template>
-            </el-table-column>
-            <el-table-column label="内容" min-width="240">
-              <template #default="{ row }">
+              <template #col-content="{ row }">
                 <template v-if="row.action !== 'conflict'">
                   {{ String(row.row.attribution ?? '') }} · {{ String(row.row.remedial ?? '') }}
                 </template>
                 <template v-else>{{ String(row.row.note ?? '') }}</template>
               </template>
-            </el-table-column>
-          </el-table>
-        </template>
-        <el-form label-width="120px" class="token-form">
-          <el-form-item label="更新 token">
-            <el-input
-              v-model="token"
-              type="password"
-              show-password
-              placeholder="服务器设置 GEC_TABLES_UPDATE_TOKEN 时必填，否则留空"
-            />
-          </el-form-item>
-        </el-form>
+            </LTable>
+          </div>
+        </div>
+        <div class="field token-form">
+          <span class="field-label">更新 token</span>
+          <input
+            v-model="token"
+            type="password"
+            class="l-input"
+            placeholder="服务器设置 GEC_TABLES_UPDATE_TOKEN 时必填，否则留空"
+          />
+        </div>
       </template>
       <div class="w-actions">
-        <el-button @click="step = 2">返回</el-button>
-        <el-button @click="discard">放弃会话</el-button>
-        <el-button type="primary" :loading="busy" @click="publish">一键发布（知识库 + 决策表热更新）</el-button>
+        <LButton @click="step = 2">返回</LButton>
+        <LPopover align="end">
+          <template #trigger="{ toggle }">
+            <LButton @click="toggle()">放弃会话</LButton>
+          </template>
+          <template #default="{ close: closePop }">
+            <p class="pop-title">放弃导入会话 {{ sourceId }}？</p>
+            <p class="pop-text">放弃后草稿全部丢弃（生效知识库不受影响），可重新导入。</p>
+            <div class="pop-actions">
+              <LButton size="sm" @click="closePop()">返回</LButton>
+              <LButton size="sm" variant="danger" @click="closePop(); doDiscard()">放弃会话</LButton>
+            </div>
+          </template>
+        </LPopover>
+        <LButton variant="primary" :loading="busy" @click="publish">一键发布（知识库 + 决策表热更新）</LButton>
       </div>
     </div>
 
     <!-- ⑤ 完成 -->
     <div v-else class="w-body">
-      <el-result icon="success" title="发布成功">
-        <template #sub-title>
-          <p v-if="report">
-            知识源 {{ report.source_id }}：新点 {{ report.new_points }} ·
-            追加背书 {{ report.endorsed }} · 已覆盖 {{ report.already_covered }} ·
-            {{ report.lang }} 知识点共 {{ report.total_points }} 个
-            <template v-if="report.rules_new || report.rules_replaced">
-              · 决策表规则新增 {{ report.rules_new }} / 替换 {{ report.rules_replaced }} / 冲突跳过 {{ report.rules_conflicts }}
-            </template>
-          </p>
-          <p class="sub">归因富化即时生效：新检出错误的讲解将引用新知识源（知识点列表可按源过滤）</p>
-        </template>
-      </el-result>
+      <div class="done">
+        <div class="done__icon">✓</div>
+        <p class="done__title">发布成功</p>
+        <p v-if="report" class="done__text">
+          知识源 {{ report.source_id }}：新点 {{ report.new_points }} ·
+          追加背书 {{ report.endorsed }} · 已覆盖 {{ report.already_covered }} ·
+          {{ report.lang }} 知识点共 {{ report.total_points }} 个
+          <template v-if="report.rules_new || report.rules_replaced">
+            · 决策表规则新增 {{ report.rules_new }} / 替换 {{ report.rules_replaced }} / 冲突跳过 {{ report.rules_conflicts }}
+          </template>
+        </p>
+        <p class="sub">归因富化即时生效：新检出错误的讲解将引用新知识源（知识点列表可按源过滤）</p>
+      </div>
       <div class="w-actions">
-        <el-button type="primary" @click="close">完成</el-button>
+        <LButton variant="primary" @click="close">完成</LButton>
       </div>
     </div>
-  </el-dialog>
+  </LDialog>
 </template>
 
 <style scoped>
 .steps {
-  margin-bottom: 18px;
+  display: flex;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
 }
+.step-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--h-control);
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+}
+.step-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.step-btn:disabled { cursor: default; }
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-sm);
+  height: var(--h-control-sm);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: var(--fs-xs);
+}
+.step.is-active .step-btn { color: var(--text); font-weight: 600; }
+.step.is-active .step-num { border-color: var(--accent); color: var(--accent); }
+.step.is-done .step-btn { color: var(--text-2); }
+.step.is-done .step-num { background: var(--accent); border-color: var(--accent); color: #fff; }
 .w-body {
-  min-height: 260px;
+  min-height: calc(var(--space-7) * 5);
 }
 .w-alert {
-  margin-bottom: 10px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--danger);
 }
+.l-banner.w-alert { margin: var(--space-1) 0 var(--space-2); color: var(--text-2); }
 .w-title {
-  margin: 4px 0 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 var(--space-3);
   font-weight: 600;
 }
 .sub {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-  margin: 8px 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  margin: var(--space-2) 0;
 }
+.w-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.field {
+  display: grid;
+  grid-template-columns: calc(var(--space-4) * 7) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--fs-ui);
+}
+.field--top { align-items: start; }
+.field-label { color: var(--text-2); }
+.field-row {
+  display: flex;
+  gap: var(--space-2);
+}
+.field-row > .l-input,
+.field-row > .l-select {
+  flex: 1;
+  min-width: 0;
+  max-width: calc(var(--space-7) * 4.5);
+}
+.fld-lang { width: calc(var(--space-7) * 2); }
+.l-textarea {
+  height: auto;
+  min-height: calc(var(--space-7) * 5);
+  padding: var(--space-2);
+  line-height: var(--lh-body);
+}
+.file-input { font-size: var(--fs-sm); color: var(--text-2); }
 .text-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
 }
 .w-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
 .token-form {
-  margin-top: 14px;
+  margin-top: var(--space-4);
 }
 .doc-preview {
-  margin-top: 6px;
+  margin-top: var(--space-1);
 }
 .chapter-grid {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  max-height: 220px;
+  gap: var(--space-1);
+  max-height: calc(var(--space-7) * 4.5);
   overflow-y: auto;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 4px;
-  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  padding: var(--space-2) var(--space-3);
 }
 .rules-block {
-  margin-top: 8px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
+.table-scroll { overflow-y: auto; }
+.table-mid { max-height: calc(var(--space-7) * 8); }
+.table-short { max-height: calc(var(--space-7) * 4.5); }
+.done {
+  padding: var(--space-4) 0;
+  text-align: center;
+}
+.done__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-radius: 50%;
+  font-size: var(--fs-xl);
+}
+.done__title {
+  margin: var(--space-2) 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.done__text {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+}
+.pop-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.pop-text {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+:deep(menu.l-dialog__foot:empty) { display: none; }
 </style>

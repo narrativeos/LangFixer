@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '../api/client'
 import { errMsg } from '../lib/err'
 import type { EvalLayerStats, EvalReport } from '../types'
+import { LButton, LEmpty, LProgress, LSection, LSelect, LTable, LTag } from '../ui'
+import type { LColumn } from '../ui'
 
 /**
  * 各层贡献度报告（质量透明面）：直读评测报告档案（GET /gec/eval/layers），
@@ -71,11 +73,45 @@ interface LayerRow {
   key: string
   label: string
   stats: EvalLayerStats
-  state: { text: string; type: 'success' | 'info' | 'warning' }
+  state: { text: string; tone: 'ok' | 'neutral' | 'warn' }
   share: number
   dShare: number | null
   dF: number | null
 }
+
+type EvalFunnelStep = EvalReport['funnel']['cumulative'][number]
+
+const asStr = (v: string | number): string => String(v)
+
+const reportOptions = computed(() => reports.value.map((r) => ({ value: r.id, label: reportLabel(r) })))
+const compareOptions = computed(() => [
+  { value: '', label: '（不对比）' },
+  ...reports.value.filter((r) => r.id !== selected.value?.id).map((r) => ({ value: r.id, label: reportLabel(r) })),
+])
+
+const layerCols = computed<LColumn<LayerRow>[]>(() => {
+  const cols: LColumn<LayerRow>[] = [
+    { key: 'label', label: '层', width: '150px' },
+    { key: 'state', label: '状态', width: '130px' },
+    { key: 'nPred', label: '预测', width: '70px', align: 'right' },
+    { key: 'pStrict', label: 'P（严格）', width: '90px', align: 'right' },
+    { key: 'rStrict', label: 'R（严格）', width: '90px', align: 'right' },
+    { key: 'fBeta', label: 'Fβ', width: '80px', align: 'right' },
+    { key: 'gold', label: '自定案金标', width: '100px', align: 'right' },
+    { key: 'share', label: '召回份额', width: '170px' },
+  ]
+  if (compare.value) {
+    cols.push({ key: 'dShare', label: 'Δ份额', width: '90px', align: 'right' })
+    cols.push({ key: 'dF', label: 'ΔFβ', width: '90px', align: 'right' })
+  }
+  return cols
+})
+
+const funnelCols: LColumn<EvalFunnelStep>[] = [
+  { key: 'prefix', label: '层前缀' },
+  { key: 'resolved', label: '解决金标数', width: '110px', align: 'right' },
+  { key: 'rate', label: '累计解决率', width: '110px', align: 'right' },
+]
 
 const rows = computed<LayerRow[]>(() => {
   const sel = selected.value
@@ -89,10 +125,10 @@ const rows = computed<LayerRow[]>(() => {
     const cfgKey = LAYER_CFG_KEY[key]
     let state: LayerRow['state']
     if (cfgKey && sel.config?.[cfgKey] === false)
-      state = { text: key === 'decision' ? '未启用（待发布）' : '未启用', type: 'info' }
-    else if (s.attributed_gold > 0) state = { text: '有自定案', type: 'success' }
-    else if (s.n_pred > 0) state = { text: '有预测零命中', type: 'warning' }
-    else state = { text: '零预测', type: 'info' }
+      state = { text: key === 'decision' ? '未启用（待发布）' : '未启用', tone: 'neutral' }
+    else if (s.attributed_gold > 0) state = { text: '有自定案', tone: 'ok' }
+    else if (s.n_pred > 0) state = { text: '有预测零命中', tone: 'warn' }
+    else state = { text: '零预测', tone: 'neutral' }
     const c = compare.value?.layers[key]
     return {
       key,
@@ -147,71 +183,89 @@ onMounted(load)
 
 <template>
   <div class="layers-report">
-    <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
-
-    <el-card shadow="never" class="pick-card">
+    <LSection title="报告" :desc="`报告来自评测档案 ${dir}（${reports.length} 份${skipped ? `，跳过 ${skipped}` : ''}）`">
       <div class="pick-row">
         <div class="pick-field">
           <span class="k">报告</span>
-          <el-select v-model="selectedId" style="width: 380px" :loading="loading">
-            <el-option
-              v-for="r in reports"
-              :key="r.id"
-              :label="reportLabel(r)"
-              :value="r.id"
-            />
-          </el-select>
+          <LSelect
+            class="pick-select"
+            :model-value="selectedId"
+            :options="reportOptions"
+            @update:model-value="selectedId = asStr($event)"
+          />
         </div>
         <div class="pick-field">
           <span class="k">对比</span>
-          <el-select v-model="compareId" clearable placeholder="选一份报告做差值" style="width: 380px">
-            <el-option
-              v-for="r in reports"
-              :key="r.id"
-              :disabled="r.id === selected?.id"
-              :label="reportLabel(r)"
-              :value="r.id"
-            />
-          </el-select>
+          <LSelect
+            class="pick-select"
+            :model-value="compareId"
+            :options="compareOptions"
+            @update:model-value="compareId = asStr($event)"
+          />
         </div>
-        <span class="hint">报告来自评测档案 {{ dir }}（{{ reports.length }} 份{{ skipped ? `，跳过 ${skipped}` : '' }}）</span>
       </div>
-    </el-card>
+    </LSection>
 
-    <el-empty v-if="!loading && !error && !selected" description="还没有评测报告：档案目录为空（评测任务落盘后可见）" />
+    <LEmpty v-if="error" text="评测档案加载失败" :hint="error">
+      <template #action>
+        <LButton size="sm" @click="load">重试</LButton>
+      </template>
+    </LEmpty>
+    <LEmpty
+      v-else-if="!loading && !selected"
+      text="还没有评测报告：档案目录为空"
+      hint="评测任务落盘后可见；可在「进化中心 · 测评」发起一次评测"
+    />
 
     <template v-if="selected">
       <!-- 报告基本盘 -->
-      <el-card shadow="never" class="meta-card">
-        <el-descriptions :column="4" size="small" border>
-          <el-descriptions-item label="基准">{{ selected.benchmark }}{{ selected.split ? ' · ' + selected.split : '' }}</el-descriptions-item>
-          <el-descriptions-item label="臂 / 模式">{{ selected.arm }} / {{ selected.mode }}</el-descriptions-item>
-          <el-descriptions-item label="语言 / β">{{ selected.lang }} / {{ selected.beta }}</el-descriptions-item>
-          <el-descriptions-item label="时间">{{ fmtTs(selected.ts) }}</el-descriptions-item>
-          <el-descriptions-item label="句数">{{ selected.sentences.ok }}/{{ selected.sentences.total }}（失败 {{ selected.sentences.failed }}）</el-descriptions-item>
-          <el-descriptions-item label="金标句">{{ selected.n_gold_sentences }}</el-descriptions-item>
-          <el-descriptions-item label="金标编辑">{{ selected.n_gold_edits }}</el-descriptions-item>
-          <el-descriptions-item label="消融">
-            <span v-if="!selected.ablation">无（当前能力）</span>
-            <span v-else>{{ JSON.stringify(selected.ablation) }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
+      <LSection title="基本信息">
+        <dl class="meta-grid">
+          <div class="meta-item">
+            <dt>基准</dt>
+            <dd>{{ selected.benchmark }}{{ selected.split ? ' · ' + selected.split : '' }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>臂 / 模式</dt>
+            <dd>{{ selected.arm }} / {{ selected.mode }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>语言 / β</dt>
+            <dd>{{ selected.lang }} / {{ selected.beta }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>时间</dt>
+            <dd>{{ fmtTs(selected.ts) }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>句数</dt>
+            <dd>{{ selected.sentences.ok }}/{{ selected.sentences.total }}（失败 {{ selected.sentences.failed }}）</dd>
+          </div>
+          <div class="meta-item">
+            <dt>金标句</dt>
+            <dd>{{ selected.n_gold_sentences }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>金标编辑</dt>
+            <dd>{{ selected.n_gold_edits }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>消融</dt>
+            <dd>
+              <span v-if="!selected.ablation">无（当前能力）</span>
+              <span v-else>{{ JSON.stringify(selected.ablation) }}</span>
+            </dd>
+          </div>
+        </dl>
         <div class="cfg-row">
-          <el-tag
-            v-for="c in cfgChips"
-            :key="c.k"
-            :type="c.on ? 'success' : 'info'"
-            size="small"
-            :title="c.on ? '该层已启用' : '该层未启用'"
-          >
+          <LTag v-for="c in cfgChips" :key="c.k">
             {{ c.k }} {{ c.on ? '开' : '关' }}<template v-if="c.extra"> · {{ c.extra }}</template>
-          </el-tag>
+          </LTag>
         </div>
-      </el-card>
+      </LSection>
 
       <!-- 总体指标 -->
-      <el-card shadow="never">
-        <template #header><span class="card-t">总体</span></template>
+      <LSection title="总体">
         <div class="metric-row">
           <div class="metric">
             <span class="k">Fβ</span>
@@ -245,71 +299,40 @@ onMounted(load)
             <span class="v">{{ selected.funnel.avg_llm_ms }} ms</span>
           </div>
         </div>
-      </el-card>
+      </LSection>
 
       <!-- 层级贡献 -->
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-h">
-            <span class="card-t">各层贡献</span>
-            <span class="hint">召回份额 = 该层自定案命中的金标编辑 ÷ 金标编辑全集；对比列是相对所选报告的差</span>
-          </div>
-        </template>
-        <el-table :data="rows" size="small" border>
-          <el-table-column label="层" prop="label" min-width="150" />
-          <el-table-column label="状态" width="130">
-            <template #default="{ row }">
-              <el-tag :type="row.state.type" size="small">{{ row.state.text }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="预测" prop="stats.n_pred" width="70" align="right" />
-          <el-table-column label="P（严格）" width="90" align="right">
-            <template #default="{ row }">{{ pct(row.stats.p_strict) }}</template>
-          </el-table-column>
-          <el-table-column label="R（严格）" width="90" align="right">
-            <template #default="{ row }">{{ pct(row.stats.r_strict) }}</template>
-          </el-table-column>
-          <el-table-column label="Fβ" width="80" align="right">
-            <template #default="{ row }"><b>{{ row.stats.f_beta.toFixed(4) }}</b></template>
-          </el-table-column>
-          <el-table-column label="自定案金标" prop="stats.attributed_gold" width="100" align="right" />
-          <el-table-column label="召回份额" min-width="150">
-            <template #default="{ row }">
-              <div class="share-cell">
-                <el-progress
-                  :percentage="Math.round(row.share * 1000) / 10"
-                  :stroke-width="8"
-                  :show-text="false"
-                />
-                <span class="share-t">{{ pct(row.share) }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column v-if="compare" label="Δ份额" width="90" align="right">
-            <template #default="{ row }">{{ row.dShare == null ? '—' : pp(row.dShare) }}</template>
-          </el-table-column>
-          <el-table-column v-if="compare" label="ΔFβ" width="90" align="right">
-            <template #default="{ row }">{{ row.dF == null ? '—' : row.dF.toFixed(4) }}</template>
-          </el-table-column>
-        </el-table>
-      </el-card>
+      <LSection title="各层贡献" desc="召回份额 = 该层自定案命中的金标编辑 ÷ 金标编辑全集；对比列是相对所选报告的差">
+        <LTable :columns="layerCols" :rows="rows" row-key="key" compact>
+          <template #col-state="{ row }">
+            <LTag :tone="row.state.tone">{{ row.state.text }}</LTag>
+          </template>
+          <template #col-nPred="{ row }">{{ row.stats.n_pred }}</template>
+          <template #col-pStrict="{ row }">{{ pct(row.stats.p_strict) }}</template>
+          <template #col-rStrict="{ row }">{{ pct(row.stats.r_strict) }}</template>
+          <template #col-fBeta="{ row }"><b>{{ row.stats.f_beta.toFixed(4) }}</b></template>
+          <template #col-gold="{ row }">{{ row.stats.attributed_gold }}</template>
+          <template #col-share="{ row }">
+            <div class="share-cell">
+              <LProgress :value="row.share" />
+              <span class="share-t">{{ pct(row.share) }}</span>
+            </div>
+          </template>
+          <template #col-dShare="{ row }">{{ row.dShare == null ? '—' : pp(row.dShare) }}</template>
+          <template #col-dF="{ row }">{{ row.dF == null ? '—' : row.dF.toFixed(4) }}</template>
+        </LTable>
+      </LSection>
 
       <!-- 级联漏斗：前缀累计解决率 -->
-      <el-card v-if="funnelCumulative.length" shadow="never">
-        <template #header>
-          <div class="card-h">
-            <span class="card-t">级联漏斗</span>
-            <span class="hint">按层前缀累计解决的金标比例（LLM 触达率 {{ pct(selected.funnel?.llm_reach) }}）</span>
-          </div>
-        </template>
-        <el-table :data="funnelCumulative" size="small" border>
-          <el-table-column label="层前缀" prop="prefix" min-width="220" />
-          <el-table-column label="解决金标数" prop="resolved" width="110" align="right" />
-          <el-table-column label="累计解决率" width="110" align="right">
-            <template #default="{ row }">{{ pct(row.rate) }}</template>
-          </el-table-column>
-        </el-table>
-      </el-card>
+      <LSection
+        v-if="funnelCumulative.length"
+        title="级联漏斗"
+        :desc="`按层前缀累计解决的金标比例（LLM 触达率 ${pct(selected.funnel?.llm_reach)}）`"
+      >
+        <LTable :columns="funnelCols" :rows="funnelCumulative" compact>
+          <template #col-rate="{ row }">{{ pct(row.rate) }}</template>
+        </LTable>
+      </LSection>
     </template>
   </div>
 </template>
@@ -318,70 +341,86 @@ onMounted(load)
 .layers-report {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .pick-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .pick-field {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+}
+.pick-select {
+  width: 380px;
+  max-width: 100%;
 }
 .k {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
+  color: var(--muted);
+  font-size: var(--fs-ui);
 }
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
 }
-.card-h {
+.meta-item {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  gap: var(--space-2);
+  font-size: var(--fs-ui);
+  min-width: 0;
 }
-.card-t {
-  font-weight: 600;
+.meta-item dt {
+  color: var(--muted);
+  flex: none;
+}
+.meta-item dd {
+  margin: 0;
+  color: var(--text-2);
+  word-break: break-all;
 }
 .cfg-row {
-  margin-top: 10px;
+  margin-top: var(--space-3);
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 .metric-row {
   display: flex;
-  gap: 28px;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 .metric {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .metric .v {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 600;
+  color: var(--text);
 }
 .metric .d {
-  font-size: 12px;
-  color: var(--el-color-primary);
+  font-size: var(--fs-sm);
+  color: var(--accent);
 }
 .share-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
-.share-cell :deep(.el-progress) {
+.share-cell :deep(.l-progress) {
   flex: 1;
   min-width: 60px;
 }
 .share-t {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   min-width: 48px;
   text-align: right;
 }

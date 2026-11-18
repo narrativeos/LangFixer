@@ -13,9 +13,22 @@
  * 载体串行处理：视觉档走同一个 LLM 网关，并发只会互相排队并触发 503。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import {
+  LButton,
+  LCheckbox,
+  LEmpty,
+  LInput,
+  LPopover,
+  LProgress,
+  LSection,
+  LSegmented,
+  LSelect,
+  LSwitch,
+  LTag,
+  toast,
+} from '../ui'
 import { api } from '../api/client'
-import { CAT_LABELS, CAT_TYPES, confBand } from '../lib/errorDisplay'
+import { CAT_LABELS, confBand } from '../lib/errorDisplay'
 import { layerStatusLabel, modeLabel, plainLayerLabel } from '../lib/labels'
 import {
   advancedBlockNote,
@@ -60,6 +73,13 @@ const MODES: { value: MediaMode; label: string; hint: string }[] = [
   { value: 'advanced', label: '高级', hint: '交给 PhotoCraft / PdfCraft / WordCraft：可回写载体' },
 ]
 
+const LANG_OPTIONS = [
+  { value: 'zh', label: '中文' },
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語' },
+]
+const LEVEL_OPTIONS = [1, 2, 3].map((l) => ({ value: l, label: modeLabel(l) }))
+
 /** 载体大类 → 正误表里的标号名词（与后端 `carrier_label` 同一口径） */
 const CARRIER_NOUNS: Record<string, string> = {
   image: '图片',
@@ -83,6 +103,26 @@ const modeTouched = ref(false)
 const level = ref(3)
 const forceLlm = ref(true)
 const lang = ref('zh')
+
+/** LSelect 吐 string|number，回到窄类型 */
+const levelSel = computed({
+  get: () => level.value,
+  set: (v: string | number) => {
+    level.value = Number(v)
+  },
+})
+function modeChange(v: MediaMode) {
+  mode.value = v
+  modeTouched.value = true
+}
+const modeHint = computed(() => MODES.find((m) => m.value === mode.value)?.hint ?? '')
+const applyHint = computed(() => APPLY_MODES.find((m) => m.value === applyMode.value)?.hint ?? '')
+/** 回写模式分段：不可用时不静默选中（改原文要文字层；简单模式没有回写原语） */
+function setApplyMode(v: MediaApplyMode) {
+  if (activeJob.value?.mode === 'simple') return
+  if (v === 'in_place' && !canInPlace.value) return
+  applyMode.value = v
+}
 
 const jobs = ref<MediaJob[]>([])
 const activeId = ref('')
@@ -117,6 +157,13 @@ const modeNote = computed(() =>
  * 这份载体能不能回写（后端口径，不在前端猜）：
  * 简单模式没有回写原语；高级模式要看该载体对应的工具在不在（图片 PhotoCraft / PDF PdfCraft / Word WordCraft）。
  */
+const canWriteback = computed(() => writebackBlock.value === '')
+/** 可画的 id（列表据此标「未定位」，与画布同一判定 → 不会出现「列表说定位了、图上没框」） */
+const drawableIds = computed(() => new Set(overlay.value.boxes.map((b) => b.id)))
+/** SVG 用载体像素做 viewBox：线宽 / 字号按比例换算，缩放时不会糊成一团 */
+const strokeW = computed(() => (size.value ? Math.max(2, size.value.w / 700) : 2))
+const labelSize = computed(() => (size.value ? Math.max(14, size.value.w / 48) : 14))
+
 const writebackBlock = computed(() => {
   const job = activeJob.value
   if (!job) return ''
@@ -128,12 +175,13 @@ const writebackBlock = computed(() => {
   // 探测里没这张模式卡（旧后端 / 未知载体）→ 退回图片档的 PhotoCraft 口径，不假装可用
   return photocraftReady.value ? '' : 'PhotoCraft 不可用：图片载体无法回写'
 })
-const canWriteback = computed(() => writebackBlock.value === '')
-/** 可画的 id（列表据此标「未定位」，与画布同一判定 → 不会出现「列表说定位了、图上没框」） */
-const drawableIds = computed(() => new Set(overlay.value.boxes.map((b) => b.id)))
-/** SVG 用载体像素做 viewBox：线宽 / 字号按比例换算，缩放时不会糊成一团 */
-const strokeW = computed(() => (size.value ? Math.max(2, size.value.w / 700) : 2))
-const labelSize = computed(() => (size.value ? Math.max(14, size.value.w / 48) : 14))
+
+/** 阶段点色：failed 是错误态 → danger；就绪 → ok；进行中 → warn */
+function stageTone(s: string): 'ok' | 'warn' | 'danger' {
+  if (s === 'failed') return 'danger'
+  if (['ready', 'applied'].includes(s)) return 'ok'
+  return 'warn'
+}
 
 /** 检测层贡献：统一走 labels.ts 人话词表（此前本处与 ResultsPanel 已漂移出
  *  「LLM 兜底 / LLM」两套叫法——一个概念一个名字，收敛到 plainLayerLabel） */
@@ -206,12 +254,12 @@ function pickFiles() {
 /** 建 job → 轮询到终态（逐个载体串行：视觉档共用一个网关） */
 async function runAll() {
   if (!picked.value.length) {
-    ElMessage.warning('先选择要审校的载体')
+    toast('先选择要审校的载体', 'warn')
     return
   }
   // 高档不可用就摊开原因，不静默换档：换了档，产物形态与正误表口径都会跟着变
   if (modeNote.value) {
-    ElMessage.error(modeNote.value)
+    toast(modeNote.value, 'danger')
     return
   }
   busy.value = true
@@ -235,13 +283,13 @@ async function runAll() {
       await openJob(created.id)
       const final = await pollUntilDone(created.id)
       if (final.stage === 'failed') {
-        ElMessage.error(`${file.name} 审校失败：${final.error ?? '未知原因'}`)
+        toast(`${file.name} 审校失败：${final.error ?? '未知原因'}`, 'danger')
       }
     }
     if (!cancelled) statusText.value = '全部载体处理完毕'
   } catch (e) {
     statusText.value = ''
-    ElMessage.error(errText(e))
+    toast(errText(e), 'danger')
   } finally {
     busy.value = false
   }
@@ -347,12 +395,12 @@ async function applyWrite() {
     upsertJob(next)
     await loadPreview(job.id)
     if (next.stage === 'applied') {
-      ElMessage.success(`已回写：${next.artifacts.editable ?? 'result'}（原件未改动）`)
+      toast(`已回写：${next.artifacts.editable ?? 'result'}（原件未改动）`, 'ok')
     } else {
-      ElMessage.warning(`回写未完成：${next.error ?? '见告警'}（结果仍在 sidecar）`)
+      toast(`回写未完成：${next.error ?? '见告警'}（结果仍在 sidecar）`, 'warn')
     }
   } catch (e) {
-    ElMessage.error(errText(e))
+    toast(errText(e), 'danger')
   } finally {
     busy.value = false
   }
@@ -376,11 +424,9 @@ async function exportReport() {
       edits: edits.value,
     })
     report.value = await api.mediaReport(body)
-    ElMessage.success(
-      `正误表：候选 ${report.value.candidates} 条 → 导出 ${report.value.exported} 条`,
-    )
+    toast(`正误表：候选 ${report.value.candidates} 条 → 导出 ${report.value.exported} 条`, 'ok')
   } catch (e) {
-    ElMessage.error(errText(e))
+    toast(errText(e), 'danger')
   } finally {
     reportBusy.value = false
   }
@@ -396,9 +442,9 @@ async function saveReport(format: 'json' | 'md' | 'html' | 'docx') {
       format,
       `正误表-${report.value.report_id}.${format === 'md' ? 'md' : format}`,
     )
-    if (saved) ElMessage.success(`已导出 ${saved.filename}（${saved.size_bytes} 字节）`)
+    if (saved) toast(`已导出 ${saved.filename}（${saved.size_bytes} 字节）`, 'ok')
   } catch (e) {
-    ElMessage.error(errText(e))
+    toast(errText(e), 'danger')
   }
 }
 
@@ -407,7 +453,7 @@ async function createJobsFromPaths(paths: string[]) {
   if (busy.value) return
   // 与「开始审校」同一口径：高档不可用就摊开原因，不静默换档
   if (modeNote.value) {
-    ElMessage.error(modeNote.value)
+    toast(modeNote.value, 'danger')
     return
   }
   busy.value = true
@@ -428,13 +474,13 @@ async function createJobsFromPaths(paths: string[]) {
       await openJob(created.id)
       const final = await pollUntilDone(created.id)
       if (final.stage === 'failed') {
-        ElMessage.error(`${name} 审校失败：${final.error ?? '未知原因'}`)
+        toast(`${name} 审校失败：${final.error ?? '未知原因'}`, 'danger')
       }
     }
     statusText.value = '拖放导入完成'
   } catch (e) {
     statusText.value = ''
-    ElMessage.error(errText(e))
+    toast(errText(e), 'danger')
   } finally {
     busy.value = false
   }
@@ -470,43 +516,33 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-card shadow="never" class="media-card">
-    <template #header>
-      <div class="card-header">
-        <span class="card-title">载体审校（图片 / PDF / Word）</span>
-        <span class="media-sub">副本隔离 · 默认叠加标注，不改原件</span>
-        <span class="spacer"></span>
-        <el-button size="small" text @click="loadProbes">重新探测</el-button>
-      </div>
+  <LSection class="media-card" title="载体审校（图片 / PDF / Word）" desc="副本隔离 · 默认叠加标注，不改原件">
+    <template #actions>
+      <LButton size="sm" variant="ghost" @click="loadProbes">重新探测</LButton>
     </template>
 
-    <el-alert v-if="probeError" type="error" :closable="false" show-icon :title="`探测失败：${probeError}`" />
-    <el-alert
-      v-else-if="blockers.length"
-      type="warning"
-      :closable="false"
-      show-icon
-      title="载体审校能力不全（结果会带告警，不会静默降级）"
-    >
+    <div v-if="probeError" class="l-banner banner-danger" role="alert">探测失败：{{ probeError }}</div>
+    <div v-else-if="blockers.length" class="l-banner banner-warn" role="status">
+      载体审校能力不全（结果会带告警，不会静默降级）
       <ul class="blocker-list">
         <li v-for="b in blockers" :key="b">{{ b }}</li>
       </ul>
-    </el-alert>
+    </div>
 
     <div class="probe-row">
-      <el-tag size="small" :type="photocraftReady ? 'success' : 'info'" effect="plain">
+      <LTag :tone="photocraftReady ? 'ok' : 'neutral'">
         PhotoCraft {{ photocraftReady ? probes.photocraft?.version ?? '就绪' : '不可用（只出清单）' }}
-      </el-tag>
-      <el-tag size="small" :type="probes.pdfcraft?.ready ? 'success' : 'info'" effect="plain">
+      </LTag>
+      <LTag :tone="probes.pdfcraft?.ready ? 'ok' : 'neutral'">
         PdfCraft {{ probes.pdfcraft?.ready ? probes.pdfcraft?.version ?? '就绪' : '不可用（PDF 走简单模式）' }}
-      </el-tag>
-      <el-tag size="small" :type="probes.wordcraft?.ready ? 'success' : 'info'" effect="plain">
+      </LTag>
+      <LTag :tone="probes.wordcraft?.ready ? 'ok' : 'neutral'">
         WordCraft {{ probes.wordcraft?.ready ? probes.wordcraft?.version ?? '就绪' : '不可用（Word 走简单模式）' }}
-      </el-tag>
-      <el-tag size="small" :type="probes.vision?.ready ? 'success' : 'info'" effect="plain">
+      </LTag>
+      <LTag :tone="probes.vision?.ready ? 'ok' : 'neutral'">
         视觉档 {{ probes.vision?.ready ? probes.vision?.model : '未就绪' }}
         <template v-if="compression">· {{ compression }}</template>
-      </el-tag>
+      </LTag>
     </div>
 
     <div class="import-row">
@@ -518,106 +554,82 @@ onBeforeUnmount(() => {
         class="hidden-file"
         @change="onPick"
       />
-      <el-button @click="pickFiles">选择载体</el-button>
+      <LButton @click="pickFiles">选择载体</LButton>
       <span class="file-names">
         {{ picked.map((f) => f.name).join('、') || '未选择（图片 / PDF / docx，逐个串行处理）' }}
       </span>
       <span class="spacer"></span>
       <label class="param">模式
-        <el-radio-group v-model="mode" size="small" @change="modeTouched = true">
-          <el-radio
-            v-for="m in MODES"
-            :key="m.value"
-            :value="m.value"
-            :title="m.hint"
-          >{{ m.label }}</el-radio>
-        </el-radio-group>
+        <LSegmented :model-value="mode" :options="MODES" @update:model-value="modeChange" />
+        <LPopover align="end">
+          <template #trigger="{ toggle }">
+            <LButton size="sm" variant="ghost" aria-label="模式说明" @click="toggle">?</LButton>
+          </template>
+          {{ modeHint }}
+        </LPopover>
       </label>
       <label class="param">语言
-        <el-select v-model="lang" size="small" style="width: 92px">
-          <el-option label="中文" value="zh" />
-          <el-option label="English" value="en" />
-          <el-option label="日本語" value="ja" />
-        </el-select>
+        <LSelect v-model="lang" :options="LANG_OPTIONS" class="lang-select" />
       </label>
       <label class="param">检查模式
-        <el-select v-model="level" size="small" style="width: 118px">
-          <el-option :value="1" :label="modeLabel(1)" />
-          <el-option :value="2" :label="modeLabel(2)" />
-          <el-option :value="3" :label="modeLabel(3)" />
-        </el-select>
+        <LSelect v-model="levelSel" :options="LEVEL_OPTIONS" class="level-select" />
       </label>
-      <el-switch v-model="forceLlm" size="small" active-text="强制 LLM 兜底" />
-      <el-button type="primary" :loading="busy" @click="runAll">开始审校</el-button>
+      <label class="param switch-param">
+        <LSwitch v-model="forceLlm" aria-label="强制 LLM 兜底" />
+        <span>强制 LLM 兜底</span>
+      </label>
+      <LButton variant="primary" :loading="busy" @click="runAll">开始审校</LButton>
     </div>
 
     <!-- 高档不可用就把原因摊开（含退路），不静默换档 -->
-    <el-alert
-      v-if="modeNote"
-      class="mode-note"
-      type="warning"
-      :closable="false"
-      show-icon
-      :title="modeNote"
-    />
+    <div v-if="modeNote" class="l-banner banner-warn mode-note" role="status">{{ modeNote }}</div>
     <p v-else-if="mode === 'simple'" class="mode-note">
       简单模式不依赖任何外部工具：只出段落级定位与正误表，载体回写不可用（要回写请切「高级」）。
     </p>
 
     <div v-if="jobs.length" class="job-tabs">
-      <el-button
+      <LButton
         v-for="j in jobs"
         :key="j.id"
-        size="small"
+        size="sm"
         :class="{ 'tab-active': j.id === activeId }"
         @click="openJob(j.id)"
         @contextmenu.prevent="onJobContext(j)"
       >
         {{ labelOf(j) }}
-        <el-tag
-          size="small"
-          round
-          :type="j.stage === 'failed' ? 'danger' : j.stage === 'ready' || j.stage === 'applied' ? 'success' : 'warning'"
-        >
-          {{ stageProgress(j.stage).label }}
-        </el-tag>
-      </el-button>
+        <LTag :tone="stageTone(j.stage)">{{ stageProgress(j.stage).label }}</LTag>
+      </LButton>
     </div>
 
     <template v-if="activeJob">
-      <el-progress
-        v-if="progress.running || progress.failed"
-        :percentage="progress.percent"
-        :status="progress.failed ? 'exception' : undefined"
-        :stroke-width="6"
-      />
+      <div v-if="progress.running || progress.failed" :class="{ 'progress-fail': progress.failed }">
+        <LProgress :value="progress.percent / 100" />
+      </div>
       <div class="job-meta">
-        <el-tag size="small" effect="plain">{{ statusText || progress.label }}</el-tag>
-        <el-tag size="small" :type="activeJob.mode === 'simple' ? 'info' : 'success'" effect="plain">
+        <LTag>{{ statusText || progress.label }}</LTag>
+        <LTag>
           {{ activeJob.mode === 'simple' ? '简单模式 · 零 CLI' : '高级模式' }}
           <template v-if="activeJob.tool">· {{ activeJob.tool }}</template>
-        </el-tag>
-        <el-tag size="small" effect="plain">
+        </LTag>
+        <LTag>
           预览面 {{ activeJob.preview_kind === 'image_canvas' ? '位图画布（可画框）' : '文档文本（不画框）' }}
-        </el-tag>
-        <el-tag size="small" effect="plain">
+        </LTag>
+        <LTag>
           载体 {{ size ? `${size.w}×${size.h}` : '尺寸未知' }}
           {{ activeJob.carrier?.editable ? '· 含文字层' : '· 无文字层' }}
-        </el-tag>
-        <el-tag size="small" effect="plain">
+        </LTag>
+        <LTag>
           抽取 {{ extractionText(activeJob.extraction, activeJob.extraction_model) }}
-        </el-tag>
-        <el-tag size="small" effect="plain">文本单元 {{ activeJob.units.length }}</el-tag>
-        <el-tag size="small" effect="plain">
+        </LTag>
+        <LTag>文本单元 {{ activeJob.units.length }}</LTag>
+        <LTag>
           标注 {{ activeJob.annotations.length }}（画框 {{ overlay.boxes.length }} · 未定位
           {{ overlay.undrawable.length }}）
-        </el-tag>
-        <el-tag v-for="l in activeJob.layers" :key="l.layer" size="small" effect="plain">
-          {{ layerText(l) }}
-        </el-tag>
+        </LTag>
+        <LTag v-for="l in activeJob.layers" :key="l.layer">{{ layerText(l) }}</LTag>
       </div>
 
-      <el-alert v-if="activeJob.error" type="error" :closable="false" show-icon :title="activeJob.error" />
+      <div v-if="activeJob.error" class="l-banner banner-danger" role="alert">{{ activeJob.error }}</div>
       <div v-if="activeJob.warnings.length" class="warn-box">
         <div v-for="(w, i) in activeJob.warnings" :key="i" class="warn-item">⚠ {{ w }}</div>
       </div>
@@ -625,9 +637,9 @@ onBeforeUnmount(() => {
       <div class="workspace">
         <section class="canvas-wrap">
           <div class="canvas-tools">
-            <el-button size="small" text @click="zoom = Math.max(0.2, zoom / 1.25)">−</el-button>
-            <el-button size="small" text @click="zoom = 1">{{ Math.round(zoom * 100) }}%</el-button>
-            <el-button size="small" text @click="zoom = Math.min(6, zoom * 1.25)">＋</el-button>
+            <LButton size="sm" variant="ghost" aria-label="缩小" @click="zoom = Math.max(0.2, zoom / 1.25)">−</LButton>
+            <LButton size="sm" variant="ghost" @click="zoom = 1">{{ Math.round(zoom * 100) }}%</LButton>
+            <LButton size="sm" variant="ghost" aria-label="放大" @click="zoom = Math.min(6, zoom * 1.25)">＋</LButton>
             <span class="hint">点框 = 选中右侧那条；框上数字 = 列表序号</span>
           </div>
           <div class="canvas-scroll">
@@ -674,8 +686,8 @@ onBeforeUnmount(() => {
           <div class="list-tools">
             <span class="hint">勾选 = 进正误表；取消 = 放弃该条</span>
             <span class="spacer"></span>
-            <el-button size="small" text @click="setAllChecked(true)">全选</el-button>
-            <el-button size="small" text @click="setAllChecked(false)">全不选</el-button>
+            <LButton size="sm" variant="ghost" @click="setAllChecked(true)">全选</LButton>
+            <LButton size="sm" variant="ghost" @click="setAllChecked(false)">全不选</LButton>
           </div>
           <div class="ann-list">
             <div
@@ -685,9 +697,9 @@ onBeforeUnmount(() => {
               :class="{ sel: a.id === selectedId, off: !isChecked(a) }"
               @click="select(a.id)"
             >
-              <el-checkbox
+              <LCheckbox
                 :model-value="isChecked(a)"
-                @change="(v: boolean) => setChecked(a, v)"
+                @update:model-value="(v: boolean) => setChecked(a, v)"
                 @click.stop
               />
               <span class="ann-no">{{ i + 1 }}</span>
@@ -699,89 +711,70 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="ann-msg">{{ a.error.message }}</div>
                 <div class="ann-badges">
-                  <el-tag size="small" :type="CAT_TYPES[a.error.category ?? 'other'] ?? 'info'">
-                    {{ CAT_LABELS[a.error.category ?? 'other'] ?? a.error.category ?? '其他' }}
-                  </el-tag>
-                  <el-tag size="small" :type="detectorBadge(a.error).type">
-                    {{ detectorBadge(a.error).text }}
-                  </el-tag>
-                  <el-tag v-if="consensusOf(a.error).length > 1" size="small" type="success">
-                    共识 ×{{ consensusOf(a.error).length }}
-                  </el-tag>
-                  <el-tag size="small" :type="confBand(a.error).type">
-                    {{ confBand(a.error).label }} {{ a.error.confidence.toFixed(2) }}
-                  </el-tag>
-                  <el-tag v-if="unitConfidence(a) !== null" size="small" effect="plain">
-                    抽取 conf {{ unitConfidence(a)?.toFixed(2) }}
-                  </el-tag>
+                  <LTag>{{ CAT_LABELS[a.error.category ?? 'other'] ?? a.error.category ?? '其他' }}</LTag>
+                  <LTag>{{ detectorBadge(a.error).text }}</LTag>
+                  <LTag v-if="consensusOf(a.error).length > 1">共识 ×{{ consensusOf(a.error).length }}</LTag>
+                  <LTag>{{ confBand(a.error).label }} {{ a.error.confidence.toFixed(2) }}</LTag>
+                  <LTag v-if="unitConfidence(a) !== null">抽取 conf {{ unitConfidence(a)?.toFixed(2) }}</LTag>
                   <code v-if="a.error.rule_id" class="rule-id">{{ a.error.rule_id }}</code>
-                  <el-tag v-if="!drawableIds.has(a.id)" size="small" type="warning">
-                    {{ locateReason(a) }}
-                  </el-tag>
-                  <el-tag v-if="a.locate_warning" size="small" type="warning">
-                    {{ a.locate_warning }}
-                  </el-tag>
+                  <LTag v-if="!drawableIds.has(a.id)" tone="warn">{{ locateReason(a) }}</LTag>
+                  <LTag v-if="a.locate_warning" tone="warn">{{ a.locate_warning }}</LTag>
                 </div>
                 <div class="ann-edit" @click.stop>
                   <label class="param">计错数
-                    <el-select
-                      v-model="editOf(a).counted"
-                      size="small"
-                      style="width: 88px"
-                      placeholder="计"
-                    >
-                      <el-option label="计" value="计" />
-                      <el-option label="不计" value="不计" />
-                    </el-select>
+                    <LSelect
+                      :model-value="editOf(a).counted ?? '计'"
+                      :options="[{ value: '计', label: '计' }, { value: '不计', label: '不计' }]"
+                      class="counted-select"
+                      @update:model-value="(v: string | number) => { editOf(a).counted = String(v) }"
+                    />
                   </label>
-                  <el-input
-                    v-model="editOf(a).suggestion"
-                    size="small"
+                  <LInput
+                    :model-value="editOf(a).suggestion ?? ''"
                     placeholder="改写建议（留空 = 用机器建议）"
-                    style="max-width: 260px"
+                    class="suggest-input"
+                    @update:model-value="(v: string) => { editOf(a).suggestion = v }"
                   />
                 </div>
               </div>
             </div>
-            <p v-if="!activeJob.annotations.length" class="empty-hint">
-              本载体没有检出条目{{ activeJob.extraction === 'none' ? '（文本抽取为空：见上方告警）' : '' }}
-            </p>
+            <LEmpty
+              v-if="!activeJob.annotations.length"
+              text="本载体没有检出条目"
+              :hint="activeJob.extraction === 'none' ? '文本抽取为空：见上方告警，可换模式或换档重跑这份载体' : undefined"
+            />
           </div>
         </section>
       </div>
 
       <div class="action-row">
         <span class="param-label">回写模式</span>
-        <el-radio-group v-model="applyMode" size="small">
-          <el-radio
-            v-for="m in APPLY_MODES"
-            :key="m.value"
-            :value="m.value"
-            :disabled="(m.value === 'in_place' && !canInPlace) || activeJob.mode === 'simple'"
-            :title="m.hint"
-          >
-            {{ m.label }}
-          </el-radio>
-        </el-radio-group>
+        <LSegmented :model-value="applyMode" :options="APPLY_MODES" @update:model-value="setApplyMode" />
+        <LPopover align="end">
+          <template #trigger="{ toggle }">
+            <LButton size="sm" variant="ghost" aria-label="回写模式说明" @click="toggle">?</LButton>
+          </template>
+          {{ applyHint }}
+        </LPopover>
         <span class="spacer"></span>
-        <el-button
-          size="small"
+        <LButton
+          size="sm"
           :disabled="!canWriteback"
           :loading="busy"
           :title="writebackBlock || undefined"
           @click="applyWrite"
         >
           应用并回写
-        </el-button>
-        <el-button
-          size="small"
-          type="primary"
+        </LButton>
+        <LButton
+          size="sm"
+          variant="primary"
           :loading="reportBusy"
           :disabled="!jobs.some((j) => ['ready', 'applied'].includes(j.stage))"
           @click="exportReport"
         >
           导出正误表
-        </el-button>
+        </LButton>
       </div>
       <p v-if="writebackBlock" class="hint">{{ writebackBlock }}</p>
       <p v-else-if="applyMode === 'in_place' && !canInPlace" class="hint">
@@ -794,10 +787,10 @@ onBeforeUnmount(() => {
           {{ report.exported }} 条（剔除 {{ report.dropped_ids.length }} 条）
         </div>
         <div class="report-links">
-          <el-button size="small" text @click="saveReport('docx')">Word（docx）</el-button>
-          <el-button size="small" text @click="saveReport('html')">HTML</el-button>
-          <el-button size="small" text @click="saveReport('md')">Markdown</el-button>
-          <el-button size="small" text @click="saveReport('json')">JSON</el-button>
+          <LButton size="sm" variant="ghost" @click="saveReport('docx')">Word（docx）</LButton>
+          <LButton size="sm" variant="ghost" @click="saveReport('html')">HTML</LButton>
+          <LButton size="sm" variant="ghost" @click="saveReport('md')">Markdown</LButton>
+          <LButton size="sm" variant="ghost" @click="saveReport('json')">JSON</LButton>
         </div>
         <div v-for="(w, i) in report.warnings" :key="i" class="warn-item">⚠ {{ w }}</div>
       </div>
@@ -813,104 +806,278 @@ onBeforeUnmount(() => {
       </details>
     </template>
 
-    <p v-else class="empty-hint">
-      选择载体（图片 / PDF / docx）后点「开始审校」：探测载体 → 取文本（无文字层走视觉档）→ 检测 → 回映射落点。
-      「简单」模式零外部工具，只出清单与正误表；「高级」模式交给 PhotoCraft / PdfCraft / WordCraft，可回写载体。
-      原件不会被修改，所有产物在 job 独立目录里。
-    </p>
-  </el-card>
+    <LEmpty
+      v-else
+      text="选择载体（图片 / PDF / docx）后点「开始审校」"
+      hint="探测载体 → 取文本（无文字层走视觉档）→ 检测 → 回映射落点。「简单」模式零外部工具，只出清单与正误表；「高级」模式交给 PhotoCraft / PdfCraft / WordCraft，可回写载体；原件不会被修改，所有产物在 job 独立目录里。"
+    />
+  </LSection>
 </template>
 
 <style scoped>
-.media-card { height: 100%; }
-.media-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 8px; }
-.spacer { flex: 1; }
-.hidden-file { display: none; }
-.blocker-list { margin: 4px 0 0 18px; padding: 0; font-size: 12px; }
+.media-card {
+  height: 100%;
+}
+.hidden-file {
+  display: none;
+}
+.spacer {
+  flex: 1;
+}
+.banner-warn {
+  flex-wrap: wrap;
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+}
+.banner-danger {
+  flex-wrap: wrap;
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+.blocker-list {
+  width: 100%;
+  margin: var(--space-1) 0 0 var(--space-5);
+  padding: 0;
+  font-size: var(--fs-sm);
+}
 .probe-row,
 .job-meta,
-.ann-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.probe-row { margin-bottom: 10px; }
-.import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.ann-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+.probe-row {
+  margin-bottom: var(--space-3);
+}
+.import-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
 /* 模式说明 / 不可用原因：紧贴操作条，用户点「开始审校」之前就看得见 */
 .mode-note {
-  margin: 0 0 10px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-secondary);
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--muted);
 }
 .file-names {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--fs-sm);
+  color: var(--muted);
   max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.param { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
-.param-label { font-size: 12px; color: var(--el-text-color-secondary); }
-.job-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.tab-active { border-color: var(--el-color-primary); color: var(--el-color-primary); }
-.job-meta { margin: 8px 0; }
-.warn-box {
-  border: 1px solid var(--el-color-warning-light-5);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 10px;
-  background: var(--el-color-warning-light-9);
+.param {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
 }
-.warn-item { font-size: 12px; line-height: 1.6; }
-.workspace { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 1fr); gap: 12px; }
-.canvas-wrap { min-width: 0; }
-.canvas-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.hint { font-size: 12px; color: var(--el-text-color-secondary); }
+.switch-param {
+  gap: var(--space-2);
+}
+/* 选择器宽度交给内容自适应（token 尺度里没有这些魔法数） */
+.job-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.tab-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.job-meta {
+  margin: var(--space-2) 0;
+}
+.progress-fail :deep(.l-progress > i) {
+  background: var(--danger);
+}
+.warn-box {
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-ctl);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--warn-soft);
+}
+.warn-item {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+}
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 1fr);
+  gap: var(--space-3);
+}
+.canvas-wrap {
+  min-width: 0;
+}
+.canvas-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.hint {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
 .canvas-scroll {
   max-height: 62vh;
   overflow: auto;
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
-  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-2);
 }
-.canvas-inner { position: relative; width: 100%; transform-origin: 0 0; }
-.carrier-img { display: block; width: 100%; height: auto; }
+.canvas-inner {
+  position: relative;
+  width: 100%;
+  transform-origin: 0 0;
+}
+.carrier-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
 /* SVG 铺满 img 的显示框，viewBox = 载体像素 → 框坐标与 sidecar 逐字一致，缩放交给它 */
-.overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
-.overlay g { cursor: pointer; }
-.box-label { font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
-.preview-note { padding: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
-.list-wrap { min-width: 0; }
-.list-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.ann-list { max-height: 62vh; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
-.ann-row {
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+.overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.overlay g {
   cursor: pointer;
 }
-.ann-row.sel { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
-.ann-row.off { opacity: 0.5; }
-.ann-no { font-size: 12px; color: var(--el-text-color-secondary); min-width: 18px; }
-.ann-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.ann-text { font-size: 13px; }
-.ann-text code { background: var(--el-fill-color); padding: 1px 4px; border-radius: 4px; }
-.ann-text code.fix { background: var(--el-color-success-light-9); }
-.arrow { margin: 0 4px; color: var(--el-text-color-secondary); }
-.ann-msg { font-size: 12px; color: var(--el-text-color-secondary); }
-.rule-id { font-size: 11px; color: var(--el-text-color-secondary); }
-.ann-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.action-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-.report-box {
-  margin-top: 10px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  padding: 8px 10px;
+.box-label {
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 3px;
 }
-.report-head { font-size: 13px; margin-bottom: 6px; }
-.report-links { display: flex; gap: 10px; margin-bottom: 6px; }
-.report-links a { color: var(--el-color-primary); font-size: 13px; }
-.artifacts { margin-top: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
-.artifacts ul { margin: 4px 0 0 18px; padding: 0; }
-.empty-hint { font-size: 13px; color: var(--el-text-color-secondary); }
+.preview-note {
+  padding: var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.list-wrap {
+  min-width: 0;
+}
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.ann-list {
+  max-height: 62vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ann-row {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+}
+.ann-row.sel {
+  border-color: var(--accent);
+  background: var(--primary-soft);
+}
+.ann-row.off {
+  opacity: 0.5;
+}
+.ann-no {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  min-width: 18px;
+}
+.ann-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.ann-text {
+  font-size: var(--fs-ui);
+}
+.ann-text code {
+  background: var(--surface-2);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-ctl);
+}
+.ann-text code.fix {
+  background: var(--ok-soft);
+}
+.arrow {
+  margin: 0 var(--space-1);
+  color: var(--muted);
+}
+.ann-msg {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.rule-id {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.ann-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+.suggest-input {
+  flex: 1;
+  min-width: 16ch;
+  max-width: 32ch;
+}
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-3);
+}
+.param-label {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.report-box {
+  margin-top: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  padding: var(--space-2) var(--space-3);
+}
+.report-head {
+  font-size: var(--fs-ui);
+  margin-bottom: var(--space-2);
+}
+.report-links {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.artifacts {
+  margin-top: var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.artifacts ul {
+  margin: var(--space-1) 0 0 var(--space-5);
+  padding: 0;
+}
 </style>

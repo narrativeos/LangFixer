@@ -1,196 +1,196 @@
 <template>
   <div class="doc-jobs-panel">
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">新建文档审校作业</span>
-          <span class="hint">长文档（10 万字+）切块并行 LLM 深度复查：断点续跑 / 块缓存 / 风险优先</span>
-        </div>
-      </template>
-      <el-input
+    <LSection title="新建文档审校作业" desc="长文档（10 万字+）切块并行 LLM 深度复查：断点续跑 / 块缓存 / 风险优先">
+      <textarea
         v-model="text"
-        type="textarea"
-        :rows="6"
+        class="paste-area"
+        rows="6"
         placeholder="粘贴整篇文档，提交后转为后台作业，可随时离开本页"
-      />
+      ></textarea>
       <div class="toolbar">
         <span>字符数：{{ text.length }}</span>
-        <el-divider direction="vertical" />
+        <span class="sep"></span>
         <span>预算</span>
-        <el-select v-model="budget" style="width: 230px">
-          <el-option label="跟随设置默认" value="" />
-          <el-option label="全量深度复查（full）" value="full" />
-          <el-option label="经济模式（economical）" value="economical" />
-        </el-select>
-        <el-tooltip
-          content="经济模式跳过低风险块：更省 LLM 调用，但覆盖率与召回如实下降"
-          placement="top"
-        >
-          <el-icon class="hint-icon"><QuestionFilled /></el-icon>
-        </el-tooltip>
+        <LSelect v-model="budgetSel" :options="BUDGET_OPTIONS" class="budget-select" />
+        <LPopover>
+          <template #trigger="{ toggle }">
+            <LButton size="sm" variant="ghost" aria-label="预算说明" @click="toggle">?</LButton>
+          </template>
+          经济模式跳过低风险块：更省 LLM 调用，但覆盖率与召回如实下降
+        </LPopover>
         <span class="spacer"></span>
-        <el-button
-          type="primary"
+        <LButton
+          variant="primary"
           :loading="creating"
           :disabled="text.trim().length === 0"
           @click="create"
         >
           创建审校作业
-        </el-button>
+        </LButton>
       </div>
-    </el-card>
+    </LSection>
 
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">作业列表</span>
-          <span class="spacer"></span>
-          <el-button size="small" plain :loading="listing" @click="refreshList">刷新</el-button>
-        </div>
+    <LSection title="作业列表">
+      <template #actions>
+        <LButton size="sm" :loading="listing" @click="refreshList">刷新</LButton>
       </template>
-      <el-table
-        :data="jobs"
-        size="small"
-        highlight-current-row
-        empty-text="暂无作业——粘贴文档创建第一个作业"
-        @current-change="selectJob"
-      >
-        <el-table-column label="作业" width="110">
-          <template #default="{ row }">
-            <code>{{ row.id.slice(0, 8) }}</code>
-          </template>
-        </el-table-column>
-        <el-table-column prop="lang" label="语言" width="64" />
-        <el-table-column label="状态" width="92">
-          <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="进度（处理块）" min-width="200">
-          <template #default="{ row }">
-            <el-progress
-              :percentage="progressPct(row.progress)"
-              :status="row.status === 'done' ? 'success' : row.status === 'cancelled' ? 'warning' : undefined"
-              :stroke-width="10"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="覆盖率" width="84">
-          <template #default="{ row }">{{ (row.coverage * 100).toFixed(0) }}%</template>
-        </el-table-column>
-        <el-table-column label="结果" width="72">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click.stop="openResults(row)">
-              {{ row.id === selectedId && results ? results.errors.length : '查看' }}
-            </el-button>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">
-            <el-button
-              v-if="row.status === 'running' || row.status === 'created'"
-              link
-              type="warning"
-              size="small"
-              @click.stop="cancel(row.id)"
-            >
-              取消
-            </el-button>
-            <el-button
-              v-if="row.status === 'done' || row.status === 'cancelled'"
-              link
-              type="primary"
-              size="small"
-              @click.stop="retry(row.id)"
-            >
-              重跑失败块
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-card v-if="results" shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">作业结果 <code>{{ selectedId?.slice(0, 8) }}</code></span>
-          <el-tag v-if="results.complete" type="success" size="small">全量复查完成</el-tag>
-          <el-tag v-else type="warning" size="small">
-            结果不完整（覆盖率 {{ (results.coverage * 100).toFixed(0) }}%）
-          </el-tag>
-          <span class="spacer"></span>
-          <el-button size="small" plain @click="loadResults(selectedId)">刷新结果</el-button>
-        </div>
-      </template>
-      <el-alert
-        v-if="!results.complete"
-        type="warning"
-        :closable="false"
-        class="cov-alert"
-        :title="incompleteReason"
+      <LEmpty
+        v-if="!jobs.length"
+        text="暂无作业"
+        hint="在上方粘贴文档并点「创建审校作业」，即可跑第一个长文档深度复查"
       />
-      <el-tabs v-model="resultTab">
-        <el-tab-pane :label="`检出错误（${results.errors.length}）`" name="errors">
-          <el-table :data="results.errors" size="small" empty-text="未检出错误">
-            <el-table-column label="位置" width="110">
-              <template #default="{ row }">{{ row.span[0] }}–{{ row.span[1] }}</template>
-            </el-table-column>
-            <el-table-column prop="original" label="原文" width="140" />
-            <el-table-column label="建议" width="140">
-              <template #default="{ row }">{{ row.suggestions?.[0]?.text ?? row.correction }}</template>
-            </el-table-column>
-            <el-table-column prop="error_type" label="类型" width="90" />
-            <el-table-column prop="message" label="说明" min-width="200" />
-          </el-table>
-        </el-tab-pane>
-        <el-tab-pane :label="`块状态（${results.chunks.length}）`" name="chunks">
-          <el-table :data="results.chunks" size="small">
-            <el-table-column prop="index" label="#" width="56" />
-            <el-table-column label="字节区间" width="140">
-              <template #default="{ row }">{{ row.owner[0] }}–{{ row.owner[1] }}</template>
-            </el-table-column>
-            <el-table-column label="状态" width="110">
-              <template #default="{ row }">
-                <el-tag :type="chunkType(row.status)" size="small">{{ chunkLabel(row.status) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="风险" width="150">
-              <template #default="{ row }">
-                <el-progress
-                  v-if="row.risk >= 0"
-                  :percentage="Math.round(row.risk * 100)"
-                  :color="riskColor(row.risk)"
-                  :stroke-width="8"
-                />
-                <span v-else>—</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="error" label="块错误" min-width="160" />
-          </el-table>
-        </el-tab-pane>
-      </el-tabs>
-    </el-card>
+      <LTable
+        v-else
+        :columns="jobCols"
+        :rows="jobs"
+        row-key="id"
+        compact
+        :selected="selectedId ? [selectedId] : []"
+        @row-click="(row: DocJobListItem) => selectJob(row)"
+      >
+        <template #col-job="{ row }">
+          <code>{{ row.id.slice(0, 8) }}</code>
+        </template>
+        <template #col-status="{ row }">
+          <span class="status-cell"><LDot :tone="statusTone(row.status)" />{{ statusLabel(row.status) }}</span>
+        </template>
+        <template #col-progress="{ row }">
+          <LProgress class="row-progress" :value="progressPct(row.progress)" />
+        </template>
+        <template #col-coverage="{ row }">{{ (row.coverage * 100).toFixed(0) }}%</template>
+        <template #col-results="{ row }">
+          <LButton size="sm" variant="ghost" @click.stop="openResults(row)">
+            {{ row.id === selectedId && results ? results.errors.length : '查看' }}
+          </LButton>
+        </template>
+        <template #col-actions="{ row }">
+          <LButton
+            v-if="row.status === 'running' || row.status === 'created'"
+            size="sm"
+            variant="ghost"
+            @click.stop="cancel(row.id)"
+          >
+            取消
+          </LButton>
+          <LButton
+            v-if="row.status === 'done' || row.status === 'cancelled'"
+            size="sm"
+            variant="ghost"
+            @click.stop="retry(row.id)"
+          >
+            重跑失败块
+          </LButton>
+        </template>
+      </LTable>
+    </LSection>
+
+    <LSection v-if="results" title="作业结果">
+      <template #actions>
+        <code class="mono">{{ selectedId?.slice(0, 8) }}</code>
+        <LTag v-if="results.complete" tone="ok">全量复查完成</LTag>
+        <LTag v-else tone="warn">结果不完整（覆盖率 {{ (results.coverage * 100).toFixed(0) }}%）</LTag>
+        <LButton size="sm" @click="loadResults(selectedId)">刷新结果</LButton>
+      </template>
+      <div v-if="!results.complete" class="l-banner banner-warn" role="status">{{ incompleteReason }}</div>
+      <LSegmented v-model="resultTab" :options="resultTabOptions" />
+      <template v-if="resultTab === 'errors'">
+        <LEmpty v-if="!results.errors.length" text="未检出错误" hint="该作业复查范围内没有问题，可在「块状态」核对覆盖率" />
+        <LTable v-else :columns="errCols" :rows="results.errors" compact>
+          <template #col-pos="{ row }">{{ row.span[0] }}–{{ row.span[1] }}</template>
+          <template #col-suggest="{ row }">{{ row.suggestions?.[0]?.text ?? row.correction }}</template>
+          <template #col-type="{ row }">{{ errorTypeLabel(row.error_type) }}</template>
+        </LTable>
+      </template>
+      <template v-else>
+        <LTable :columns="chunkCols" :rows="results.chunks" compact>
+          <template #col-status="{ row }">
+            <span class="status-cell"><LDot :tone="chunkTone(row.status)" />{{ chunkLabel(row.status) }}</span>
+          </template>
+          <template #col-risk="{ row }">
+            <LProgress v-if="row.risk >= 0" class="row-progress" :value="row.risk" />
+            <span v-else>—</span>
+          </template>
+          <template #col-owner="{ row }">{{ row.owner[0] }}–{{ row.owner[1] }}</template>
+        </LTable>
+      </template>
+    </LSection>
   </div>
 </template>
 
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { QuestionFilled } from '@element-plus/icons-vue'
+import {
+  LButton,
+  LEmpty,
+  LPopover,
+  LProgress,
+  LSection,
+  LSegmented,
+  LSelect,
+  LTable,
+  LTag,
+  LDot,
+  toast,
+} from '../ui'
+import type { LColumn } from '../ui'
 import { api } from '../api/client'
+import { errorTypeLabel } from '../lib/labels'
 import { useGecStore } from '../stores/gec'
 import type { DocJobListItem, DocJobProgress, DocJobResults } from '../types'
+
+type JobErrorRow = DocJobResults['errors'][number]
+type ChunkRow = DocJobResults['chunks'][number]
 
 const store = useGecStore()
 const text = ref('')
 const budget = ref<'' | 'full' | 'economical'>('')
+const BUDGET_OPTIONS = [
+  { value: '', label: '跟随设置默认' },
+  { value: 'full', label: '全量深度复查（full）' },
+  { value: 'economical', label: '经济模式（economical）' },
+]
+/** LSelect 统一吐 string，回到窄联合类型再进请求体 */
+const budgetSel = computed({
+  get: () => budget.value,
+  set: (v: string | number) => {
+    budget.value = v === 'full' || v === 'economical' ? v : ''
+  },
+})
 const creating = ref(false)
 const listing = ref(false)
 const jobs = ref<DocJobListItem[]>([])
 const selectedId = ref<string | null>(null)
 const results = ref<DocJobResults | null>(null)
-const resultTab = ref('errors')
+const resultTab = ref<'errors' | 'chunks'>('errors')
+const resultTabOptions = computed(() => [
+  { value: 'errors' as const, label: `检出错误（${results.value?.errors.length ?? 0}）` },
+  { value: 'chunks' as const, label: `块状态（${results.value?.chunks.length ?? 0}）` },
+])
+
+const jobCols: LColumn<DocJobListItem>[] = [
+  { key: 'job', label: '作业', width: '110px' },
+  { key: 'lang', label: '语言', width: '64px' },
+  { key: 'status', label: '状态', width: '92px' },
+  { key: 'progress', label: '进度（处理块）' },
+  { key: 'coverage', label: '覆盖率', width: '84px' },
+  { key: 'results', label: '结果', width: '72px' },
+  { key: 'actions', label: '操作', width: '120px' },
+]
+const errCols: LColumn<JobErrorRow>[] = [
+  { key: 'pos', label: '位置', width: '110px' },
+  { key: 'original', label: '原文', width: '140px' },
+  { key: 'suggest', label: '建议', width: '140px' },
+  { key: 'type', label: '类型', width: '110px' },
+  { key: 'message', label: '说明' },
+]
+const chunkCols: LColumn<ChunkRow>[] = [
+  { key: 'index', label: '#', width: '56px' },
+  { key: 'owner', label: '字节区间', width: '140px' },
+  { key: 'status', label: '状态', width: '120px' },
+  { key: 'risk', label: '风险', width: '150px' },
+  { key: 'error', label: '块错误' },
+]
 
 let es: EventSource | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -200,7 +200,7 @@ async function refreshList() {
   try {
     jobs.value = (await api.docJobList()).jobs
   } catch (e) {
-    ElMessage.error(`作业列表加载失败：${(e as Error).message}`)
+    toast(`作业列表加载失败：${(e as Error).message}`, 'danger', { label: '重试', onClick: () => void refreshList() })
   } finally {
     listing.value = false
   }
@@ -215,13 +215,13 @@ async function create() {
     }
     if (budget.value) body.budget = budget.value
     const r = await api.docJobCreate(body)
-    ElMessage.success(`作业已创建：${r.chunks} 块并行复查中`)
+    toast(`作业已创建：${r.chunks} 块并行复查中`, 'ok')
     text.value = ''
     await refreshList()
     const row = jobs.value.find((j) => j.id === r.job_id)
     if (row) selectJob(row)
   } catch (e) {
-    ElMessage.error(`创建失败：${(e as Error).message}`)
+    toast(`创建失败：${(e as Error).message}`, 'danger')
   } finally {
     creating.value = false
   }
@@ -245,7 +245,7 @@ async function loadResults(id: string | null) {
   try {
     results.value = await api.docJobResults(id)
   } catch (e) {
-    ElMessage.error(`结果加载失败：${(e as Error).message}`)
+    toast(`结果加载失败：${(e as Error).message}`, 'danger', { label: '重试', onClick: () => void loadResults(id) })
   }
 }
 
@@ -325,25 +325,25 @@ function detachEvents() {
 async function cancel(id: string) {
   try {
     await api.docJobCancel(id)
-    ElMessage.info('已请求取消：已开跑块完成后停止，未开跑块保持待跑')
+    toast('已请求取消：已开跑块完成后停止，未开跑块保持待跑')
   } catch (e) {
-    ElMessage.error(`取消失败：${(e as Error).message}`)
+    toast(`取消失败：${(e as Error).message}`, 'danger')
   }
 }
 
 async function retry(id: string) {
   try {
     const r = await api.docJobRetry(id)
-    ElMessage.success(`已重排队 ${r.reset_chunks} 个失败块`)
+    toast(`已重排队 ${r.reset_chunks} 个失败块`, 'ok')
     void refreshList()
   } catch (e) {
-    ElMessage.error(`重跑失败：${(e as Error).message}`)
+    toast(`重跑失败：${(e as Error).message}`, 'danger')
   }
 }
 
 function progressPct(p: DocJobProgress): number {
   if (!p.total) return 0
-  return Math.round(((p.done + p.cached + p.skipped + p.failed + p.parse_failed) / p.total) * 100)
+  return Math.round(((p.done + p.cached + p.skipped + p.failed + p.parse_failed) / p.total) * 100) / 100
 }
 
 const incompleteReason = computed(() => {
@@ -357,26 +357,20 @@ const incompleteReason = computed(() => {
   return `结果不完整：${parts.join('，')}——可重跑失败块或改用全量预算重新创建`
 })
 
-function statusType(s: string) {
-  return s === 'done'
-    ? 'success'
-    : s === 'cancelled'
-      ? 'warning'
-      : s === 'running'
-        ? 'primary'
-        : 'info'
+/** 状态点：红=错误仅此一种含义；created/cancelled 是中性终态 */
+function statusTone(s: string): 'ok' | 'warn' | 'danger' | 'muted' {
+  if (s === 'done') return 'ok'
+  if (s === 'running') return 'warn'
+  return 'muted'
 }
 function statusLabel(s: string) {
   return { created: '待跑', running: '进行中', done: '完成', cancelled: '已取消' }[s] ?? s
 }
-function chunkType(s: string) {
-  return s === 'done'
-    ? 'success'
-    : s === 'cached'
-      ? 'primary'
-      : s === 'pending' || s === 'skipped'
-        ? 'info'
-        : 'danger'
+/** 块状态：失败/解析失败是错误 → danger；缓存命中是来源属性 → 中性 */
+function chunkTone(s: string): 'ok' | 'warn' | 'danger' | 'muted' {
+  if (s === 'done') return 'ok'
+  if (s === 'failed' || s === 'parse_failed') return 'danger'
+  return 'muted'
 }
 function chunkLabel(s: string) {
   return (
@@ -390,13 +384,6 @@ function chunkLabel(s: string) {
     }[s] ?? s
   )
 }
-function riskColor(r: number): string {
-  return r >= 0.6
-    ? 'var(--el-color-danger)'
-    : r >= 0.2
-      ? 'var(--el-color-warning)'
-      : 'var(--el-color-success)'
-}
 
 onMounted(() => void refreshList())
 onBeforeUnmount(detachEvents)
@@ -406,36 +393,60 @@ onBeforeUnmount(detachEvents)
 .doc-jobs-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
+}
+.paste-area {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: var(--fs-ui);
+  line-height: var(--lh-ui);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  padding: var(--space-2);
+}
+.paste-area:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--fs-ui);
+  color: var(--muted);
 }
-.hint-icon {
-  color: var(--el-text-color-secondary);
+.sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-strong);
 }
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.card-title {
-  font-weight: 600;
-}
-.hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
+
 .spacer {
   flex: 1;
 }
-.cov-alert {
-  margin-bottom: 10px;
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+.row-progress {
+  min-width: 90px;
+}
+.banner-warn {
+  margin-bottom: var(--space-2);
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
 }
 </style>
-

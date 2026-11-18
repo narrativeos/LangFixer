@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 规则行编辑器（对话框）
+ * 规则行编辑器（行内展开面板）
  *
  * - 条件按列类型渲染：布尔（新手/老手/任意）、数字（操作符 + 数值）、
- *   字符串（操作符 + 下拉/自由输入，选项来自该列现有取值）
+ *   字符串（操作符 + 下拉，选项来自该列现有取值；「自定义」可输入新值）
  * - 输出逐格编辑（matchedRule 必填且表内唯一；remedial / examples 用多行）
  * - 「试算」：按本行条件构造上下文，对**当前内存表**求值，
  *   展示命中规则与归因结果（改行 → 试算 → 确认的闭环）
@@ -11,7 +11,6 @@
 import { ref, watch, computed } from 'vue'
 import { errMsg } from '../../lib/err'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../../api/client'
 import { ATTRIBUTION_LABELS, type AttributionResult } from '../../types'
 import {
@@ -26,6 +25,7 @@ import {
   type TableModel,
   type TryContext,
 } from '../../lib/jdm'
+import { LButton, LCheckbox, LInput, LSelect, LTag, toast } from '../../ui'
 
 const props = defineProps<{
   model: TableModel
@@ -42,6 +42,8 @@ const emit = defineEmits<{
 const draft = ref<RowModel | null>(null)
 const condOp = ref<Record<string, CondOp | ''>>({})
 const condAny = ref<Record<string, boolean>>({})
+/** 字符串列是否处于「自定义值」输入态（替代原下拉 allow-create） */
+const condCustom = ref<Record<string, boolean>>({})
 
 watch(
   () => props.row,
@@ -59,11 +61,10 @@ watch(
     }
     condOp.value = ops
     condAny.value = any
+    condCustom.value = {}
   },
   { immediate: true, deep: true },
 )
-
-const visible = computed(() => !!props.row)
 
 /** 条件列定义（含类型与下拉选项） */
 const condCols = computed(() =>
@@ -79,6 +80,20 @@ const outCols = computed(() =>
     .filter((o) => o.id !== 'matchedRule')
     .map((o) => ({ output: o, multiline: o.id === 'remedial' || o.id === 'examples' })),
 )
+
+const boolOptions = [
+  { value: 'true', label: '新手 (true)' },
+  { value: 'false', label: '老手 (false)' },
+]
+const opOptions = COND_OPS.map((op) => ({ value: op, label: op }))
+
+/** 字符串列下拉：现有取值 + 当前自定义值（若不在列表中） */
+function textOptions(col: { options: string[]; input: { id: string } }) {
+  const v = condValue(col.input.id)
+  const opts = col.options.map((o) => ({ value: o, label: o }))
+  if (v && !col.options.includes(v)) opts.push({ value: v, label: `${v}（自定义）` })
+  return opts
+}
 
 function condValue(inputId: string): string {
   return draft.value?.conds[inputId]?.value ?? ''
@@ -115,7 +130,7 @@ function validate(): string {
 function save() {
   const err = validate()
   if (err) {
-    ElMessage.warning(err)
+    toast(err, 'warn')
     return
   }
   emit('save', draft.value!)
@@ -135,7 +150,7 @@ function buildTryCtx(): TryContext | null {
 async function tryRow() {
   const ctx = buildTryCtx()
   if (!ctx) {
-    ElMessage.warning('试算需要 errorType 条件（= 某类型）；请先在条件中设置')
+    toast('试算需要 errorType 条件（= 某类型）；请先在条件中设置', 'warn')
     return
   }
   trying.value = true
@@ -146,13 +161,13 @@ async function tryRow() {
     tryMatched.value = res.trace.matched_rule
     const myKey = draft.value?.key ?? ''
     if (res.trace.matched_rule === myKey) {
-      ElMessage.success(`试算命中本行（${myKey}）`)
+      toast(`试算命中本行（${myKey}）`, 'ok')
     } else {
-      ElMessage.warning(`试算命中了其他规则：${res.trace.matched_rule}（本行：${myKey || '未命名'}）——检查条件优先级 / hitPolicy`)
+      toast(`试算命中了其他规则：${res.trace.matched_rule}（本行：${myKey || '未命名'}）——检查条件优先级 / hitPolicy`, 'warn')
     }
   } catch (e) {
     tryResult.value = null
-    ElMessage.error(`试算失败：${errMsg(e)}`)
+    toast(`试算失败：${errMsg(e)}`, 'danger')
   } finally {
     trying.value = false
   }
@@ -160,125 +175,157 @@ async function tryRow() {
 </script>
 
 <template>
-  <el-dialog
-    :model-value="visible"
-    @update:model-value="(v: boolean) => !v && emit('close')"
-    :title="isNew ? '新增规则行' : `编辑规则 ${props.row?.key ?? ''}`"
-    width="720px"
-    :close-on-click-modal="false"
-  >
-    <div v-if="draft" class="row-editor">
-      <section>
-        <h4>条件（输入列）</h4>
-        <div v-for="col in condCols" :key="col.input.id" class="cond-row">
-          <span class="cond-name" :title="col.input.field">{{ columnLabel(col.input.id) }}</span>
-          <el-checkbox
-            :model-value="condAny[col.input.id]"
-            @change="(v: string | number | boolean) => setAny(col.input.id, v === true)"
-          >
-            任意
-          </el-checkbox>
-          <template v-if="!condAny[col.input.id]">
-            <el-select
-              v-if="col.type === 'boolean'"
+  <div v-if="draft" class="row-editor">
+    <header class="re-head">
+      <h3>{{ isNew ? '新增规则行' : `编辑规则 ${props.row?.key ?? ''}` }}</h3>
+      <span class="spacer"></span>
+      <LButton size="sm" @click="emit('close')">取消</LButton>
+      <LButton size="sm" :loading="trying" @click="tryRow()">试算</LButton>
+      <LButton size="sm" variant="primary" @click="save()">保存行</LButton>
+    </header>
+
+    <section>
+      <h4>条件（输入列）</h4>
+      <div v-for="col in condCols" :key="col.input.id" class="cond-row">
+        <span class="cond-name" :title="col.input.field">{{ columnLabel(col.input.id) }}</span>
+        <LCheckbox
+          :model-value="!!condAny[col.input.id]"
+          label="任意"
+          @update:model-value="setAny(col.input.id, $event)"
+        />
+        <template v-if="!condAny[col.input.id]">
+          <LSelect
+            v-if="col.type === 'boolean'"
+            :model-value="condValue(col.input.id)"
+            :options="boolOptions"
+            class="w-bool"
+            @update:model-value="setCondValue(col.input.id, String($event))"
+          />
+          <template v-else>
+            <LSelect
+              :model-value="condOp[col.input.id]"
+              :options="opOptions"
+              class="w-op"
+              @update:model-value="condOp[col.input.id] = String($event) as CondOp"
+            />
+            <LInput
+              v-if="col.type === 'number'"
               :model-value="condValue(col.input.id)"
-              style="width: 140px"
-              @change="(v: string) => setCondValue(col.input.id, v)"
-            >
-              <el-option label="新手 (true)" value="true" />
-              <el-option label="老手 (false)" value="false" />
-            </el-select>
+              class="w-num"
+              @update:model-value="setCondValue(col.input.id, $event)"
+            />
             <template v-else>
-              <el-select v-model="condOp[col.input.id]" style="width: 84px">
-                <el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" />
-              </el-select>
-              <el-input
-                v-if="col.type === 'number'"
+              <LSelect
+                v-if="!condCustom[col.input.id]"
                 :model-value="condValue(col.input.id)"
-                style="width: 120px"
-                @input="(v: string) => setCondValue(col.input.id, v)"
+                :options="textOptions(col)"
+                class="w-text"
+                @update:model-value="setCondValue(col.input.id, String($event))"
               />
-              <el-select
+              <LInput
                 v-else
                 :model-value="condValue(col.input.id)"
-                filterable
-                allow-create
-                default-first-option
-                style="min-width: 180px"
-                @change="(v: string) => setCondValue(col.input.id, v)"
+                placeholder="输入自定义值"
+                class="w-text"
+                @update:model-value="setCondValue(col.input.id, $event)"
+                @keyup.enter="condCustom[col.input.id] = false"
+              />
+              <LButton
+                size="sm"
+                variant="ghost"
+                :title="condCustom[col.input.id] ? '改回下拉选择' : '输入不在列表中的值'"
+                @click="condCustom[col.input.id] = !condCustom[col.input.id]"
               >
-                <el-option v-for="o in col.options" :key="o" :label="o" :value="o" />
-              </el-select>
+                {{ condCustom[col.input.id] ? '选择' : '自定义' }}
+              </LButton>
             </template>
           </template>
-        </div>
-      </section>
+        </template>
+      </div>
+    </section>
 
-      <section>
-        <h4>输出</h4>
-        <div class="cond-row">
-          <span class="cond-name">规则 ID</span>
-          <el-input
-            :model-value="draft?.outputs.matchedRule ?? ''"
-            placeholder="唯一标识，如 spelling_high_conf_old_hand"
-            style="min-width: 260px"
-            @input="(v: string) => setOut('matchedRule', v)"
-          />
-        </div>
-        <div v-for="col in outCols" :key="col.output.id" class="cond-row">
-          <span class="cond-name" :title="col.output.field">{{ columnLabel(col.output.id) }}</span>
-          <el-input
-            v-if="col.multiline"
-            type="textarea"
-            :rows="2"
-            :model-value="draft?.outputs[col.output.id] ?? ''"
-            @input="(v: string) => setOut(col.output.id, v)"
-          />
-          <el-input
-            v-else
-            :model-value="draft?.outputs[col.output.id] ?? ''"
-            @input="(v: string) => setOut(col.output.id, v)"
-          />
-        </div>
-      </section>
+    <section>
+      <h4>输出</h4>
+      <div class="cond-row">
+        <span class="cond-name">规则 ID</span>
+        <LInput
+          :model-value="draft?.outputs.matchedRule ?? ''"
+          placeholder="唯一标识，如 spelling_high_conf_old_hand"
+          class="w-key"
+          @update:model-value="setOut('matchedRule', $event)"
+        />
+      </div>
+      <div v-for="col in outCols" :key="col.output.id" class="cond-row">
+        <span class="cond-name" :title="col.output.field">{{ columnLabel(col.output.id) }}</span>
+        <textarea
+          v-if="col.multiline"
+          class="re-textarea"
+          rows="2"
+          :value="draft?.outputs[col.output.id] ?? ''"
+          @input="setOut(col.output.id, ($event.target as HTMLTextAreaElement).value)"
+        ></textarea>
+        <LInput
+          v-else
+          :model-value="draft?.outputs[col.output.id] ?? ''"
+          class="w-out"
+          @update:model-value="setOut(col.output.id, $event)"
+        />
+      </div>
+    </section>
 
-      <section v-if="tryResult || trying">
-        <h4>试算结果（当前内存表）</h4>
-        <div v-if="trying" class="sub">正在试算…</div>
-        <div v-else-if="tryResult" class="try-result">
-          <p>
-            命中规则：<span class="mono">{{ tryMatched }}</span>
-            <span v-if="tryMatched === draft.key" class="tag ok">= 本行</span>
-          </p>
-          <p>
-            归因：<strong>{{ ATTRIBUTION_LABELS[tryResult.attribution] ?? tryResult.attribution }}</strong>
-            <span class="sub">
-              （{{ tryResult.weiner.locus }} / {{ tryResult.weiner.stability }} / {{ tryResult.weiner.controllability }}）
-            </span>
-          </p>
-          <ul v-if="tryResult.remedial.length">
-            <li v-for="(r, i) in tryResult.remedial" :key="i">{{ r }}</li>
-          </ul>
-        </div>
-      </section>
-    </div>
-    <template #footer>
-      <el-button @click="emit('close')">取消</el-button>
-      <el-button :loading="trying" @click="tryRow()">试算</el-button>
-      <el-button type="primary" @click="save()">保存行</el-button>
-    </template>
-  </el-dialog>
+    <section v-if="tryResult || trying">
+      <h4>试算结果（当前内存表）</h4>
+      <div v-if="trying" class="sub">正在试算…</div>
+      <div v-else-if="tryResult" class="try-result">
+        <p>
+          命中规则：<span class="mono">{{ tryMatched }}</span>
+          <LTag v-if="tryMatched === draft.key" tone="ok">= 本行</LTag>
+        </p>
+        <p>
+          归因：<strong>{{ ATTRIBUTION_LABELS[tryResult.attribution] ?? tryResult.attribution }}</strong>
+          <span class="sub">
+            （{{ tryResult.weiner.locus }} / {{ tryResult.weiner.stability }} / {{ tryResult.weiner.controllability }}）
+          </span>
+        </p>
+        <ul v-if="tryResult.remedial.length">
+          <li v-for="(r, i) in tryResult.remedial" :key="i">{{ r }}</li>
+        </ul>
+      </div>
+    </section>
+  </div>
 </template>
 
 <style scoped>
-.row-editor { display: flex; flex-direction: column; gap: 14px; max-height: 60vh; overflow: auto; }
-.row-editor h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
-.cond-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.cond-name { min-width: 110px; font-size: 13px; }
-.try-result { font-size: 13px; }
-.try-result p { margin: 4px 0; }
-.try-result ul { margin: 4px 0 0; padding-left: 18px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-.tag { font-size: 12px; padding: 1px 6px; border-radius: 6px; margin-left: 6px; }
-.tag.ok { background: rgba(82, 196, 124, 0.15); color: #3f9e63; }
+.row-editor {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  padding: var(--space-3); margin-bottom: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.re-head { display: flex; align-items: center; gap: var(--space-2); }
+.re-head h3 { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
+.re-head .spacer { flex: 1; }
+.row-editor section h4 { margin: 0 0 var(--space-2); font-size: var(--fs-ui); color: var(--muted); }
+.cond-row { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+.cond-name { min-width: 110px; font-size: var(--fs-ui); }
+.sub { color: var(--muted); font-size: var(--fs-sm); }
+.w-bool { width: 140px; }
+.w-op { width: 84px; }
+.w-num { width: 120px; }
+.w-text { min-width: 180px; }
+.w-key { min-width: 260px; }
+.w-out { flex: 1; min-width: 0; }
+.re-textarea {
+  flex: 1; min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font: inherit; font-size: var(--fs-ui); color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-ctl);
+  resize: vertical;
+}
+.re-textarea:focus { border-color: var(--accent); outline: none; box-shadow: var(--focus-ring); }
+.try-result { font-size: var(--fs-ui); }
+.try-result p { margin: var(--space-1) 0; }
+.try-result ul { margin: var(--space-1) 0 0; padding-left: var(--space-4); }
+.mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 </style>

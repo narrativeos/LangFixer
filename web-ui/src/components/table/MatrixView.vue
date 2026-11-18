@@ -11,6 +11,7 @@
  * - 行内「试算」：按本行条件对当前内存表求值（TableEditor 调 POST try）
  */
 import { computed, ref, watch } from 'vue'
+import { LButton, LCheckbox, LPopover } from '../../ui'
 import {
   columnLabel,
   diffTables,
@@ -40,7 +41,7 @@ const emit = defineEmits<{
   try: [row: RowModel]
 }>()
 
-const ROW_H = 34
+const ROW_H = 28
 const VIEW_H = 560
 const VIRTUAL_THRESHOLD = 300
 
@@ -196,20 +197,18 @@ function fullOut(id: string, v: string | undefined): string {
 <template>
   <div class="matrix-wrap">
     <div class="matrix-toolbar">
-      <el-button size="small" @click="emit('add')">+ 新增规则行</el-button>
-      <el-button size="small" :disabled="groups.length <= 1" @click="expandAll(true)">全部展开</el-button>
-      <el-button size="small" :disabled="groups.length <= 1" @click="expandAll(false)">全部折叠</el-button>
-      <el-popover trigger="click" :width="210">
-        <template #reference>
-          <el-button size="small">列 ▾</el-button>
+      <LButton size="sm" @click="emit('add')">+ 新增规则行</LButton>
+      <LButton size="sm" :disabled="groups.length <= 1" @click="expandAll(true)">全部展开</LButton>
+      <LButton size="sm" :disabled="groups.length <= 1" @click="expandAll(false)">全部折叠</LButton>
+      <LPopover>
+        <template #trigger="{ toggle }">
+          <LButton size="sm" @click="toggle()">列 ▾</LButton>
         </template>
         <div class="col-pick">
           <div class="col-pick-title">显示列</div>
-          <el-checkbox v-for="c in allCols" :key="c.id" v-model="colVisible[c.id]">
-            {{ columnLabel(c.id) }}
-          </el-checkbox>
+          <LCheckbox v-for="c in allCols" :key="c.id" v-model="colVisible[c.id]" :label="columnLabel(c.id)" />
         </div>
-      </el-popover>
+      </LPopover>
       <span class="spacer"></span>
       <span class="sub" v-if="smart.ungrouped && smart.reason">{{ smart.reason }}</span>
       <span class="sub" v-if="diff?.hasChanges">
@@ -263,11 +262,11 @@ function fullOut(id: string, v: string | undefined): string {
                 <span v-else>{{ displayOut(c.id, fr.row.outputs[c.id]) }}</span>
               </td>
               <td class="col-ops">
-                <el-button link size="small" @click="emit('try', fr.row)">试算</el-button>
-                <el-button link size="small" @click="emit('edit', fr.row)">编辑</el-button>
-                <el-button link size="small" @click="emit('move', fr.row, -1)">↑</el-button>
-                <el-button link size="small" @click="emit('move', fr.row, 1)">↓</el-button>
-                <el-button link size="small" type="danger" @click="emit('remove', fr.row)">删除</el-button>
+                <LButton variant="ghost" size="sm" @click="emit('try', fr.row)">试算</LButton>
+                <LButton variant="ghost" size="sm" @click="emit('edit', fr.row)">编辑</LButton>
+                <LButton variant="ghost" size="sm" title="上移" aria-label="上移" @click="emit('move', fr.row, -1)">↑</LButton>
+                <LButton variant="ghost" size="sm" title="下移" aria-label="下移" @click="emit('move', fr.row, 1)">↓</LButton>
+                <LButton variant="ghost" size="sm" @click="emit('remove', fr.row)">删除</LButton>
               </td>
             </tr>
           </template>
@@ -285,20 +284,20 @@ function fullOut(id: string, v: string | undefined): string {
 <style scoped>
 .matrix-wrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .matrix-toolbar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3); background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .matrix-toolbar .spacer { flex: 1; }
 .matrix-scroll { max-height: 560px; overflow: auto; }
-.matrix { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+.matrix { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); table-layout: fixed; }
 .matrix th {
   position: sticky; top: 0; z-index: 1;
   background: var(--surface-2); text-align: left;
-  height: 34px; padding: 0 8px; border-bottom: 1px solid var(--border);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  height: 28px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border);
+  font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .matrix td {
-  height: 34px; padding: 0 8px; border-bottom: 1px solid var(--border);
+  height: 28px; padding: 0 var(--space-2); border-bottom: 1px solid var(--border);
   vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: var(--surface);
 }
@@ -314,17 +313,16 @@ function fullOut(id: string, v: string | undefined): string {
   box-shadow: -8px 0 8px -8px rgba(0, 0, 0, 0.08);
 }
 .matrix th.col-ops { position: sticky; right: 0; z-index: 3; background: var(--surface-2); }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .row-group td { background: var(--surface-2); cursor: pointer; user-select: none; }
 .row-group:hover td { background: var(--surface-3, var(--surface-2)); }
-.group-arrow { display: inline-block; width: 16px; color: var(--muted); }
-.row-group .count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.group-arrow { display: inline-block; width: var(--space-4); color: var(--muted); }
+.row-group .count { color: var(--muted); font-size: var(--fs-sm); margin-left: var(--space-2); }
 .row-rule:hover td { background: var(--surface-2); }
-.row-added td { background: rgba(82, 196, 124, 0.10); }
-.row-changed td { background: rgba(232, 178, 60, 0.10); }
+.row-added td { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.row-changed td { background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .spacer-row td { padding: 0; border-bottom: none; background: transparent; }
-.empty { text-align: center; color: var(--muted); padding: 24px; height: auto; }
+.empty { text-align: center; color: var(--muted); padding: var(--space-6); height: auto; }
 .col-pick { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; }
-.col-pick-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.col-pick .el-checkbox { height: 26px; }
+.col-pick-title { font-size: var(--fs-sm); color: var(--muted); margin-bottom: var(--space-1); }
 </style>

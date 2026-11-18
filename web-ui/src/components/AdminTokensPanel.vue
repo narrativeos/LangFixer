@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { LButton, LEmpty, LInput, LProgress, LSection, LTable, LTag } from '../ui'
+import { toast } from '../ui/toast'
 import { api } from '../api/client'
 import { errMsg } from '../lib/err'
 import { identity, mcpConfigJson, signOut, webShareUrl } from '../lib/auth'
+import type { LColumn } from '../ui'
 
 /**
  * 密钥分发（管理面，仅超管可见）：一张令牌表就是唯一身份原语——
@@ -45,6 +47,19 @@ const issuing = ref(false)
 /** 刚签发的一枚：{token} 只存在于这里，关掉就再也取不到 */
 const fresh = ref<{ id: string; label: string; token: string } | null>(null)
 
+/** 行内两步吊销确认：处于确认态的行 id（不落弹窗，按 ui 契约用行内确认） */
+const confirmId = ref<string | null>(null)
+
+const tokenColumns: LColumn<TokenRow>[] = [
+  { key: 'label', label: '用途' },
+  { key: 'state', label: '状态', width: '84px' },
+  { key: 'usage', label: '今日用量' },
+  { key: 'total', label: '累计 / 最近' },
+  { key: 'calls', label: '调用次数' },
+  { key: 'id', label: '密钥 id' },
+  { key: 'ops', label: '操作', width: '150px', align: 'right' },
+]
+
 /** 字符数量级人话：万位起折算 */
 function chars(n: number): string {
   if (!n) return '0'
@@ -70,6 +85,7 @@ function pct(row: TokenRow): number {
 async function load() {
   loading.value = true
   error.value = ''
+  confirmId.value = null
   try {
     rows.value = await api.adminTokens()
   } catch (e) {
@@ -89,7 +105,7 @@ onMounted(load)
 async function issue() {
   const l = label.value.trim()
   if (!l) {
-    ElMessage.warning('先填写用途标签（谁在用这枚密钥）')
+    toast('先填写用途标签（谁在用这枚密钥）', 'warn')
     return
   }
   issuing.value = true
@@ -99,50 +115,57 @@ async function issue() {
     label.value = ''
     await load()
   } catch (e) {
-    ElMessage.error(`签发失败：${errMsg(e)}`)
+    toast(`签发失败：${errMsg(e)}`, 'danger')
   } finally {
     issuing.value = false
   }
 }
 
-async function revoke(row: TokenRow) {
-  try {
-    await ElMessageBox.confirm(
-      `吊销「${row.label}」？该密钥的 web 会话与 MCP 连接会立刻失效。`,
-      '吊销密钥',
-      { type: 'warning', confirmButtonText: '吊销', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
+/** 两步吊销：第一步进入行内确认态，第二步才真正调接口 */
+function askRevoke(row: TokenRow) {
+  confirmId.value = row.id
+}
+function cancelRevoke() {
+  confirmId.value = null
+}
+async function doRevoke(row: TokenRow) {
+  confirmId.value = null
   try {
     await api.adminRevokeToken(row.id)
-    ElMessage.success('已吊销')
+    toast(`已吊销「${row.label}」：该密钥的 web 会话与 MCP 连接已失效`, 'ok')
     await load()
   } catch (e) {
-    ElMessage.error(`吊销失败：${errMsg(e)}`)
+    toast(`吊销失败：${errMsg(e)}`, 'danger')
   }
 }
 
 async function leave() {
   try {
     await signOut()
-    ElMessage.success('已退出登录')
+    toast('已退出登录', 'ok')
   } catch (e) {
-    ElMessage.error(`退出失败：${errMsg(e)}`)
+    toast(`退出失败：${errMsg(e)}`, 'danger')
   }
 }
 
 async function copy(text: string, what: string) {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success(`已复制${what}`)
+    toast(`已复制${what}`, 'ok')
   } catch (e) {
-    ElMessage.error(`复制失败：${errMsg(e)}`)
+    toast(`复制失败：${errMsg(e)}；可在页面里手动选中复制`, 'danger')
   }
 }
 
 const quotaText = (n: number) => (n > 0 ? `${(n / 10000).toFixed(0)} 万字/日` : '不限')
+
+const quotaWanNum = computed({
+  get: () => String(quotaWan.value),
+  set: (v: string) => {
+    const n = Number(v)
+    if (v !== '' && Number.isFinite(n)) quotaWan.value = Math.max(0, Math.round(n))
+  },
+})
 
 /** 概览拿不到时退回逐令牌求和（同一日账的两个读法，口径一致）；账窗默认与清理周期同值 */
 const totalRetained = computed(() => rows.value.reduce((s, r) => s + r.used_retained, 0))
@@ -158,6 +181,13 @@ const totalCalls = computed(() => {
   if (stats.value?.calls_retained !== undefined) return stats.value.calls_retained
   if (rows.value.every((r) => r.calls_retained === undefined)) return undefined
   return rows.value.reduce((s, r) => s + (r.calls_retained ?? 0), 0)
+})
+
+const overview = computed(() => {
+  const active = rows.value.filter((r) => !r.revoked).length
+  return `共 ${rows.value.length} 枚（${active} 枚有效）· 在途会话 ${
+    stats.value ? stats.value.active_sessions : '—'
+  } · 近 ${windowDays.value} 天已测 ${chars(stats.value ? stats.value.chars_retained : totalRetained.value)} · 调用 ${calls(totalCalls.value)}（含被拒）`
 })
 
 /**
@@ -177,33 +207,30 @@ const keyOrigin = computed(() => {
 </script>
 
 <template>
-  <el-card shadow="never" class="keys-card">
-    <template #header>
-      <div class="card-header">
-        <span class="card-title">密钥分发</span>
-        <span class="card-sub">
-          共 {{ rows.length }} 枚（{{
-            rows.filter((r) => !r.revoked).length
-          }}
-          枚有效）· 在途会话 {{ stats ? stats.active_sessions : '—' }} · 近 {{ windowDays }}
-          天已测 {{ chars(stats ? stats.chars_retained : totalRetained) }} · 调用
-          {{ calls(totalCalls) }}（含被拒）
-        </span>
-        <span class="spacer"></span>
-        <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
-      </div>
+  <LSection class="keys-card" title="密钥分发" :desc="overview">
+    <template #actions>
+      <LButton variant="ghost" size="sm" :loading="loading" @click="load">刷新</LButton>
     </template>
 
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="keys-note">
-      {{ error }}
-    </el-alert>
+    <!-- 错误态：带下一步指引（重试），不落弹窗 -->
+    <LEmpty v-if="error" text="密钥列表加载失败" :hint="error">
+      <template #action>
+        <LButton @click="load">重试</LButton>
+      </template>
+    </LEmpty>
 
     <div class="keys-issue">
-      <el-input v-model="label" size="large" placeholder="用途标签，例如：评审-张老师" />
-      <el-input-number v-model="quotaWan" :min="0" :step="50" size="large" controls-position="right">
-        <template #suffix><span class="keys-unit">万字/日</span></template>
-      </el-input-number>
-      <el-button type="primary" size="large" :loading="issuing" @click="issue">签发</el-button>
+      <LInput v-model="label" placeholder="用途标签，例如：评审-张老师" class="keys-label" />
+      <input
+        v-model="quotaWanNum"
+        class="l-input keys-quota"
+        type="number"
+        min="0"
+        step="50"
+        aria-label="每日配额（万字）"
+      />
+      <span class="keys-unit">万字/日</span>
+      <LButton variant="primary" :loading="issuing" @click="issue">签发</LButton>
     </div>
     <p class="keys-tip">
       配额按自然日累计字符数（web 与 MCP 同一本账），超限回 429；填 0 = 不限。<br />
@@ -231,173 +258,184 @@ const keyOrigin = computed(() => {
       <div class="keys-dist">
         <section>
           <h4>发给他人的 Web 直链</h4>
-          <el-input :model-value="webShareUrl(fresh.token)" size="small" readonly>
-            <template #append>
-              <el-button @click="copy(webShareUrl(fresh.token), '直链')">复制</el-button>
-            </template>
-          </el-input>
+          <div class="keys-dist-row">
+            <input class="l-input" :value="webShareUrl(fresh.token)" readonly />
+            <LButton size="sm" @click="copy(webShareUrl(fresh.token), '直链')">复制</LButton>
+          </div>
         </section>
         <section>
           <h4>MCP 配置</h4>
-          <el-button size="small" @click="copy(mcpConfigJson(fresh.token), 'MCP 配置')">
+          <LButton size="sm" @click="copy(mcpConfigJson(fresh.token), 'MCP 配置')">
             复制配置 JSON
-          </el-button>
+          </LButton>
         </section>
       </div>
-      <el-alert type="warning" :closable="false" show-icon>
+      <div class="keys-fresh-warn">
         关掉这里就再也看不到这枚明文，请先复制发给对方。
-      </el-alert>
+      </div>
     </div>
 
-    <el-table :data="rows" size="small" class="keys-table">
-      <el-table-column prop="label" label="用途" min-width="150" />
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.revoked ? 'info' : 'success'" size="small">
-            {{ row.revoked ? '已吊销' : '有效' }}
-          </el-tag>
+    <LEmpty
+      v-if="!error && !loading && rows.length === 0"
+      text="还没有签发过密钥"
+      hint="在上方填写用途标签与每日配额，点「签发」生成第一枚评审密钥。"
+    />
+    <LTable
+      v-else-if="!error"
+      :columns="tokenColumns"
+      :rows="rows"
+      row-key="id"
+      compact
+      class="keys-table"
+    >
+      <template #col-state="{ row }">
+        <LTag :tone="row.revoked ? 'neutral' : 'ok'">{{ row.revoked ? '已吊销' : '有效' }}</LTag>
+      </template>
+      <template #col-usage="{ row }">
+        <div class="keys-usage">
+          <span>{{ chars(row.used_today) }}</span>
+          <span class="keys-usage-sub">{{ quotaText(row.quota_chars) }}</span>
+        </div>
+        <div v-if="row.quota_chars > 0 && !row.revoked" :class="{ 'bar-warn': pct(row) >= 90 }">
+          <LProgress :value="pct(row) / 100" />
+        </div>
+        <div v-if="remainToday(row) !== null" class="keys-usage-sub">
+          今日剩 {{ chars(remainToday(row) as number) }}
+        </div>
+      </template>
+      <template #col-total="{ row }">
+        <div>{{ chars(row.used_retained) }}</div>
+        <div class="keys-usage-sub">{{ dayText(row.last_day) }}</div>
+      </template>
+      <template #col-calls="{ row }">
+        <div>{{ calls(row.calls_today) }}</div>
+        <div class="keys-usage-sub">累计 {{ calls(row.calls_retained) }}</div>
+      </template>
+      <template #col-id="{ row }"><code class="keys-id">{{ row.id }}</code></template>
+      <template #col-ops="{ row }">
+        <!-- 吊销 = 行内两步确认（弹窗配额只留给 发布 / 删资源包 / 回滚） -->
+        <template v-if="confirmId === row.id">
+          <span class="keys-confirm">会话与 MCP 立即失效</span>
+          <LButton variant="danger" size="sm" @click="doRevoke(row)">确认吊销</LButton>
+          <LButton size="sm" @click="cancelRevoke">取消</LButton>
         </template>
-      </el-table-column>
-      <el-table-column label="今日用量" min-width="170">
-        <template #default="{ row }">
-          <div class="keys-usage">
-            <span>{{ chars(row.used_today) }}</span>
-            <span class="keys-usage-sub">{{ quotaText(row.quota_chars) }}</span>
-          </div>
-          <el-progress
-            v-if="row.quota_chars > 0 && !row.revoked"
-            :percentage="pct(row)"
-            :stroke-width="4"
-            :show-text="false"
-            :status="pct(row) >= 90 ? 'exception' : undefined"
-          />
-          <div v-if="remainToday(row as TokenRow) !== null" class="keys-usage-sub">
-            今日剩 {{ chars(remainToday(row as TokenRow) as number) }}
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="累计 / 最近" min-width="140">
-        <template #default="{ row }">
-          <div>{{ chars(row.used_retained) }}</div>
-          <div class="keys-usage-sub">{{ dayText(row.last_day) }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column label="调用次数" min-width="120">
-        <template #default="{ row }">
-          <div>{{ calls((row as TokenRow).calls_today) }}</div>
-          <div class="keys-usage-sub">累计 {{ calls((row as TokenRow).calls_retained) }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="id" label="密钥 id" min-width="180">
-        <template #default="{ row }"><code class="keys-id">{{ row.id }}</code></template>
-      </el-table-column>
-      <el-table-column label="操作" width="90" align="right">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            text
-            type="danger"
-            :disabled="row.revoked"
-            @click="revoke(row as TokenRow)"
-          >
-            吊销
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-  </el-card>
+        <LButton
+          v-else
+          variant="ghost"
+          size="sm"
+          :disabled="row.revoked"
+          @click="askRevoke(row)"
+        >
+          吊销
+        </LButton>
+      </template>
+    </LTable>
+  </LSection>
 </template>
 
 <style scoped>
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.spacer {
-  flex: 1;
-}
-.card-title {
-  font-weight: 600;
-  color: var(--text);
-}
-.card-sub {
-  font-size: 12px;
-  color: var(--muted);
-}
-.keys-note {
-  margin-bottom: 10px;
-}
 .keys-issue {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
-.keys-issue .el-input {
+.keys-label {
   flex: 1;
+  min-width: 0;
+}
+.keys-quota {
+  width: calc(var(--space-7) * 2);
 }
 .keys-unit {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .keys-tip {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.7;
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
   color: var(--muted);
 }
+.keys-tip code {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  padding: 0 var(--space-1);
+}
 .keys-fresh {
-  margin-top: 12px;
-  padding: 12px;
+  margin-top: var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--warn-line);
   border-radius: var(--radius-sm);
   background: var(--warn-soft);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
 }
 .keys-fresh-head {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
-  font-size: 13px;
+  font-size: var(--fs-ui);
   color: var(--text);
 }
 .keys-fresh-head code {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   word-break: break-all;
 }
 .keys-dist {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .keys-dist section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 260px;
 }
 .keys-dist h4 {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   font-weight: 600;
 }
+.keys-dist-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.keys-dist-row > input {
+  flex: 1;
+  min-width: 0;
+}
+.keys-fresh-warn {
+  font-size: var(--fs-sm);
+  color: var(--warn-ink);
+}
 .keys-table {
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 .keys-id {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .keys-usage {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1);
   align-items: baseline;
 }
 .keys-usage-sub {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
+}
+.keys-confirm {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-right: var(--space-1);
+}
+/* 配额将满属「注意」而非「错误」：进度条转琥珀，不用红 */
+.bar-warn :deep(.l-progress > i) {
+  background: var(--warn);
 }
 </style>

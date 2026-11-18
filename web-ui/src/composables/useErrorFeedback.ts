@@ -7,7 +7,7 @@
  *   - store.errors 替换（新检测）→ 全部状态清空（防旧状态泄漏到同索引新错误）
  */
 import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { toast } from '../ui/toast'
 import { useGecStore } from '../stores/gec'
 import { api } from '../api/client'
 import { applyCorrections } from '../lib/correct'
@@ -133,7 +133,9 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
           res.adopt_count && res.adopt_count > 1
             ? ` · 第 ${res.adopt_count} 次采纳此类错误`
             : ''
-        ElMessage.success(`${res.message} · 已进入错题本${repeat}`)
+        // 飞轮去向（采纳 → 错题本 / LLM 结果汇入学习样本 → 重训练）在反馈里说清
+        const flywheel = e.source === 'llm' ? ' · 已汇入 AI 复查学习样本' : ''
+        toast(`${res.message} · 已进入错题本${repeat}${flywheel}`, 'ok')
       }
       if (store.caps.learning) void store.refreshReviewDue()
       if (res.via === 'rule' || res.via === 'knowledge' || res.via === 'anomaly') {
@@ -163,7 +165,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
       feedbackMsg[index] = msg
-      ElMessage.error(msg)
+      toast(msg, 'danger')
     } finally {
       feedbackLoading.value = -1
       feedbackAction.value = null
@@ -201,11 +203,11 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       }
       delete showReason[index]
       delete reasonInput[index]
-      ElMessage.success(res.message)
+      toast(res.message, 'ok')
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
       feedbackMsg[index] = msg
-      ElMessage.error(msg)
+      toast(msg, 'danger')
     } finally {
       feedbackLoading.value = -1
       feedbackAction.value = null
@@ -224,8 +226,8 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       if (feedbackDone[i]) ok += 1
       else fail += 1
     }
-    if (fail === 0) ElMessage.success(`已放弃 ${ok} 条`)
-    else ElMessage.warning(`已放弃 ${ok} 条，失败 ${fail} 条（详见各卡片提示）`)
+    if (fail === 0) toast(`已放弃 ${ok} 条`, 'ok')
+    else toast(`已放弃 ${ok} 条，失败 ${fail} 条（详见各卡片提示）`, 'warn')
   }
 
   /** 统一反馈（全部来源层）：采纳 / 放弃（放弃 → 反思流程）
@@ -265,11 +267,11 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     try {
       const res = await api.feedbackAction(s.kind, s.payload)
       suggestionMsg[`${index}:${j}`] = res.message
-      ElMessage.success(res.message)
+      toast(res.message, 'ok')
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
       suggestionMsg[`${index}:${j}`] = msg
-      ElMessage.error(msg)
+      toast(msg, 'danger')
     } finally {
       suggestionLoading.value = ''
     }
@@ -339,10 +341,10 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
         source: 'llm_distill',
       })
       knowledgeKept[index] = res.id
-      ElMessage.success('已保留到知识存储')
+      toast('已保留到知识存储', 'ok')
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
-      ElMessage.error(msg)
+      toast(msg, 'danger')
     } finally {
       knowledgeSaving.value = -1
     }
@@ -355,7 +357,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     delete knowledgeKept[index]
     delete feedbackMsg[index]
     delete feedbackVia[index]
-    ElMessage.info('已放弃（未写入任何存储）')
+    toast('已放弃（未写入任何存储）', 'info')
   }
 
   /** 规则分支：快捷启用/停用（开关实时生效，无需重建检测器） */
@@ -365,22 +367,22 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     try {
       await api.toggleRule(store.lang, r.id, enabled)
       ruleEnabled[index] = enabled
-      ElMessage.success(enabled ? `规则 ${r.id} 已启用（即时生效）` : `规则 ${r.id} 已停用`)
+      toast(enabled ? `规则 ${r.id} 已启用（即时生效）` : `规则 ${r.id} 已停用`, 'ok')
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err as Error)?.message ?? String(err)
-      ElMessage.error(msg)
+      toast(msg, 'danger')
     }
   }
 
 
   /** 批量采纳：分类级（作用域 = 当前 visible 全部实例）/ 同类合并级（作用域 = 组内全部实例）
    *  跳过已落定反馈的实例；无 correction 且非 anomaly 的实例服务端会拒（采纳需修正文本），预筛跳过；
-   *  顺序执行（避免并发打规则蒸馏），单条失败不中断；结束弹汇总 */
-  async function batchAdopt(items: MergedItem[], scope: string) {
+   *  确认用 toast 行动位（弹窗配额外）；顺序执行（避免并发打规则蒸馏），单条失败不中断；结束 toast 汇总 */
+  function batchAdopt(items: MergedItem[], scope: string) {
     if (batch.scope) return
     const pending = items.filter(({ i }) => !feedbackDone[i])
     if (pending.length === 0) {
-      ElMessage.info('作用域内没有待采纳的错误')
+      toast('作用域内没有待采纳的错误', 'info')
       return
     }
     const adoptable = pending.filter(
@@ -388,19 +390,21 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     )
     const skipped = pending.length - adoptable.length
     const alreadyDone = items.length - pending.length
-    try {
-      await ElMessageBox.confirm(
-        `将采纳 ${scope} 的 ${adoptable.length} 处错误` +
-          (alreadyDone > 0 || skipped > 0
-            ? `（共 ${items.length} 条，跳过 ${alreadyDone + skipped} 条：已反馈 ${alreadyDone}、无修正文本 ${skipped}）`
-            : '') +
-          '，确认继续？',
-        '批量采纳',
-        { confirmButtonText: '确认采纳', cancelButtonText: '取消', type: 'warning' },
-      )
-    } catch {
-      return
-    }
+    const detail =
+      alreadyDone > 0 || skipped > 0
+        ? `（共 ${items.length} 条，跳过 ${alreadyDone + skipped} 条：已反馈 ${alreadyDone}、无修正文本 ${skipped}）`
+        : ''
+    toast(
+      `将采纳 ${scope} 的 ${adoptable.length} 处错误${detail}，确认继续？`,
+      'warn',
+      { label: '确认采纳', onClick: () => void doBatchAdopt(items, adoptable, scope) },
+      15000,
+    )
+  }
+
+  /** 批量采纳执行体（toast「确认采纳」行动位触发） */
+  async function doBatchAdopt(items: MergedItem[], adoptable: MergedItem[], scope: string) {
+    if (batch.scope) return
     batch.scope = scope
     batch.total = adoptable.length
     batch.done = 0
@@ -419,8 +423,8 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     batch.scope = ''
     batch.total = 0
     batch.done = 0
-    if (fail === 0) ElMessage.success(`批量采纳完成：成功 ${ok} 条，已进入错题本`)
-    else ElMessage.warning(`批量采纳完成：成功 ${ok} 条，失败 ${fail} 条（详见各卡片提示）`)
+    if (fail === 0) toast(`批量采纳完成：成功 ${ok} 条，已进入错题本`, 'ok')
+    else toast(`批量采纳完成：成功 ${ok} 条，失败 ${fail} 条（详见各卡片提示）`, 'warn')
   }
 
   // 新检测替换错误列表 → 清空逐错误反馈状态（防旧状态泄漏到同索引的新错误，

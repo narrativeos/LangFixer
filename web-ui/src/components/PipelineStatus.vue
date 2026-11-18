@@ -9,14 +9,16 @@
  * - 本条 = 系统能力总览（与响应级别无关）；
  * - Editor 行 = 当前所选级别下「本次将走哪些层」。
  *
- * `flat` 形态用于桌面端 header popover（去掉条状背景/边框，由 popover 提供容器）。
+ * `flat` 形态用于桌面端 header popover（紧凑竖排点行，由 popover 提供容器）。
  */
 import { computed, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { LButton, LDot } from '../ui'
+import { toast } from '../ui/toast'
 import { errMsg } from '../lib/err'
 import { api } from '../api/client'
 import { useGecStore } from '../stores/gec'
 import { identity } from '../lib/auth'
+import { plainLayerLabel } from '../lib/labels'
 import type { SettingsTestResult } from '../types'
 
 const store = useGecStore()
@@ -45,7 +47,7 @@ interface StatusItem {
 const items = computed<StatusItem[]>(() => [
   {
     key: 'rule',
-    label: '本地检查',
+    label: plainLayerLabel('rule'),
     state: 'ok',
     hint: '内置规则与词表，即时运行，始终可用',
     anchor: 'dirs',
@@ -53,7 +55,7 @@ const items = computed<StatusItem[]>(() => [
   // ② 决策模型待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：状态条不再列示
   {
     key: 'embedding',
-    label: '知识查询',
+    label: plainLayerLabel('knowledge'),
     state: store.embeddingConfigured ? 'ok' : 'missing',
     hint: store.embeddingConfigured
       ? '易错词对与错例的检索已就绪'
@@ -62,7 +64,7 @@ const items = computed<StatusItem[]>(() => [
   },
   {
     key: 'l3',
-    label: '快速定案',
+    label: plainLayerLabel('feature'),
     state: store.l3Enabled ? 'ok' : 'off',
     hint: store.l3Enabled
       ? '确定的结果本地先行处理，AI 只复核拿不准的'
@@ -71,16 +73,17 @@ const items = computed<StatusItem[]>(() => [
   },
   {
     key: 'llm',
-    label: 'AI 复查',
+    label: plainLayerLabel('llm'),
     state: store.llmEnabled ? 'ok' : 'missing',
-    hint: store.llmEnabled
-      ? 'AI 复查已就绪'
-      : '未配置：标准 / 深度检查与个性化讲解不可用；可在设置中配置',
+    hint: store.llmEnabled ? 'AI 复查已就绪' : '未配置：标准 / 深度检查与个性化讲解不可用；可在设置中配置',
     anchor: 'llm',
   },
 ])
 
 const okCount = computed(() => items.value.filter((i) => i.state === 'ok').length)
+
+const dotTone = (s: StatusItem['state']) => (s === 'ok' ? 'ok' : s === 'off' ? 'muted' : 'warn')
+const stateText = (s: StatusItem['state']) => (s === 'ok' ? '可用' : s === 'off' ? '未启用' : '未配置')
 
 function goSettings(anchor: string | null) {
   store.requestNav('settings', anchor ?? undefined)
@@ -95,9 +98,9 @@ async function testAll() {
   try {
     const r = await api.testSetting('all')
     testResult.value = r
-    ElMessage[r.ok ? 'success' : 'warning'](r.message)
+    toast(r.message, r.ok ? 'ok' : 'warn')
   } catch (e) {
-    ElMessage.error(`测试失败：${errMsg(e)}`)
+    toast(`测试失败：${errMsg(e)}`, 'danger')
   } finally {
     testing.value = false
   }
@@ -119,25 +122,21 @@ async function testAll() {
       @keydown.enter="goSettings(it.anchor)"
       @keydown.space.prevent="goSettings(it.anchor)"
     >
-      <i class="ps-dot"></i>
+      <LDot :tone="dotTone(it.state)" />
       <span class="ps-name">{{ it.label }}</span>
-      <span class="ps-state">
-        {{ it.state === 'ok' ? '可用' : it.state === 'off' ? '未启用' : '未配置' }}
-      </span>
+      <span class="ps-state">{{ stateText(it.state) }}</span>
     </div>
     <span class="ps-summary">{{ okCount }}/{{ items.length }} 项可用</span>
-    <el-button v-if="canTest" size="small" :loading="testing" @click="testAll">测试全部</el-button>
-    <el-tooltip
+    <LButton v-if="canTest" size="sm" :loading="testing" @click="testAll">测试全部</LButton>
+    <span
       v-if="testResult"
-      :content="testResult.message"
-      placement="bottom"
-      :show-after="200"
+      class="ps-test-tag"
+      :class="testResult.ok ? 'apply-ok' : 'apply-err'"
+      :title="testResult.message"
     >
-      <span class="ps-test-tag" :class="testResult.ok ? 'apply-ok' : 'apply-err'">
-        {{ testResult.ok ? '✓ 全部通过' : '✗ 部分未通过' }}
-        <span class="ps-latency">（{{ testResult.latency_ms }} ms）</span>
-      </span>
-    </el-tooltip>
+      {{ testResult.ok ? '✓ 全部通过' : '✗ 部分未通过' }}
+      <span class="ps-latency">（{{ testResult.latency_ms }} ms）</span>
+    </span>
   </div>
 </template>
 
@@ -145,53 +144,83 @@ async function testAll() {
 .pipeline-status {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 12px;
-  margin-bottom: 12px;
-  background: var(--el-fill-color-lighter, #f7f8fa);
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
-  border-radius: 8px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   flex-wrap: wrap;
+  font-size: var(--fs-ui);
 }
 .ps-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-right: 2px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-right: var(--space-1);
 }
 .ps-item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 12px;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--space-3);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   border: 1px solid transparent;
   transition: border-color 0.15s;
 }
-.ps-item:hover { border-color: var(--el-border-color); }
-.ps-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
+.ps-item:hover {
+  border-color: var(--border);
 }
-.ps-ok .ps-dot { background: var(--el-color-success, #67c23a); }
-.ps-ok { background: rgba(103, 194, 58, 0.08); }
-.ps-off .ps-dot { background: var(--el-text-color-placeholder, #c0c4cc); }
-.ps-off { color: var(--el-text-color-secondary); }
-.ps-missing .ps-dot { background: var(--el-color-warning, #e6a23c); }
-.ps-missing { background: rgba(230, 162, 60, 0.08); }
-.ps-state { font-size: 11.5px; color: var(--el-text-color-secondary); }
+.ps-off {
+  color: var(--text-2);
+}
+.ps-state {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
 .ps-summary {
-  font-size: 12px;
-  color: var(--el-text-color-regular);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
   margin-left: auto;
 }
-.ps-test-tag { font-size: 12px; white-space: nowrap; }
-.ps-latency { color: var(--el-text-color-secondary); }
-.apply-ok { color: var(--el-color-success, #67c23a); }
-.apply-err { color: var(--el-color-danger, #f56c6c); }
-/* popover 内嵌形态：容器样式交给 popover，自身只留布局 */
-.ps-flat { background: transparent; border: none; margin: 0; padding: 2px; }
+.ps-test-tag {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.ps-latency {
+  color: var(--muted);
+}
+/* 红色只用于「未通过」这一种错误语义 */
+.apply-ok {
+  color: var(--ok);
+}
+.apply-err {
+  color: var(--danger);
+}
+/* popover 内嵌形态：紧凑竖排点行（LDot + 标签），宽度按 popover ~300px 收窄 */
+.ps-flat {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: var(--space-1);
+  min-width: 260px; /* popover 约 300px，点行需要稳定可读宽度 */
+}
+.ps-flat .ps-label {
+  margin: 0 0 var(--space-1);
+}
+.ps-flat .ps-item {
+  width: 100%;
+  justify-content: flex-start;
+}
+.ps-flat .ps-state {
+  margin-left: auto;
+}
+.ps-flat .ps-summary {
+  margin: var(--space-1) 0 0;
+}
 </style>

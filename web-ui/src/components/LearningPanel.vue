@@ -8,7 +8,16 @@
  * 记忆状态挂在错题键上：换会话、删会话都不丢学习进度。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import {
+  LButton,
+  LEmpty,
+  LInput,
+  LProgress,
+  LSection,
+  LSegmented,
+  LTag,
+  toast,
+} from '../ui'
 import { useGecStore } from '../stores/gec'
 import { api } from '../api/client'
 import { errorTypeLabel } from '../lib/labels'
@@ -37,12 +46,12 @@ const submitting = ref(false)
 const RATINGS: Array<{
   key: ReviewRating
   label: string
-  type: 'danger' | 'warning' | 'primary' | 'success'
+  variant: 'default' | 'primary' | 'danger'
 }> = [
-  { key: 'again', label: '忘了', type: 'danger' },
-  { key: 'hard', label: '有点难', type: 'warning' },
-  { key: 'good', label: '记住了', type: 'primary' },
-  { key: 'easy', label: '很轻松', type: 'success' },
+  { key: 'again', label: '忘了', variant: 'danger' },
+  { key: 'hard', label: '有点难', variant: 'default' },
+  { key: 'good', label: '记住了', variant: 'primary' },
+  { key: 'easy', label: '很轻松', variant: 'default' },
 ]
 
 /** 今日复习节奏（本地计数，跨日自动重置）：进度提示 + 完成态 */
@@ -69,6 +78,11 @@ let undoTimer: ReturnType<typeof setTimeout> | undefined
 
 /** 错题本浏览控制：待复习/全部/已掌握 + 关键词搜索 + 类型折叠 */
 const notebookTab = ref<'due' | 'all' | 'mastered'>('all')
+const notebookTabOptions = computed(() => [
+  { value: 'due' as const, label: `待复习 ${queue.value.length}` },
+  { value: 'all' as const, label: `全部 ${mistakes.value.length}` },
+  { value: 'mastered' as const, label: `已掌握 ${masteredCount.value}` },
+])
 const search = ref('')
 const collapsed = ref<Set<string>>(new Set())
 function toggleGroup(type: string) {
@@ -90,6 +104,10 @@ const clozeSentence = computed(() => {
 
 const masteredCount = computed(
   () => mistakes.value.filter((m) => m.mastery_status === 'mastered').length,
+)
+/** 掌握度进度（已掌握 / 全部错题） */
+const masteryRatio = computed(() =>
+  mistakes.value.length ? masteredCount.value / mistakes.value.length : 0,
 )
 
 /** 习惯性（主导）错误类型集合：来自统一画像，与审校侧同一判定口径 */
@@ -126,18 +144,18 @@ const groups = computed(() => {
   }))
 })
 
-function masteryTag(m: Mistake): { label: string; type: 'info' | 'warning' | 'success' } {
+function masteryTag(m: Mistake): { label: string; tone: 'ok' | 'neutral' } {
   switch (m.mastery_status) {
     case 'mastered':
-      return { label: '已掌握', type: 'success' }
+      return { label: '已掌握', tone: 'ok' }
     case 'reviewing':
       return {
         label: m.next_review_at ? `复习中 · 下次 ${m.next_review_at.slice(5, 10)}` : '复习中',
-        type: 'warning',
+        tone: 'neutral',
       }
     default:
       // 「没练过」而非「待复习」：与错题本「待复习」页签（今日到期）区分，一个概念一个名字
-      return { label: '没练过', type: 'info' }
+      return { label: '没练过', tone: 'neutral' }
   }
 }
 
@@ -230,7 +248,7 @@ async function submitReview(rating: ReviewRating) {
       /* 列表刷新失败不影响复习流 */
     }
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : String(e))
+    toast(e instanceof Error ? e.message : String(e), 'danger')
   } finally {
     submitting.value = false
   }
@@ -250,9 +268,9 @@ async function undoReview() {
     const [ms, q] = await Promise.all([api.listGlobalMistakes(), api.listGlobalReviewQueue()])
     mistakes.value = ms
     queue.value = q
-    ElMessage.success('已撤销：该错题重回到复习队列')
+    toast('已撤销：该错题重回到复习队列', 'ok')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : String(e))
+    toast(e instanceof Error ? e.message : String(e), 'danger')
   }
 }
 
@@ -266,6 +284,14 @@ const emptyText = computed(() => {
   if (notebookTab.value === 'mastered') return '还没有已掌握错题——坚持复习'
   return '没有错题'
 })
+const emptyHint = computed(() => {
+  if (!loaded.value) return undefined
+  if (!mistakes.value.length) return '在「文本输入」粘贴文稿并点「检测」，确认并采纳的纠错会自动沉淀到这里'
+  if (search.value.trim()) return '清空搜索框可查看全部错题'
+  if (notebookTab.value === 'due') return '切到「全部」可翻阅所有错题，先复习几条让调度器建立记忆曲线'
+  if (notebookTab.value === 'mastered') return '按到期节奏复习，到期 ≥30 天的错题会自动标记为已掌握'
+  return undefined
+})
 
 function goWorkspace() {
   store.requestNav('workspace')
@@ -278,12 +304,9 @@ onMounted(load)
 </script>
 
 <template>
-  <el-card shadow="never" class="mistake-card">
-    <template #header>
-      <div class="card-head">
-        <span class="card-title">错题本 · 跨文稿</span>
-        <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
-      </div>
+  <LSection class="mistake-card" title="错题本 · 跨文稿">
+    <template #actions>
+      <LButton size="sm" variant="ghost" :loading="loading" @click="load">刷新</LButton>
     </template>
 
     <p class="intro">
@@ -291,14 +314,19 @@ onMounted(load)
       换文稿、删会话都不丢；复习进度（记忆状态）同样跨会话共享。
     </p>
 
-    <el-alert v-if="errorMsg" :title="`错题本加载失败：${errorMsg}`" type="warning" :closable="false" class="err" />
+    <div v-if="errorMsg" class="l-banner banner-error" role="alert">
+      错题本加载失败：{{ errorMsg }}
+      <span class="l-spacer"></span>
+      <LButton size="sm" @click="load">重试</LButton>
+    </div>
 
     <!-- 间隔复习：到期错题的练习卡（挖空回忆 → 揭晓 → FSRS 四键自评） -->
     <div v-if="current" class="review">
       <div class="review-head">
         <span class="review-title">今日复习</span>
-        <el-tag size="small" round>{{ queue.length }} 题待练</el-tag>
+        <LTag>{{ queue.length }} 题待练</LTag>
         <span class="pace">今日已复习 {{ doneToday }}/{{ DAILY_GOAL }}</span>
+        <LProgress class="pace-bar" :value="Math.min(1, doneToday / DAILY_GOAL)" />
       </div>
       <div class="review-card">
         <div class="review-type">{{ errorTypeLabel(current.error_type) }}</div>
@@ -316,20 +344,19 @@ onMounted(load)
         </div>
         <div class="review-actions">
           <template v-if="!revealed">
-            <el-button size="small" @click="revealed = true">显示答案</el-button>
+            <LButton size="sm" @click="revealed = true">显示答案</LButton>
           </template>
           <template v-else>
-            <el-button
+            <LButton
               v-for="r in RATINGS"
               :key="r.key"
-              size="small"
-              :type="r.type"
-              :plain="r.key === 'again' || r.key === 'hard'"
+              size="sm"
+              :variant="r.variant"
               :loading="submitting"
               @click="submitReview(r.key)"
             >
               {{ r.label }}
-            </el-button>
+            </LButton>
           </template>
         </div>
       </div>
@@ -339,7 +366,7 @@ onMounted(load)
     </div>
     <div v-if="undoTarget" class="undo-bar">
       已复习「{{ undoTarget.original }}」
-      <el-link type="primary" :underline="false" @click="undoReview">撤销（5 秒内）</el-link>
+      <LButton size="sm" variant="ghost" @click="undoReview">撤销（5 秒内）</LButton>
     </div>
 
     <div v-if="groups.length" class="summary">
@@ -347,34 +374,28 @@ onMounted(load)
       <span v-if="profile?.basis === 'confirmed'" class="basis">
         · 只统计你确认过的错误
       </span>
+      <div class="mastery-row">
+        <span class="pace">掌握度 {{ masteredCount }}/{{ mistakes.length }}</span>
+        <LProgress class="mastery-bar" :value="masteryRatio" />
+      </div>
     </div>
 
     <!-- 错题本浏览控制：页签过滤 + 关键词搜索 -->
     <div v-if="mistakes.length" class="notebook-controls">
-      <el-radio-group v-model="notebookTab" size="small">
-        <el-radio-button value="due">待复习 {{ queue.length }}</el-radio-button>
-        <el-radio-button value="all">全部 {{ mistakes.length }}</el-radio-button>
-        <el-radio-button value="mastered">已掌握 {{ masteredCount }}</el-radio-button>
-      </el-radio-group>
-      <el-input
-        v-model="search"
-        size="small"
-        placeholder="搜索错题内容"
-        clearable
-        class="search-input"
-      />
+      <LSegmented v-model="notebookTab" :options="notebookTabOptions" />
+      <LInput v-model="search" placeholder="搜索错题内容" class="search-input" />
     </div>
 
-    <template v-if="loading && !groups.length">
-      <el-skeleton :rows="3" animated />
-    </template>
+    <p v-if="loading && !groups.length" class="muted-line">加载中…</p>
     <template v-else-if="!groups.length">
-      <el-empty :description="emptyText">
-        <el-button v-if="!mistakes.length" type="primary" plain @click="goWorkspace">去检测</el-button>
-      </el-empty>
+      <LEmpty :text="emptyText" :hint="emptyHint">
+        <template v-if="!mistakes.length" #action>
+          <LButton variant="primary" @click="goWorkspace">去检测</LButton>
+        </template>
+      </LEmpty>
       <p v-if="!mistakes.length" class="tip">
         提示：完善学习者档案（母语 + CEFR 自评）后，LLM 讲解会按你的水平自动个性化。
-        <el-link type="primary" :underline="false" @click="goProfile">完善我的档案</el-link>
+        <LButton size="sm" variant="ghost" @click="goProfile">完善我的档案</LButton>
       </p>
     </template>
     <template v-else>
@@ -382,14 +403,12 @@ onMounted(load)
         <div class="group-head" @click="toggleGroup(g.type)">
           <span class="group-caret">{{ collapsed.has(g.type) ? '▸' : '▾' }}</span>
           <span class="group-label">{{ g.label }}</span>
-          <el-tag
+          <LTag
             v-if="g.habitual"
-            size="small"
-            type="danger"
-            effect="plain"
+            tone="neutral"
             title="在你确认过的错误里，这类占比最高（跨文稿统计）"
-          >习惯性</el-tag>
-          <el-tag size="small" type="info" round>{{ g.total }} 次</el-tag>
+          >习惯性</LTag>
+          <LTag>{{ g.total }} 次</LTag>
         </div>
         <template v-if="!collapsed.has(g.type)">
           <div v-for="m in g.items" :key="m.id" class="mistake">
@@ -398,9 +417,9 @@ onMounted(load)
               <span class="orig">{{ m.original }}</span>
               <span v-if="m.correction" class="arrow">→</span>
               <span v-if="m.correction" class="corr">{{ m.correction }}</span>
-              <el-tag v-if="m.count > 1" size="small" type="warning" effect="plain">×{{ m.count }}</el-tag>
-              <el-tag v-if="m.sessions_seen && m.sessions_seen > 1" size="small" type="info" effect="plain">来自 {{ m.sessions_seen }} 个会话</el-tag>
-              <el-tag size="small" :type="masteryTag(m).type" effect="plain">{{ masteryTag(m).label }}</el-tag>
+              <LTag v-if="m.count > 1">×{{ m.count }}</LTag>
+              <LTag v-if="m.sessions_seen && m.sessions_seen > 1">来自 {{ m.sessions_seen }} 个会话</LTag>
+              <LTag :tone="masteryTag(m).tone">{{ masteryTag(m).label }}</LTag>
               <span class="time">{{ m.created_at.slice(0, 10) }}</span>
             </div>
           </div>
@@ -433,50 +452,232 @@ onMounted(load)
         </span>
       </div>
     </div>
-  </el-card>
+  </LSection>
 </template>
 
 <style scoped>
-.card-head { display: flex; align-items: center; justify-content: space-between; }
-.card-title { font-weight: 600; }
-.intro { margin: 0 0 12px; line-height: 1.7; color: var(--el-text-color-regular); }
-.err { margin-bottom: 12px; }
-.summary { margin: 0 0 12px; color: var(--el-text-color-secondary); font-size: 13px; }
-.review { margin-bottom: 16px; }
-.review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.review-title { font-weight: 600; color: var(--el-color-primary); }
-.review-card { border: 1px solid var(--el-color-primary-light-5); border-radius: 8px; padding: 12px 14px; background: var(--el-color-primary-light-9); }
-.review-type { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px; }
-.review-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
-.review-context { margin-top: 6px; color: var(--el-text-color-secondary); font-size: 13px; }
-.tip { margin: 8px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
-.pace { color: var(--el-text-color-secondary); font-size: 12px; }
-.review.done { padding: 10px 14px; border: 1px dashed var(--el-color-success-light-5); border-radius: 8px; color: var(--el-color-success); font-size: 14px; }
-.undo-bar { margin: 0 0 14px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--el-text-color-secondary); }
-.notebook-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.search-input { width: 200px; }
-.group { margin-bottom: 16px; }
-.group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; user-select: none; }
-.group-caret { color: var(--el-text-color-secondary); font-size: 12px; width: 14px; }
-.group-label { font-weight: 600; }
-.mistake { padding: 8px 10px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; margin-bottom: 6px; }
-.sentence { line-height: 1.6; margin-bottom: 4px; }
-.fix { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.orig { color: var(--el-color-danger); text-decoration: line-through; }
-.corr { color: var(--el-color-success); font-weight: 600; }
-.arrow { color: var(--el-text-color-secondary); }
-.time { margin-left: auto; color: var(--el-text-color-secondary); font-size: 12px; }
-.review-hint { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 6px; }
-.stats { margin-top: 18px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 12px; }
-.stats-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.stats-title { font-weight: 600; font-size: 13px; }
-.stats-bars { display: flex; align-items: flex-end; gap: 2px; height: 32px; }
-.bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; min-width: 0; }
-.bar-adopt { background: var(--el-color-primary-light-5); border-radius: 2px; }
-.bar-review { background: var(--el-color-primary); border-radius: 2px; }
-.stats-legend { display: flex; gap: 12px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); flex-wrap: wrap; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
-.dot-adopt { background: var(--el-color-primary-light-5); }
-.dot-review { background: var(--el-color-primary); }
-.rating-chip { padding: 1px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; }
+.intro {
+  margin: 0 0 var(--space-3);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+}
+.banner-error {
+  margin-bottom: var(--space-3);
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+.muted-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+.summary {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+.mastery-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.mastery-bar {
+  flex: 1;
+  max-width: 240px;
+}
+.review {
+  margin-bottom: var(--space-4);
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.review-title {
+  font-weight: 600;
+  color: var(--accent);
+}
+.pace-bar {
+  width: 96px;
+}
+.review-card {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  background: var(--primary-soft);
+}
+.review-type {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-bottom: var(--space-2);
+}
+.review-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.review-context {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+.tip {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+.pace {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.review.done {
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed color-mix(in srgb, var(--ok) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--ok);
+  font-size: var(--fs-md);
+}
+.undo-bar {
+  margin: 0 0 var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-ui);
+  color: var(--muted);
+}
+.notebook-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.search-input {
+  width: 200px;
+}
+.group {
+  margin-bottom: var(--space-4);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+}
+.group-caret {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  width: 14px;
+}
+.group-label {
+  font-weight: 600;
+}
+.mistake {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  margin-bottom: var(--space-2);
+}
+.sentence {
+  line-height: var(--lh-ui);
+  margin-bottom: var(--space-1);
+}
+.fix {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-ui);
+  flex-wrap: wrap;
+}
+.orig {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+.corr {
+  color: var(--ok);
+  font-weight: 600;
+}
+.arrow {
+  color: var(--muted);
+}
+.time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.review-hint {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-bottom: var(--space-2);
+}
+.stats {
+  margin-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+.stats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+.stats-title {
+  font-weight: 600;
+  font-size: var(--fs-ui);
+}
+.stats-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: var(--h-control);
+}
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  min-width: 0;
+}
+.bar-adopt {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+}
+.bar-review {
+  background: var(--accent);
+  border-radius: 2px;
+}
+.stats-legend {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: var(--space-1);
+}
+.dot-adopt {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.dot-review {
+  background: var(--accent);
+}
+.rating-chip {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
 </style>

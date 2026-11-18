@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { errMsg } from '../lib/err'
-import { accessKey, clearAccessKey, identity, loginWithKey, mcpEndpoint } from '../lib/auth'
-
 /**
  * Token 门禁页：验证通过前产品界面不渲染（App.vue 用它替换整个界面）。
  * 密钥来源两条：管理员分发的 `?token=` 直链（自动登录后地址栏即干净）与手输；
  * 无注册、无找回密码——服务端也只认这一张令牌表。
  */
+import { ref } from 'vue'
+import { LButton, LInput } from '../ui'
+import { errMsg } from '../lib/err'
+import { accessKey, clearAccessKey, identity, loginWithKey, mcpEndpoint } from '../lib/auth'
+
 const keyInput = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -67,22 +68,24 @@ function reset() {
 
       <template v-if="!identity.authenticated">
         <label class="gate-label" for="gate-key">访问密钥</label>
-        <el-input
+        <LInput
           id="gate-key"
           v-model="keyInput"
           autofocus
-          size="large"
           placeholder="lf_…（管理员分发）"
           :disabled="busy"
           @keyup.enter="enter"
         />
-        <el-button type="primary" size="large" :loading="busy" class="gate-enter" @click="enter">
+        <LButton variant="primary" :loading="busy" class="gate-enter" @click="enter">
           进入
-        </el-button>
-        <el-alert v-if="error" class="gate-error" type="error" :closable="false" show-icon>
-          {{ error }}
-        </el-alert>
-        <el-button v-if="hadKey" size="small" text @click="reset">清除本标签页记住的密钥</el-button>
+        </LButton>
+        <!-- 错误态：红色只用于这里；下一步指引就在文案里 -->
+        <p v-if="error" class="gate-error" role="alert">
+          {{ error }}——请确认密钥完整未过期，或直接使用管理员发来的 <code>?token=…</code> 直链。
+        </p>
+        <LButton v-if="hadKey" variant="ghost" size="sm" @click="reset">
+          清除本标签页记住的密钥
+        </LButton>
         <ul class="gate-hint">
           <li>无需注册：密钥由管理员签发，直接粘贴即可。</li>
           <li>收到的是 <code>?token=…</code> 链接？打开就会自动进入，不用手输。</li>
@@ -102,7 +105,7 @@ function reset() {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: var(--space-6);
   background: var(--bg);
 }
 .gate-card {
@@ -111,20 +114,20 @@ function reset() {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
-  padding: 26px;
+  padding: var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .gate-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 4px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 .gate-mark {
-  width: 34px;
-  height: 34px;
+  width: var(--space-7);
+  height: var(--space-7);
   display: grid;
   place-items: center;
   border-radius: var(--radius-sm);
@@ -133,51 +136,47 @@ function reset() {
 }
 .gate-brand h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--fs-lg);
   color: var(--text);
 }
 .gate-brand p {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 .gate-label {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 .gate-enter {
   width: 100%;
 }
-.gate-row {
-  display: flex;
-  gap: 8px;
-}
-.gate-row .gate-enter {
-  flex: 1;
-  width: auto;
-}
 .gate-error {
   margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--danger);
 }
-.gate-hint {
-  margin: 2px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--muted);
-}
+.gate-error code,
 .gate-hint code {
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 4px;
+  border-radius: var(--radius-ctl);
+  padding: 0 var(--space-1);
+}
+.gate-hint {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--muted);
 }
 .gate-foot {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .gate-foot a {

@@ -11,9 +11,9 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { errMsg } from '../lib/err'
 
-import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import type { ErrorItem, RuleExample, RuleInfo, RulesResponse } from '../types'
+import { LButton, LEmpty, LInput, LSection, LSelect, LSwitch, toast } from '../ui'
 
 const props = defineProps<{ lang: string }>()
 
@@ -30,6 +30,11 @@ const trying = ref<Set<string>>(new Set())
 /** 示例对缓存（id → 示例列表；列表接口只带 example_count，示例按需分页加载） */
 const examplesCache = ref<Record<string, RuleExample[]>>({})
 const examplesLoading = ref<Set<string>>(new Set())
+
+const catOptions = computed(() => [
+  { value: '', label: '全部分类' },
+  ...(rules.value?.categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+])
 
 async function load() {
   loading.value = true
@@ -59,7 +64,7 @@ async function loadExamples(r: RuleInfo): Promise<RuleExample[]> {
     examplesCache.value = { ...examplesCache.value, [r.id]: list.examples }
     return list.examples
   } catch (e) {
-    ElMessage.error(`示例加载失败：${errMsg(e)}`)
+    toast(`示例加载失败：${errMsg(e)}`, 'danger')
     return []
   } finally {
     examplesLoading.value.delete(r.id)
@@ -97,7 +102,7 @@ async function toggle(id: string, enabled: boolean) {
     pending.value.delete(id)
   } catch (e) {
     pending.value.delete(id)
-    ElMessage.error(`开关失败：${errMsg(e)}`)
+    toast(`开关失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -117,7 +122,7 @@ async function toggleCategory(catId: string, enabled: boolean) {
     delete pendingCat.value[catId]
   } catch (e) {
     delete pendingCat.value[catId]
-    ElMessage.error(`批量开关失败：${errMsg(e)}`)
+    toast(`批量开关失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -137,7 +142,7 @@ async function tryRule(r: RuleInfo) {
   const examples = await loadExamples(r)
   const text = examples[0]?.wrong
   if (!text) {
-    ElMessage.warning('该规则没有示例句，无法试算')
+    toast('该规则没有示例句，无法试算', 'warn')
     return
   }
   trying.value.add(r.id)
@@ -146,10 +151,10 @@ async function tryRule(r: RuleInfo) {
     const errors = resp.errors
     const hit = errors.some((e) => e.rule_id === r.id)
     tryResults.value[r.id] = { hit, errors }
-    if (hit) ElMessage.success(`试算命中 ${r.id}`)
-    else ElMessage.warning(`试算未命中 ${r.id}（当前 ${errors.length} 个错误，可能规则已停用或条件不满足）`)
+    if (hit) toast(`试算命中 ${r.id}`, 'ok')
+    else toast(`试算未命中 ${r.id}（当前 ${errors.length} 个错误，可能规则已停用或条件不满足）`, 'warn')
   } catch (e) {
-    ElMessage.error(`试算失败：${errMsg(e)}`)
+    toast(`试算失败：${errMsg(e)}`, 'danger')
   } finally {
     trying.value.delete(r.id)
   }
@@ -160,34 +165,26 @@ watch(() => props.lang, load)
 </script>
 
 <template>
-  <el-card shadow="never">
-    <template #header>
-      <div class="card-header">
-        <span class="card-title">规则管理</span>
-        <span class="sub">开关即时生效并持久化（重启不丢）</span>
-        <span class="spacer"></span>
-        <el-button size="small" :loading="loading" @click="load">
-          <el-icon v-if="!loading"><Refresh /></el-icon>
-          刷新
-        </el-button>
-      </div>
+  <LSection title="规则管理" desc="开关即时生效并持久化（重启不丢）">
+    <template #actions>
+      <LButton size="sm" :loading="loading" @click="load">刷新</LButton>
     </template>
-    <div v-if="loading" class="loading">
-      <el-icon class="is-loading"><Loading /></el-icon>
-      加载中…
+
+    <div v-if="loading" class="sub">加载中…</div>
+    <div v-else-if="error" class="error-banner">
+      <span class="error-text">{{ error }}</span>
+      <LButton size="sm" @click="load">重试</LButton>
     </div>
-    <el-alert v-else-if="error" type="error" :closable="false" :title="error" />
     <div v-else-if="rules">
       <div class="filters">
-        <el-input
-          v-model="search"
-          placeholder="搜索规则 ID / 描述"
-          clearable
-          style="width: 260px"
+        <LInput v-model="search" placeholder="搜索规则 ID / 描述" class="f-search" />
+        <LSelect
+          :model-value="category"
+          :options="catOptions"
+          aria-label="按分类过滤"
+          class="f-cat"
+          @update:model-value="category = String($event)"
         />
-        <el-select v-model="category" clearable placeholder="全部分类" style="width: 180px">
-          <el-option v-for="c in rules.categories" :key="c.id" :label="c.name" :value="c.id" />
-        </el-select>
         <span class="spacer"></span>
         <span class="sub">
           {{ filtered.length }} / {{ rules.rules.length }} 条
@@ -201,30 +198,31 @@ watch(() => props.lang, load)
             {{ rules.rules.filter((x) => x.category === cat.id && (category === '' || category === cat.id)).length }} 条
           </span>
           <span class="spacer"></span>
-          <el-button
-            size="small"
+          <LButton
+            size="sm"
             :loading="pendingCat[cat.id] !== undefined"
             @click="toggleCategory(cat.id, true)"
           >
             全部启用
-          </el-button>
-          <el-button
-            size="small"
+          </LButton>
+          <LButton
+            size="sm"
             :loading="pendingCat[cat.id] !== undefined"
             @click="toggleCategory(cat.id, false)"
           >
             全部停用
-          </el-button>
+          </LButton>
         </div>
         <div
           v-for="r in filtered.filter((x) => x.category === cat.id)"
           :key="r.id"
           class="rule-row"
         >
-          <el-switch
+          <LSwitch
             :model-value="r.enabled"
-            :loading="isPending(r.id)"
-            @change="(v: string | number | boolean) => toggle(r.id, v === true)"
+            :disabled="isPending(r.id)"
+            :aria-label="`启用规则 ${r.id}`"
+            @update:model-value="toggle(r.id, $event)"
           />
           <div class="rule-main">
             <div class="rule-line">
@@ -232,9 +230,9 @@ watch(() => props.lang, load)
               <span class="rule-desc">{{ r.description }}</span>
             </div>
             <div class="rule-actions">
-              <el-button
-                link
-                size="small"
+              <LButton
+                size="sm"
+                variant="ghost"
                 :loading="examplesLoading.has(r.id)"
                 @click="toggleExpand(r.id)"
                 v-if="r.example_count"
@@ -244,16 +242,16 @@ watch(() => props.lang, load)
                     ? '收起示例'
                     : `示例（${examplesCache[r.id]?.length ?? r.example_count}）`
                 }}
-              </el-button>
-              <el-button
-                link
-                size="small"
+              </LButton>
+              <LButton
+                size="sm"
+                variant="ghost"
                 :loading="trying.has(r.id)"
                 @click="tryRule(r)"
                 v-if="r.example_count"
               >
                 试算
-              </el-button>
+              </LButton>
             </div>
             <div v-if="expanded.has(r.id) && r.example_count" class="examples">
               <div v-if="!examplesCache[r.id]?.length" class="sub">示例加载中…</div>
@@ -277,36 +275,54 @@ watch(() => props.lang, load)
           </div>
         </div>
       </div>
-      <el-empty v-if="filtered.length === 0" description="无匹配规则" :image-size="60" />
+      <LEmpty
+        v-if="filtered.length === 0"
+        text="无匹配规则"
+        hint="换个关键词或选「全部分类」再试"
+      />
     </div>
-  </el-card>
+  </LSection>
 </template>
 
 <style scoped>
-.filters { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.filters .spacer { flex: 1; }
-.category-section { margin-bottom: 14px; }
-.category-header {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+.sub { color: var(--muted); font-size: var(--fs-sm); }
+.error-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3);
+  font-size: var(--fs-ui);
+  background: var(--danger-soft); border: 1px solid var(--danger-line);
+  border-radius: var(--radius-sm);
 }
-.category-header strong { font-size: 13.5px; }
-.category-header .count { color: var(--muted); font-size: 12px; }
+.error-text { color: var(--danger-ink); }
+.filters { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+.filters .f-search { width: 260px; }
+.filters .f-cat { width: 180px; }
+.filters .spacer { flex: 1; }
+.category-section { margin-bottom: var(--space-4); }
+.category-header {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-bottom: var(--space-2); padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.category-header strong { font-size: var(--fs-md); }
+.category-header .count { color: var(--muted); font-size: var(--fs-xs); }
 .category-header .spacer { flex: 1; }
-.rule-row { display: flex; align-items: flex-start; gap: 12px; padding: 6px 8px; border-radius: 8px; }
+.rule-row {
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm);
+}
 .rule-row:hover { background: var(--surface-2); }
 .rule-main { flex: 1; min-width: 0; }
-.rule-line { display: flex; align-items: baseline; gap: 10px; }
-.rule-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; min-width: 200px; }
-.rule-desc { color: var(--muted); font-size: 13px; }
-.rule-actions { margin-top: 2px; }
-.examples { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
-.example { font-size: 13px; }
-.example .wrong { color: #c05252; }
-.example .right { color: #3f9e63; }
-.example .arrow { color: var(--muted); margin: 0 4px; }
-.try-out { margin-top: 6px; font-size: 13px; }
-.try-out.hit { color: #3f9e63; }
-.try-out.miss { color: #c05252; }
-.loading { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.rule-line { display: flex; align-items: baseline; gap: var(--space-2); }
+.rule-id { font-family: var(--font-mono); font-size: var(--fs-sm); min-width: 200px; }
+.rule-desc { color: var(--muted); font-size: var(--fs-ui); }
+.rule-actions { margin-top: var(--space-1); display: flex; gap: var(--space-1); }
+.examples { margin-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); }
+.example { font-size: var(--fs-ui); }
+.example .wrong { color: var(--danger); }
+.example .right { color: var(--ok); }
+.example .arrow { color: var(--muted); margin: 0 var(--space-1); }
+.try-out { margin-top: var(--space-2); font-size: var(--fs-ui); }
+.try-out.hit { color: var(--ok); }
+.try-out.miss { color: var(--danger); }
 </style>

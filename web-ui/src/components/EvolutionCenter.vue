@@ -3,16 +3,35 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { errMsg } from '../lib/err'
 import { useGecStore } from '../stores/gec'
 
-import { ElMessage } from 'element-plus'
+import {
+  LButton,
+  LCheckbox,
+  LDot,
+  LEmpty,
+  LProgress,
+  LSection,
+  LSegmented,
+  LSelect,
+  LSwitch,
+  LTable,
+  LTag,
+  toast,
+} from '../ui'
+import type { LColumn } from '../ui'
 import { api } from '../api/client'
 import type {
   EvalRunRequest,
   EvalJob,
+  EvalLayerStats,
   EvalReport,
   EvalReportSummary,
   ReflectionCenterReport,
+  ReflectionCenterSuggestion,
+  ReflectionEvalLayer,
   ReflectionReportSummary,
+  ReflectionStat,
   ReflectionSuggestionRow,
+  ContributionLayer,
   DomainPool,
   LlmTrainingData,
   TrainingJobRow,
@@ -21,9 +40,17 @@ import type {
   OptimizationRound,
   RoundEvaluateResponse,
   RoundReport,
+  RoundReportAction,
 } from '../types'
 
-const activeTab = ref<'eval' | 'reflect' | 'train' | 'contribution'>('eval')
+type ActiveTab = 'eval' | 'reflect' | 'train' | 'contribution'
+const activeTab = ref<ActiveTab>('eval')
+const TAB_OPTIONS: { value: ActiveTab; label: string }[] = [
+  { value: 'eval', label: '测评' },
+  { value: 'reflect', label: '反思' },
+  { value: 'train', label: '训练' },
+  { value: 'contribution', label: '贡献与轮次' },
+]
 const store = useGecStore()
 
 // tab 级导航（T1-4）：反思「执行建议」成功后 → 自动切到「训练」tab 查看作业结果
@@ -125,7 +152,7 @@ async function startRun() {
     poll()
   } catch (e) {
     running.value = false
-    ElMessage.error(`评测发起失败：${errMsg(e)}`)
+    toast(`评测发起失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -141,14 +168,14 @@ function poll() {
         void loadReports()
       } else if (j.status === 'error') {
         running.value = false
-        ElMessage.error(j.error || '评测失败')
+        toast(j.error || '评测失败', 'danger')
       } else {
         pollTimer = window.setTimeout(poll, 3000)
       }
     })
     .catch((e) => {
       running.value = false
-      ElMessage.error(`进度查询失败：${errMsg(e)}`)
+      toast(`进度查询失败：${errMsg(e)}`, 'danger')
     })
 }
 
@@ -164,7 +191,7 @@ async function loadReports() {
     const r = await api.listEvalReports()
     reports.value = r.reports
   } catch (e) {
-    ElMessage.warning(`报告列表加载失败（测评服务未运行？）：${errMsg(e)}`)
+    toast(`报告列表加载失败（测评服务未运行？）：${errMsg(e)}`, 'warn')
   } finally {
     reportsLoading.value = false
   }
@@ -174,7 +201,7 @@ async function loadReport(id: string) {
   try {
     report.value = await api.getEvalReport(id)
   } catch (e) {
-    ElMessage.error(`报告加载失败：${errMsg(e)}`)
+    toast(`报告加载失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -190,7 +217,7 @@ async function loadCompare() {
     reportA.value = await api.getEvalReport(compareA.value)
     reportB.value = await api.getEvalReport(compareB.value)
   } catch (e) {
-    ElMessage.error(`对比加载失败：${errMsg(e)}`)
+    toast(`对比加载失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -204,7 +231,7 @@ const LAYER_NAMES: Record<string, string> = {
   llm: '③ LLM',
 }
 
-const layerRows = computed(() => {
+const layerRows = computed<LayerView[]>(() => {
   if (!report.value) return []
   return LAYER_ORDER.filter((k) => report.value!.layers[k]).map((k) => ({
     name: LAYER_NAMES[k] ?? k,
@@ -263,7 +290,7 @@ async function runReflect() {
     void loadReflectSuggestions()
     void loadReflectReports()
   } catch (e) {
-    ElMessage.error(`反思报告生成失败：${errMsg(e)}`)
+    toast(`反思报告生成失败：${errMsg(e)}`, 'danger')
   } finally {
     reflectRunning.value = false
   }
@@ -274,7 +301,7 @@ async function loadReflectReports() {
     const r = await api.listReflectReports()
     reflectReports.value = r.reports
   } catch (e) {
-    ElMessage.warning(`反思报告列表加载失败：${errMsg(e)}`)
+    toast(`反思报告列表加载失败：${errMsg(e)}`, 'warn')
   }
 }
 
@@ -284,7 +311,7 @@ async function loadReflectReport(id: number) {
     reflectReport.value = r.report
     void loadReflectSuggestions()
   } catch (e) {
-    ElMessage.error(`报告加载失败：${errMsg(e)}`)
+    toast(`报告加载失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -293,17 +320,17 @@ async function loadReflectSuggestions() {
     const r = await api.listReflectSuggestions(sugStatusFilter.value || undefined, undefined)
     reflectSuggestions.value = r.suggestions
   } catch (e) {
-    ElMessage.warning(`建议队列加载失败：${errMsg(e)}`)
+    toast(`建议队列加载失败：${errMsg(e)}`, 'warn')
   }
 }
 
 async function setSuggestionStatus(id: number, status: string) {
   try {
     await api.updateReflectSuggestion(id, status)
-    ElMessage.success(`建议 #${id} 已标记为「${SUG_STATUS_NAMES[status] ?? status}」`)
+    toast(`建议 #${id} 已标记为「${SUG_STATUS_NAMES[status] ?? status}」`, 'ok')
     void loadReflectSuggestions()
   } catch (e) {
-    ElMessage.error(`状态更新失败：${errMsg(e)}`)
+    toast(`状态更新失败：${errMsg(e)}`, 'danger')
   }
 }
 
@@ -316,7 +343,7 @@ async function adoptLexiconAdd(row: ReflectionSuggestionRow) {
     error_type?: string
   }
   if (!p?.wrong || !p?.right) {
-    ElMessage.warning('建议载荷缺少 wrong / right，无法采纳')
+    toast('建议载荷缺少 wrong / right，无法采纳', 'warn')
     return
   }
   runningSuggestion.value = row.id
@@ -329,10 +356,10 @@ async function adoptLexiconAdd(row: ReflectionSuggestionRow) {
       source: 'knowledge_ingest',
     })
     await api.updateReflectSuggestion(row.id, 'applied')
-    ElMessage.success(`已采纳：「${p.wrong} → ${p.right}」进入学习知识召回库`)
+    toast(`已采纳：「${p.wrong} → ${p.right}」进入学习知识召回库`, 'ok')
     void loadReflectSuggestions()
   } catch (e) {
-    ElMessage.error(`采纳失败：${errMsg(e)}`)
+    toast(`采纳失败：${errMsg(e)}`, 'danger')
   } finally {
     runningSuggestion.value = null
   }
@@ -377,7 +404,7 @@ async function loadTrainJobs() {
     const r = await api.listTrainingJobs(undefined, jobStatusFilter.value || undefined)
     trainJobs.value = r.jobs
   } catch (e) {
-    ElMessage.warning(`作业列表加载失败：${errMsg(e)}`)
+    toast(`作业列表加载失败：${errMsg(e)}`, 'warn')
   } finally {
     trainJobsLoading.value = false
   }
@@ -392,10 +419,10 @@ async function buildPool() {
       .filter(Boolean)
     const r = await api.trainBuildPool({ lang: trainLang.value, clean_sentences: clean })
     poolResult.value = r.pool
-    ElMessage.success(`领域池已构建：${r.pool.total} 条（error ${r.pool.error_count} / clean ${r.pool.clean_count}）`)
+    toast(`领域池已构建：${r.pool.total} 条（error ${r.pool.error_count} / clean ${r.pool.clean_count}）`, 'ok')
     void loadTrainJobs()
   } catch (e) {
-    ElMessage.error(`领域池构建失败：${errMsg(e)}`)
+    toast(`领域池构建失败：${errMsg(e)}`, 'danger')
   } finally {
     poolBusy.value = false
   }
@@ -406,10 +433,10 @@ async function buildLlmData() {
   try {
     const r = await api.trainBuildLlmData({ lang: trainLang.value })
     llmDataResult.value = r.data
-    ElMessage.success(`LLM 训练数据：${r.data.samples.length} 条 SFT 样本`)
+    toast(`LLM 训练数据：${r.data.samples.length} 条 SFT 样本`, 'ok')
     void loadTrainJobs()
   } catch (e) {
-    ElMessage.error(`LLM 训练数据构建失败：${errMsg(e)}`)
+    toast(`LLM 训练数据构建失败：${errMsg(e)}`, 'danger')
   } finally {
     llmBusy.value = false
   }
@@ -421,10 +448,10 @@ async function runL3Retrain() {
     const r = await api.trainRunL3Retrain({ lang: trainLang.value })
     l3RetrainResult.value = r.result
     const swapped = r.result['swapped'] === true
-    ElMessage.success(swapped ? 'L3 重训练完成：模型已热切换' : 'L3 重训练完成（保留旧模型）')
+    toast(swapped ? 'L3 重训练完成：模型已热切换' : 'L3 重训练完成（保留旧模型）', 'ok')
     void loadTrainJobs()
   } catch (e) {
-    ElMessage.error(`L3 重训练失败（feature-model 服务可达？）：${errMsg(e)}`)
+    toast(`L3 重训练失败（feature-model 服务可达？）：${errMsg(e)}`, 'danger')
     void loadTrainJobs()
   } finally {
     l3RetrainBusy.value = false
@@ -444,10 +471,10 @@ async function applyLexicon() {
       words: words.length ? words : undefined,
     })
     lexResult.value = r
-    ElMessage.success(`条件化入库：${r.applied.length} 条新增（${r.skipped} 条已存在）`)
+    toast(`条件化入库：${r.applied.length} 条新增（${r.skipped} 条已存在）`, 'ok')
     void loadTrainJobs()
   } catch (e) {
-    ElMessage.error(`条件化入库失败：${errMsg(e)}`)
+    toast(`条件化入库失败：${errMsg(e)}`, 'danger')
   } finally {
     lexBusy.value = false
   }
@@ -474,15 +501,16 @@ async function runSuggestion(id: number) {
   try {
     const r = await api.trainRunSuggestion(id)
     const summary = jobResultSummary(r.result)
-    ElMessage.success(
+    toast(
       `建议 #${id} 已执行：${JOB_KIND_NAMES[r.job_kind] ?? r.job_kind} 作业 #${r.job_id}` +
         (summary ? `（${summary}）` : ''),
+      'ok',
     )
     store.requestNavTab('train')
     void loadReflectSuggestions()
     void loadTrainJobs()
   } catch (e) {
-    ElMessage.error(`建议执行失败（作业已记录为 failed，可重试）：${errMsg(e)}`)
+    toast(`建议执行失败（作业已记录为 failed，可重试）：${errMsg(e)}`, 'danger')
     void loadReflectSuggestions()
     void loadTrainJobs()
   } finally {
@@ -653,7 +681,7 @@ async function loadContributions() {
       mode: g?.mode ?? null,
     })
   } catch (e) {
-    ElMessage.error(`贡献测量失败：${errMsg(e)}`)
+    toast(`贡献测量失败：${errMsg(e)}`, 'danger')
   } finally {
     contribLoading.value = false
   }
@@ -671,13 +699,13 @@ async function evaluateRound() {
   try {
     roundEvalResult.value = await api.roundEvaluate({ lang: roundLang.value })
     if (roundEvalResult.value.action === 'round_proposed') {
-      ElMessage.success(`轮次 #${roundEvalResult.value.round!.id} 已提案（待人工确认）`)
+      toast(`轮次 #${roundEvalResult.value.round!.id} 已提案（待人工确认）`, 'ok')
     } else {
-      ElMessage.info('无需开轮：' + (roundEvalResult.value.reasons ?? []).join('；'))
+      toast('无需开轮：' + (roundEvalResult.value.reasons ?? []).join('；'), 'info')
     }
     await loadRounds()
   } catch (e) {
-    ElMessage.error(`自动评估失败：${errMsg(e)}`)
+    toast(`自动评估失败：${errMsg(e)}`, 'danger')
   } finally {
     roundEvaluating.value = false
   }
@@ -689,7 +717,7 @@ async function loadRounds() {
     const r = await api.roundList(roundLang.value || undefined)
     rounds.value = r.rounds
   } catch (e) {
-    ElMessage.error(`轮次列表加载失败：${errMsg(e)}`)
+    toast(`轮次列表加载失败：${errMsg(e)}`, 'danger')
   } finally {
     roundsLoading.value = false
   }
@@ -699,10 +727,10 @@ async function confirmRound(id: number) {
   actingRoundId.value = id
   try {
     await api.roundConfirm(id)
-    ElMessage.success(`轮次 #${id} 已确认`)
+    toast(`轮次 #${id} 已确认`, 'ok')
     await loadRounds()
   } catch (e) {
-    ElMessage.error(`确认失败：${errMsg(e)}`)
+    toast(`确认失败：${errMsg(e)}`, 'danger')
   } finally {
     actingRoundId.value = null
   }
@@ -712,10 +740,10 @@ async function rejectRound(id: number) {
   actingRoundId.value = id
   try {
     await api.roundReject(id)
-    ElMessage.success(`轮次 #${id} 已拒绝`)
+    toast(`轮次 #${id} 已拒绝`, 'ok')
     await loadRounds()
   } catch (e) {
-    ElMessage.error(`拒绝失败：${errMsg(e)}`)
+    toast(`拒绝失败：${errMsg(e)}`, 'danger')
   } finally {
     actingRoundId.value = null
   }
@@ -725,12 +753,13 @@ async function executeRound(id: number) {
   actingRoundId.value = id
   try {
     const r = await api.roundExecute(id)
-    ElMessage[r.round.status === 'completed' ? 'success' : 'error'](
+    toast(
       `轮次 #${id} ${r.round.status === 'completed' ? '执行完成' : '执行失败'}`,
+      r.round.status === 'completed' ? 'ok' : 'danger',
     )
     await loadRounds()
   } catch (e) {
-    ElMessage.error(`执行失败：${errMsg(e)}`)
+    toast(`执行失败：${errMsg(e)}`, 'danger')
   } finally {
     actingRoundId.value = null
   }
@@ -747,7 +776,7 @@ async function viewRoundReport(id: number) {
   try {
     roundReport.value = await api.roundReport(id)
   } catch (e) {
-    ElMessage.error(`报告加载失败：${errMsg(e)}`)
+    toast(`报告加载失败：${errMsg(e)}`, 'danger')
     roundReportVisible.value = false
   } finally {
     roundReportLoading.value = false
@@ -758,22 +787,21 @@ function roundActionsLabel(row: OptimizationRound): string {
   return (row.actions ?? []).map((a) => `${a.kind}→${a.target}`).join('、')
 }
 
-function roundStatusType(status: string) {
+type LTone = 'neutral' | 'ok' | 'warn' | 'danger' | 'accent'
+
+function roundStatusTone(status: string): LTone {
   switch (status) {
     case 'proposed':
-      return 'warning'
+      return 'warn'
     case 'confirmed':
-      return 'primary'
     case 'running':
-      return 'primary'
+      return 'accent'
     case 'completed':
-      return 'success'
+      return 'ok'
     case 'failed':
       return 'danger'
-    case 'rejected':
-      return 'info'
     default:
-      return 'info'
+      return 'neutral'
   }
 }
 
@@ -826,106 +854,320 @@ function goEvoStep(idx: number) {
   if (s.tab) activeTab.value = s.tab
   else store.requestNav('workspace')
 }
+
+// ─────────────────────── 原语绑定辅助（纯展示层，不改作业逻辑） ───────────────────────
+
+const asStr = (v: string | number): string => String(v)
+
+const BENCHMARK_OPTIONS = BENCHMARKS.map((b) => ({ value: b.id, label: b.name }))
+const LANG_OPTIONS = [
+  { value: 'zh', label: 'zh' },
+  { value: 'en', label: 'en' },
+]
+const MODE_OPTIONS: { value: 'capability' | 'funnel'; label: string }[] = [
+  { value: 'capability', label: '能力（强制 LLM）' },
+  { value: 'funnel', label: '漏斗（自然级联）' },
+]
+const armSelectOptions = computed(() => armOptions.value.map((a) => ({ value: a.id, label: a.name })))
+const splitOptions = computed(() => [
+  { value: '', label: '全部' },
+  ...currentBm.value.splits.map((s) => ({ value: s, label: s })),
+])
+const compareOptions = computed(() =>
+  reports.value.map((r) => ({ value: r.id, label: `${r.arm} · F${r.f_beta?.toFixed(3) ?? '—'}` })),
+)
+const sugStatusOptions = computed(() => [
+  { value: '', label: '全部' },
+  ...Object.entries(SUG_STATUS_NAMES).map(([value, label]) => ({ value, label })),
+])
+const jobStatusOptions = computed(() => [
+  { value: '', label: '全部' },
+  ...Object.entries(JOB_STATUS_NAMES).map(([value, label]) => ({ value, label })),
+])
+const contribGroupOptions = computed(() => [
+  { value: '', label: '自动（取最新组）' },
+  ...contribGroups.value.map((g) => ({ value: g.key, label: groupLabel(g) })),
+])
+
+function setSplit(v: string | number) {
+  form.value.split = v === '' ? null : String(v)
+}
+function setSubset(e: Event) {
+  const v = (e.target as HTMLInputElement).value
+  form.value.subset = v === '' ? null : Number(v)
+}
+function setPoolText(e: Event) {
+  poolCleanSentences.value = (e.target as HTMLTextAreaElement).value
+}
+function setLexWords(e: Event) {
+  lexWords.value = (e.target as HTMLTextAreaElement).value
+}
+function onSugFilter(v: string | number) {
+  sugStatusFilter.value = String(v)
+  void loadReflectSuggestions()
+}
+function onJobFilter(v: string | number) {
+  jobStatusFilter.value = String(v)
+  void loadTrainJobs()
+}
+
+function jobStatusTone(status: string): LTone {
+  return status === 'done' ? 'ok' : status === 'error' ? 'danger' : 'warn'
+}
+function jobStatusLabel(status: string): string {
+  return status === 'done' ? '完成' : status === 'error' ? '失败' : status === 'running' ? '运行中' : '排队中'
+}
+function trainStatusTone(status: string): LTone {
+  return status === 'failed' ? 'danger' : status === 'completed' ? 'ok' : 'warn'
+}
+function sugStatusTone(status: string): LTone {
+  return status === 'pending' ? 'warn' : status === 'dismissed' ? 'neutral' : 'ok'
+}
+function ablStepTone(s: AblStep['status']): LTone {
+  return s === 'done' || s === 'skipped' ? 'ok' : s === 'error' ? 'danger' : s === 'running' ? 'warn' : 'neutral'
+}
+function ablStepLabel(s: AblStep['status']): string {
+  return s === 'skipped' ? '已有，跳过' : s === 'running' ? '运行中' : s === 'done' ? '完成' : s === 'error' ? '失败' : '等待'
+}
+function ablDotTone(s: AblStep['status']): 'ok' | 'warn' | 'danger' | 'muted' {
+  return s === 'done' || s === 'skipped' ? 'ok' : s === 'error' ? 'danger' : s === 'running' ? 'warn' : 'muted'
+}
+
+/** 训练作业结果摘要（与 jobResultSummary 同语义；行内空值回退破折号） */
+function resHint(row: TrainingJobRow): string {
+  return row.result ? jobResultSummary(row.result) || '—' : '—'
+}
+
+// ─────────────────────── LTable 列定义 ───────────────────────
+
+type LayerView = { name: string } & EvalLayerStats
+
+type EvalFunnelStep = EvalReport['funnel']['cumulative'][number]
+
+const layerCols: LColumn<LayerView>[] = [
+  { key: 'name', label: '层', width: '110px' },
+  { key: 'n_pred', label: '预测', width: '70px', align: 'right' },
+  { key: 'tp_strict', label: 'TP 严格', width: '80px', align: 'right' },
+  { key: 'p_strict', label: 'P', width: '70px', align: 'right' },
+  { key: 'r_strict', label: 'R', width: '70px', align: 'right' },
+  { key: 'f_beta', label: 'Fβ', width: '80px', align: 'right' },
+  { key: 'recall_share', label: '召回份额', width: '90px', align: 'right' },
+  { key: 'fp_overlap', label: 'FP 重叠', width: '80px', align: 'right' },
+  { key: 'gate', label: '门控 F1', width: '80px', align: 'right' },
+]
+
+const funnelCumCols: LColumn<EvalFunnelStep>[] = [
+  { key: 'prefix', label: '级联前缀' },
+  { key: 'resolved', label: '解决 gold 编辑', width: '140px', align: 'right' },
+  { key: 'rate', label: '累计解决率', width: '120px', align: 'right' },
+]
+
+const reportCols: LColumn<EvalReportSummary>[] = [
+  { key: 'id', label: '报告', width: '30%' },
+  { key: 'arm', label: '臂', width: '90px' },
+  { key: 'mode', label: '模式', width: '100px' },
+  { key: 'n_sentences', label: '句数', width: '70px', align: 'right' },
+  { key: 'f_beta', label: 'Fβ', width: '80px', align: 'right' },
+  { key: 'p_strict', label: 'P', width: '70px', align: 'right' },
+  { key: 'r_strict', label: 'R', width: '70px', align: 'right' },
+  { key: 'llm_reach', label: 'LLM 触达', width: '90px', align: 'right' },
+]
+
+const diffCols: LColumn<{ label: string; a: number; b: number; delta: number }>[] = [
+  { key: 'label', label: '指标' },
+  { key: 'a', label: 'A', align: 'right' },
+  { key: 'b', label: 'B', align: 'right' },
+  { key: 'delta', label: 'Δ（B−A）', width: '120px', align: 'right' },
+]
+
+const statCols: LColumn<ReflectionStat>[] = [
+  { key: 'source', label: '层', width: '110px' },
+  { key: 'rule_id', label: '规则', width: '140px' },
+  { key: 'adopted', label: '采纳', width: '80px', align: 'right' },
+  { key: 'rejected', label: '放弃', width: '80px', align: 'right' },
+  { key: 'last_at', label: '最近', width: '30%' },
+]
+
+const evalLayerCols: LColumn<ReflectionEvalLayer>[] = [
+  { key: 'name', label: '层', width: '110px' },
+  { key: 'f_beta', label: 'Fβ', width: '80px', align: 'right' },
+  { key: 'recall_share', label: '召回份额', width: '100px', align: 'right' },
+  { key: 'fp_overlap', label: 'FP 重叠', width: '90px', align: 'right' },
+  { key: 'gate_f1', label: '门控 F1', width: '90px', align: 'right' },
+]
+
+const sugCols: LColumn<ReflectionCenterSuggestion>[] = [
+  { key: 'kind', label: '类型', width: '120px' },
+  { key: 'target', label: '目标', width: '140px' },
+  { key: 'summary', label: '建议', width: '40%' },
+  { key: 'evidence', label: '证据', width: '32%' },
+]
+
+const sugQueueCols: LColumn<ReflectionSuggestionRow>[] = [
+  { key: 'kind', label: '类型', width: '120px' },
+  { key: 'target', label: '目标', width: '140px' },
+  { key: 'summary', label: '建议', width: '36%' },
+  { key: 'status', label: '状态', width: '90px' },
+  { key: 'ops', label: '操作', width: '260px' },
+]
+
+const reflectReportCols: LColumn<ReflectionReportSummary>[] = [
+  { key: 'report', label: '报告', width: '50%' },
+  { key: 'lang', label: '语言', width: '80px' },
+  { key: 'n_suggestions', label: '建议数', width: '80px', align: 'right' },
+]
+
+const trainJobCols: LColumn<TrainingJobRow>[] = [
+  { key: 'kind', label: '作业', width: '130px' },
+  { key: 'lang', label: '语言', width: '70px' },
+  { key: 'status', label: '状态', width: '90px' },
+  { key: 'source', label: '来源建议', width: '90px' },
+  { key: 'result', label: '结果', width: '36%' },
+  { key: 'created_at', label: '时间', width: '170px' },
+]
+
+const contribCols: LColumn<ContributionLayer>[] = [
+  { key: 'layer', label: '层', width: '110px' },
+  { key: 'f_beta_full', label: 'Fβ 全开', width: '100px', align: 'right' },
+  { key: 'f_beta_ablated', label: 'Fβ 该层关闭', width: '110px', align: 'right' },
+  { key: 'delta', label: '边际贡献 Δ', width: '120px', align: 'right' },
+  { key: 'tp_self', label: '自决 TP', width: '110px', align: 'right' },
+]
+
+const roundCols: LColumn<OptimizationRound>[] = [
+  { key: 'id', label: '#', width: '50px', align: 'right' },
+  { key: 'lang', label: '语言', width: '60px' },
+  { key: 'status', label: '状态', width: '110px' },
+  { key: 'reason', label: '原因 / 动作', width: '34%' },
+  { key: 'ops', label: '操作', width: '220px' },
+]
+
+const roundActionCols: LColumn<RoundReportAction>[] = [
+  { key: 'kind', label: '动作', width: '150px' },
+  { key: 'target', label: '目标', width: '140px' },
+  { key: 'summary', label: '结果摘要', width: '50%' },
+]
+
+function fmtNum(v: number | null | undefined, digits = 3): string {
+  return v == null ? '—' : v.toFixed(digits)
+}
 </script>
 
 <template>
   <div class="evolution-center">
     <!-- 闭环导览（T2-1）：按真实状态高亮建议的下一步；点步骤可跳转 -->
     <div class="evo-guide">
-      <el-steps
-        :active="evoRecommended.idx"
-        :finish-status="'success'"
-        class="evo-steps"
-        simple
-      >
-        <el-step
-          v-for="(s, i) in evoSteps"
-          :key="s.key"
-          :title="s.label"
-          class="evo-step"
-          @click="goEvoStep(i)"
-        />
-      </el-steps>
+      <div class="evo-steps">
+        <template v-for="(s, i) in evoSteps" :key="s.key">
+          <span v-if="i > 0" class="evo-step-arrow">→</span>
+          <button
+            type="button"
+            class="evo-step l-focusable"
+            :class="{ 'is-done': i < evoRecommended.idx, 'is-current': i === evoRecommended.idx }"
+            @click="goEvoStep(i)"
+          >
+            {{ s.label }}
+          </button>
+        </template>
+      </div>
       <span v-if="evoRecommended.hint" class="evo-guide-hint">
         {{ evoRecommended.hint }}
       </span>
     </div>
-    <el-tabs v-model="activeTab" class="evo-tabs">
+    <LSegmented v-model="activeTab" :options="TAB_OPTIONS" class="evo-tabs" />
+    <div class="evo-body">
       <!-- ═══════════════ 测评（P0） ═══════════════ -->
-      <el-tab-pane label="测评" name="eval">
+      <div v-if="activeTab === 'eval'">
         <div class="eval-grid">
-          <el-card shadow="never" class="run-card">
-            <template #header>
-              <div class="card-h">
-                <span class="card-t">发起评测</span>
-                <span class="hint">检测 → 反思 → 训练 → 测试 闭环的「测试」环节</span>
+          <LSection title="发起评测" desc="检测 → 反思 → 训练 → 测试 闭环的「测试」环节">
+            <div class="field">
+              <label class="field-label">基准</label>
+              <LSelect
+                class="field-select"
+                :model-value="form.benchmark"
+                :options="BENCHMARK_OPTIONS"
+                @update:model-value="form.benchmark = asStr($event)"
+              />
+            </div>
+            <div v-if="currentBm.splits.length > 1" class="field">
+              <label class="field-label">子集</label>
+              <LSelect
+                class="field-select"
+                :model-value="form.split ?? ''"
+                :options="splitOptions"
+                @update:model-value="setSplit"
+              />
+            </div>
+            <div class="field">
+              <label class="field-label">句数（空 = 全量）</label>
+              <input
+                class="l-input field-select"
+                type="number"
+                min="0"
+                max="100000"
+                step="100"
+                placeholder="全量"
+                :value="form.subset ?? ''"
+                @input="setSubset"
+              />
+            </div>
+            <div class="eval-actions">
+              <LButton variant="primary" :loading="running" @click="startRun">
+                {{ running ? '评测中…' : '开始评测' }}
+              </LButton>
+              <LButton
+                :disabled="running"
+                title="以默认参数跑一次并覆盖当前表单：MuCGEC dev · 当前设置 · 漏斗模式（自然级联）· 200 句（首次使用推荐）"
+                @click="startDefaultRun"
+              >
+                一键默认评测
+              </LButton>
+            </div>
+            <LButton variant="ghost" size="sm" @click="evalAdvanced = !evalAdvanced">
+              {{ evalAdvanced ? '收起高级选项' : '展开高级选项（臂 / 模式 / 消融 / 缓存）' }}
+            </LButton>
+            <div v-if="evalAdvanced" class="eval-advanced">
+              <div class="field">
+                <label class="field-label">纠错模型臂</label>
+                <LSelect
+                  class="field-select"
+                  :model-value="form.arm ?? ''"
+                  :options="armSelectOptions"
+                  @update:model-value="form.arm = asStr($event)"
+                />
               </div>
+              <div class="field">
+                <span class="field-label">模式</span>
+                <LSegmented
+                  :model-value="form.mode ?? 'funnel'"
+                  :options="MODE_OPTIONS"
+                  @update:model-value="form.mode = $event"
+                />
+              </div>
+              <div class="field">
+                <span class="field-label">消融（临时关闭某层，测边际贡献）</span>
+                <div class="field-row">
+                  <LCheckbox v-model="ablDecision" label="关闭决策层" />
+                  <LCheckbox v-model="ablL3" label="关闭 L3 层" />
+                  <LCheckbox v-model="ablKnowledge" label="关闭知识层" />
+                </div>
+              </div>
+              <div class="field-row">
+                <LCheckbox
+                  :model-value="form.fresh === true"
+                  label="忽略缓存重跑（fresh）"
+                  @update:model-value="form.fresh = Boolean($event)"
+                />
+              </div>
+            </div>
+          </LSection>
+          <LSection v-if="job" title="任务进度">
+            <template #actions>
+              <LTag :tone="jobStatusTone(job.status)">{{ jobStatusLabel(job.status) }}</LTag>
             </template>
-            <el-form label-position="top">
-              <el-form-item label="基准">
-                <el-select v-model="form.benchmark" style="width: 100%">
-                  <el-option v-for="b in BENCHMARKS" :key="b.id" :value="b.id" :label="b.name" />
-                </el-select>
-              </el-form-item>
-              <el-form-item v-if="currentBm.splits.length > 1" label="子集">
-                <el-select v-model="form.split" clearable placeholder="全部" style="width: 100%">
-                  <el-option v-for="s in currentBm.splits" :key="s" :value="s" :label="s" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="句数（空 = 全量）">
-                <el-input-number v-model="form.subset" :min="0" :max="100000" :step="100"
-                  placeholder="全量" controls-position="right" style="width: 100%" />
-              </el-form-item>
-              <div class="eval-actions">
-                <el-button type="primary" :loading="running" @click="startRun">
-                  {{ running ? '评测中…' : '开始评测' }}
-                </el-button>
-                <el-tooltip
-                  content="以默认参数跑一次并覆盖当前表单：MuCGEC dev · 当前设置 · 漏斗模式（自然级联）· 200 句（首次使用推荐）"
-                  placement="top"
-                  :show-after="300"
-                >
-                  <el-button :disabled="running" @click="startDefaultRun">一键默认评测</el-button>
-                </el-tooltip>
-              </div>
-              <el-button link type="primary" size="small" @click="evalAdvanced = !evalAdvanced">
-                {{ evalAdvanced ? '收起高级选项' : '展开高级选项（臂 / 模式 / 消融 / 缓存）' }}
-              </el-button>
-              <div v-if="evalAdvanced" class="eval-advanced">
-                <el-form-item label="纠错模型臂">
-                  <el-select v-model="form.arm" style="width: 100%">
-                    <el-option v-for="a in armOptions" :key="a.id" :value="a.id" :label="a.name" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="模式">
-                  <el-radio-group v-model="form.mode">
-                    <el-radio-button value="capability">能力（强制 LLM）</el-radio-button>
-                    <el-radio-button value="funnel">漏斗（自然级联）</el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
-                <el-form-item label="消融（临时关闭某层，测边际贡献）">
-                  <el-checkbox v-model="ablDecision">关闭决策层</el-checkbox>
-                  <el-checkbox v-model="ablL3">关闭 L3 层</el-checkbox>
-                  <el-checkbox v-model="ablKnowledge">关闭知识层</el-checkbox>
-                </el-form-item>
-                <el-form-item>
-                  <el-checkbox v-model="form.fresh">忽略缓存重跑（fresh）</el-checkbox>
-                </el-form-item>
-              </div>
-            </el-form>
-          </el-card>
-          <el-card v-if="job" shadow="never" class="run-card">
-            <template #header>
-              <div class="card-h">
-                <span class="card-t">任务进度</span>
-                <el-tag size="small" :type="job.status === 'done' ? 'success' : job.status === 'error' ? 'danger' : 'warning'">
-                  {{ job.status }}
-                </el-tag>
-              </div>
-            </template>
-            <el-progress
-              :percentage="job.progress.total ? Math.round((job.progress.done / job.progress.total) * 100) : 0"
-              :status="job.status === 'done' ? 'success' : job.status === 'error' ? 'exception' : undefined" />
+            <LProgress
+              :value="job.progress.total ? job.progress.done / job.progress.total : 0"
+            />
             <p class="job-meta">
               {{ job.progress.done }} / {{ job.progress.total }} 句
               <template v-if="job.config">
@@ -935,21 +1177,18 @@ function goEvoStep(idx: number) {
             </p>
             <p v-if="job.error" class="job-err">{{ job.error }}</p>
             <p v-if="job.warnings?.length" class="job-err">{{ job.warnings.join('；') }}</p>
-          </el-card>
+          </LSection>
         </div>
 
-        <el-card v-if="report" shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">
-                报告：{{ report.benchmark }}{{ report.split ? ` / ${report.split}` : '' }}
-                · 臂 {{ report.arm }} · {{ report.mode }}
-                <el-tag v-if="report.ablation" size="small" type="warning">
-                  消融 {{ Object.entries(report.ablation).filter(([, v]) => v === false).map(([k]) => k).join('+') }}
-                </el-tag>
-              </span>
-              <span class="hint">{{ report.ts }} · {{ report.n_sentences }} 句 · gold 编辑 {{ report.n_gold_edits }}</span>
-            </div>
+        <LSection
+          v-if="report"
+          :title="`报告：${report.benchmark}${report.split ? ` / ${report.split}` : ''} · 臂 ${report.arm} · ${report.mode}`"
+          :desc="`${report.ts} · ${report.n_sentences} 句 · gold 编辑 ${report.n_gold_edits}`"
+        >
+          <template #actions>
+            <LTag v-if="report.ablation">
+              消融 {{ Object.entries(report.ablation).filter(([, v]) => v === false).map(([k]) => k).join('+') }}
+            </LTag>
           </template>
 
           <div class="overall-row">
@@ -964,91 +1203,80 @@ function goEvoStep(idx: number) {
           </div>
 
           <h4 class="sec-t">层级归因（级联序；召回份额 = 该层「最先解决」的 gold 编辑占比）</h4>
-          <el-table :data="layerRows" size="small" border>
-            <el-table-column label="层" prop="name" width="110" />
-            <el-table-column label="预测" prop="n_pred" width="70" align="right" />
-            <el-table-column label="TP 严格" prop="tp_strict" width="80" align="right" />
-            <el-table-column label="P" width="70" align="right"><template #default="{ row }">{{ row.p_strict?.toFixed(3) }}</template></el-table-column>
-            <el-table-column label="R" width="70" align="right"><template #default="{ row }">{{ row.r_strict?.toFixed(3) }}</template></el-table-column>
-            <el-table-column label="Fβ" width="80" align="right"><template #default="{ row }"><b>{{ row.f_beta?.toFixed(3) }}</b></template></el-table-column>
-            <el-table-column label="召回份额" width="90" align="right"><template #default="{ row }">{{ pct(row.recall_share) }}</template></el-table-column>
-            <el-table-column label="FP 重叠" prop="fp_overlap" width="80" align="right" />
-            <el-table-column label="门控 F1" width="80" align="right"><template #default="{ row }">{{ row.gate.f1?.toFixed(3) }}</template></el-table-column>
-          </el-table>
+          <LTable :columns="layerCols" :rows="layerRows" row-key="name" compact>
+            <template #col-p_strict="{ row }">{{ fmtNum(row.p_strict) }}</template>
+            <template #col-r_strict="{ row }">{{ fmtNum(row.r_strict) }}</template>
+            <template #col-f_beta="{ row }"><b>{{ fmtNum(row.f_beta) }}</b></template>
+            <template #col-recall_share="{ row }">{{ pct(row.recall_share) }}</template>
+            <template #col-gate="{ row }">{{ fmtNum(row.gate.f1) }}</template>
+          </LTable>
 
           <template v-if="report.funnel && report.funnel.cumulative.length">
             <h4 class="sec-t">漏斗（级联前缀累计解决率；LLM 触达率 {{ pct(report.funnel.llm_reach) }}，平均 {{ report.funnel.avg_llm_ms }}ms）</h4>
-            <el-table :data="report.funnel.cumulative" size="small" border>
-              <el-table-column label="级联前缀" prop="prefix" />
-              <el-table-column label="解决 gold 编辑" prop="resolved" align="right" width="140" />
-              <el-table-column label="累计解决率" width="120" align="right"><template #default="{ row }">{{ pct(row.rate) }}</template></el-table-column>
-            </el-table>
+            <LTable :columns="funnelCumCols" :rows="report.funnel.cumulative" compact>
+              <template #col-rate="{ row }">{{ pct(row.rate) }}</template>
+            </LTable>
           </template>
-        </el-card>
-        <el-card shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">历史报告</span>
-              <span class="hint">选两份做 A/B diff</span>
-            </div>
-          </template>
-          <el-table :data="reports" size="small" border v-loading="reportsLoading">
-            <el-table-column label="报告" min-width="260">
-              <template #default="{ row }">
-                <el-link type="primary" @click="loadReport(row.id)">{{ row.id }}</el-link>
-              </template>
-            </el-table-column>
-            <el-table-column label="臂" prop="arm" width="90" />
-            <el-table-column label="模式" prop="mode" width="100" />
-            <el-table-column label="句数" prop="n_sentences" width="70" align="right" />
-            <el-table-column label="Fβ" width="80" align="right"><template #default="{ row }">{{ row.f_beta?.toFixed(3) ?? '—' }}</template></el-table-column>
-            <el-table-column label="P" width="70" align="right"><template #default="{ row }">{{ row.p_strict?.toFixed(3) ?? '—' }}</template></el-table-column>
-            <el-table-column label="R" width="70" align="right"><template #default="{ row }">{{ row.r_strict?.toFixed(3) ?? '—' }}</template></el-table-column>
-            <el-table-column label="LLM 触达" width="90" align="right"><template #default="{ row }">{{ pct(row.llm_reach) }}</template></el-table-column>
-          </el-table>
+        </LSection>
+        <LSection title="历史报告" desc="选两份做 A/B diff">
+          <p v-if="reportsLoading" class="hint">加载中…</p>
+          <LTable v-else :columns="reportCols" :rows="reports" row-key="id" compact>
+            <template #col-id="{ row }">
+              <LButton variant="ghost" size="sm" @click="loadReport(row.id)">{{ row.id }}</LButton>
+            </template>
+            <template #col-f_beta="{ row }">{{ row.f_beta?.toFixed(3) ?? '—' }}</template>
+            <template #col-p_strict="{ row }">{{ row.p_strict?.toFixed(3) ?? '—' }}</template>
+            <template #col-r_strict="{ row }">{{ row.r_strict?.toFixed(3) ?? '—' }}</template>
+            <template #col-llm_reach="{ row }">{{ pct(row.llm_reach) }}</template>
+          </LTable>
           <div class="compare-row">
-            <el-select v-model="compareA" placeholder="报告 A" size="small" style="width: 240px">
-              <el-option v-for="r in reports" :key="r.id" :value="r.id" :label="`${r.arm} · F${r.f_beta?.toFixed(3) ?? '—'}`" />
-            </el-select>
-            <el-select v-model="compareB" placeholder="报告 B" size="small" style="width: 240px">
-              <el-option v-for="r in reports" :key="r.id" :value="r.id" :label="`${r.arm} · F${r.f_beta?.toFixed(3) ?? '—'}`" />
-            </el-select>
-            <el-button size="small" :disabled="!compareA || !compareB" @click="loadCompare">对比</el-button>
+            <LSelect
+              class="compare-select"
+              :model-value="compareA"
+              :options="compareOptions"
+              @update:model-value="compareA = asStr($event)"
+            />
+            <LSelect
+              class="compare-select"
+              :model-value="compareB"
+              :options="compareOptions"
+              @update:model-value="compareB = asStr($event)"
+            />
+            <LButton size="sm" :disabled="!compareA || !compareB" @click="loadCompare">对比</LButton>
           </div>
           <template v-if="reportA && reportB">
             <h4 class="sec-t">A/B diff（{{ reportA.arm }} vs {{ reportB.arm }}）</h4>
-            <el-table :data="diffRows" size="small" border>
-              <el-table-column label="指标" prop="label" />
-              <el-table-column :label="`A（${reportA.arm}）`" prop="a" align="right" />
-              <el-table-column :label="`B（${reportB.arm}）`" prop="b" align="right" />
-              <el-table-column label="Δ（B−A）" align="right" width="120">
-                <template #default="{ row }">
-                  <b :class="row.delta >= 0 ? 'delta-up' : 'delta-down'">{{ row.delta >= 0 ? '+' : '' }}{{ row.delta.toFixed(3) }}</b>
-                </template>
-              </el-table-column>
-            </el-table>
+            <LTable :columns="diffCols" :rows="diffRows" compact>
+              <template #col-a="{ row }">{{ row.a.toFixed(3) }}</template>
+              <template #col-b="{ row }">{{ row.b.toFixed(3) }}</template>
+              <template #col-delta="{ row }">
+                <b :class="row.delta >= 0 ? 'delta-up' : 'delta-down'">{{ row.delta >= 0 ? '+' : '' }}{{ row.delta.toFixed(3) }}</b>
+              </template>
+            </LTable>
           </template>
-        </el-card>
-      </el-tab-pane>
+        </LSection>
+      </div>
 
       <!-- ═══════════════ 反思（P1） ═══════════════ -->
-      <el-tab-pane label="反思" name="reflect">
-        <el-card shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">反思报告</span>
-              <span class="hint">反馈聚合（采纳 / 放弃）+ 测评证据 → 发现 + 建议队列</span>
-            </div>
-          </template>
+      <div v-if="activeTab === 'reflect'">
+        <LSection title="反思报告" desc="反馈聚合（采纳 / 放弃）+ 测评证据 → 发现 + 建议队列">
           <div class="compare-row">
-            <el-select v-model="reflectLang" size="small" style="width: 100px">
-              <el-option label="zh" value="zh" />
-              <el-option label="en" value="en" />
-            </el-select>
-            <el-switch v-model="reflectIncludeEval" active-text="含测评证据" />
-            <el-button type="primary" size="small" :loading="reflectRunning" @click="runReflect">
+            <LSelect
+              class="field-select-narrow"
+              :options="LANG_OPTIONS"
+              :model-value="reflectLang"
+              @update:model-value="reflectLang = asStr($event)"
+            />
+            <span class="field-inline">
+              <LSwitch
+                v-model="reflectIncludeEval"
+                aria-label="含测评证据"
+              />
+              <span class="hint">含测评证据</span>
+            </span>
+            <LButton variant="primary" :loading="reflectRunning" @click="runReflect">
               生成反思报告
-            </el-button>
+            </LButton>
           </div>
           <template v-if="reflectReport">
             <h4 class="sec-t">发现</h4>
@@ -1056,13 +1284,7 @@ function goEvoStep(idx: number) {
               <li v-for="(f, i) in reflectReport.findings ?? []" :key="i">{{ f }}</li>
             </ul>
             <h4 class="sec-t">反馈统计</h4>
-            <el-table :data="reflectReport.stats ?? []" size="small" border>
-              <el-table-column label="层" prop="source" width="110" />
-              <el-table-column label="规则" prop="rule_id" width="140" />
-              <el-table-column label="采纳" prop="adopted" width="80" align="right" />
-              <el-table-column label="放弃" prop="rejected" width="80" align="right" />
-              <el-table-column label="最近" prop="last_at" min-width="160" />
-            </el-table>
+            <LTable :columns="statCols" :rows="reflectReport.stats ?? []" compact />
             <template
               v-if="reflectReport.eval_evidence && reflectReport.eval_evidence.report_id"
             >
@@ -1071,248 +1293,147 @@ function goEvoStep(idx: number) {
                 {{ reflectReport.eval_evidence.arm }} · Fβ
                 {{ (reflectReport.eval_evidence.f_beta ?? 0).toFixed(3) }}）
               </h4>
-              <el-table :data="reflectReport.eval_evidence.layers ?? []" size="small" border>
-                <el-table-column label="层" prop="name" width="110" />
-                <el-table-column label="Fβ" width="80" align="right">
-                  <template #default="{ row }">{{ (row.f_beta ?? 0).toFixed(3) }}</template>
-                </el-table-column>
-                <el-table-column label="召回份额" width="100" align="right">
-                  <template #default="{ row }">{{ pct(row.recall_share) }}</template>
-                </el-table-column>
-                <el-table-column label="FP 重叠" prop="fp_overlap" width="90" align="right" />
-                <el-table-column label="门控 F1" width="90" align="right">
-                  <template #default="{ row }">
-                    {{ row.gate_f1 == null ? '—' : row.gate_f1.toFixed(3) }}
-                  </template>
-                </el-table-column>
-              </el-table>
+              <LTable :columns="evalLayerCols" :rows="reflectReport.eval_evidence.layers ?? []" compact>
+                <template #col-f_beta="{ row }">{{ fmtNum(row.f_beta) }}</template>
+                <template #col-recall_share="{ row }">{{ pct(row.recall_share) }}</template>
+                <template #col-gate_f1="{ row }">{{ fmtNum(row.gate_f1) }}</template>
+              </LTable>
             </template>
             <h4 class="sec-t">建议（{{ reflectReport.suggestions?.length ?? 0 }}）</h4>
-            <el-table :data="reflectReport.suggestions ?? []" size="small" border>
-              <el-table-column label="类型" width="120">
-                <template #default="{ row }">{{ SUG_KIND_NAMES[row.kind] ?? row.kind }}</template>
-              </el-table-column>
-              <el-table-column label="目标" prop="target" width="140" />
-              <el-table-column label="建议" prop="summary" min-width="280" />
-              <el-table-column label="证据" min-width="220">
-                <template #default="{ row }">
-                  <div v-for="(e, i) in row.evidence ?? []" :key="i" class="hint">{{ e }}</div>
-                </template>
-              </el-table-column>
-            </el-table>
-          </template>
-          <el-empty
-            v-else
-            description="点击「生成反思报告」聚合反馈与测评证据"
-            :image-size="60"
-          />
-        </el-card>
-        <el-card shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">建议队列</span>
-              <el-select
-                v-model="sugStatusFilter"
-                size="small"
-                style="width: 120px"
-                @change="loadReflectSuggestions"
-              >
-                <el-option label="全部" value="" />
-                <el-option
-                  v-for="(name, k) in SUG_STATUS_NAMES"
-                  :key="k"
-                  :label="name"
-                  :value="k"
-                />
-              </el-select>
-              <span class="hint">P2 训练中心消费入口：消费后标记已消费 / 忽略</span>
-            </div>
-          </template>
-          <el-table
-            :data="reflectSuggestions"
-            size="small"
-            border
-            empty-text="暂无建议：先在上方点「生成反思报告」——聚合使用反馈（采纳 / 放弃）与测评证据后自动生成"
-          >
-            <el-table-column label="类型" width="120">
-              <template #default="{ row }">{{ SUG_KIND_NAMES[row.kind] ?? row.kind }}</template>
-            </el-table-column>
-            <el-table-column label="目标" prop="target" width="140" />
-            <el-table-column label="建议" prop="summary" min-width="260" />
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag
-                  size="small"
-                  :type="
-                    row.status === 'pending'
-                      ? 'warning'
-                      : row.status === 'dismissed'
-                        ? 'info'
-                        : 'success'
-                  "
-                >
-                  {{ SUG_STATUS_NAMES[row.status] ?? row.status }}
-                </el-tag>
+            <LTable :columns="sugCols" :rows="reflectReport.suggestions ?? []" compact>
+              <template #col-kind="{ row }">{{ SUG_KIND_NAMES[row.kind] ?? row.kind }}</template>
+              <template #col-evidence="{ row }">
+                <div v-for="(e, i) in row.evidence ?? []" :key="i" class="hint">{{ e }}</div>
               </template>
-            </el-table-column>
-            <el-table-column label="操作" width="240">
-              <template #default="{ row }">
-                <el-button
+            </LTable>
+          </template>
+          <LEmpty
+            v-else
+            text="还没有反思报告"
+            hint="点击「生成反思报告」聚合使用反馈（采纳 / 放弃）与测评证据"
+          />
+        </LSection>
+        <LSection title="建议队列">
+          <template #actions>
+            <LSelect
+              class="field-select-narrow"
+              :options="sugStatusOptions"
+              :model-value="sugStatusFilter"
+              @update:model-value="onSugFilter"
+            />
+            <span class="hint">P2 训练中心消费入口：消费后标记已消费 / 忽略</span>
+          </template>
+          <LTable v-if="reflectSuggestions.length" :columns="sugQueueCols" :rows="reflectSuggestions" compact>
+            <template #col-kind="{ row }">{{ SUG_KIND_NAMES[row.kind] ?? row.kind }}</template>
+            <template #col-status="{ row }">
+              <LTag :tone="sugStatusTone(row.status)">{{ SUG_STATUS_NAMES[row.status] ?? row.status }}</LTag>
+            </template>
+            <template #col-ops="{ row }">
+              <span class="ops-row">
+                <LButton
                   v-if="row.status === 'pending' && row.kind === 'lexicon_add'"
-                  size="small"
-                  type="primary"
+                  size="sm"
+                  variant="primary"
                   :loading="runningSuggestion === row.id"
                   @click="adoptLexiconAdd(row)"
                 >
                   采纳入召回库
-                </el-button>
-                <el-button
+                </LButton>
+                <LButton
                   v-if="row.status === 'pending' && row.kind !== 'rule_tune' && row.kind !== 'lexicon_add'"
-                  size="small"
-                  type="primary"
+                  size="sm"
+                  variant="primary"
                   :loading="runningSuggestion === row.id"
                   @click="runSuggestion(row.id)"
                 >
                   执行
-                </el-button>
-                <el-button
+                </LButton>
+                <LButton
                   v-if="row.status === 'pending'"
-                  size="small"
+                  size="sm"
                   @click="setSuggestionStatus(row.id, 'consumed')"
                 >
                   标记已消费
-                </el-button>
-                <el-button
+                </LButton>
+                <LButton
                   v-if="row.status === 'pending'"
-                  size="small"
-                  type="info"
+                  size="sm"
                   @click="setSuggestionStatus(row.id, 'dismissed')"
                 >
                   忽略
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
+                </LButton>
+              </span>
+            </template>
+          </LTable>
+          <LEmpty
+            v-else
+            text="暂无建议"
+            hint="先在上方点「生成反思报告」——聚合使用反馈（采纳 / 放弃）与测评证据后自动生成"
+          />
+        </LSection>
 
-        <el-card shadow="never">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">反思报告历史</span>
-            </div>
-          </template>
-          <el-table :data="reflectReports" size="small" border>
-            <el-table-column label="报告" min-width="220">
-              <template #default="{ row }">
-                <el-link type="primary" @click="loadReflectReport(row.id)">
-                  #{{ row.id }} · {{ row.created_at }}
-                </el-link>
-              </template>
-            </el-table-column>
-            <el-table-column label="语言" prop="lang" width="80" />
-            <el-table-column label="建议数" prop="n_suggestions" width="80" align="right" />
-          </el-table>
-        </el-card>
-      </el-tab-pane>
+        <LSection title="反思报告历史">
+          <LTable :columns="reflectReportCols" :rows="reflectReports" compact>
+            <template #col-report="{ row }">
+              <LButton variant="ghost" size="sm" @click="loadReflectReport(row.id)">
+                #{{ row.id }} · {{ row.created_at }}
+              </LButton>
+            </template>
+          </LTable>
+        </LSection>
+      </div>
 
       <!-- ═══════════════ 训练（P2） ═══════════════ -->
-      <el-tab-pane label="训练" name="train">
-        <el-card shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">训练作业</span>
-              <el-select
-                v-model="jobStatusFilter"
-                size="small"
-                style="width: 120px"
-                @change="loadTrainJobs"
-              >
-                <el-option label="全部" value="" />
-                <el-option
-                  v-for="(name, k) in JOB_STATUS_NAMES"
-                  :key="k"
-                  :label="name"
-                  :value="k"
-                />
-              </el-select>
-              <el-button size="small" @click="loadTrainJobs">刷新</el-button>
-              <span class="hint">
-                每次训练动作一行作业（状态机 proposed → confirmed → running → completed / failed）
-              </span>
-            </div>
+      <div v-if="activeTab === 'train'">
+        <LSection title="训练作业" desc="每次训练动作一行作业（状态机 proposed → confirmed → running → completed / failed）">
+          <template #actions>
+            <LSelect
+              class="field-select-narrow"
+              :options="jobStatusOptions"
+              :model-value="jobStatusFilter"
+              @update:model-value="onJobFilter"
+            />
+            <LButton size="sm" :loading="trainJobsLoading" @click="loadTrainJobs">刷新</LButton>
           </template>
-          <el-table :data="trainJobs" size="small" border v-loading="trainJobsLoading">
-            <el-table-column label="作业" width="130">
-              <template #default="{ row }">{{ JOB_KIND_NAMES[row.kind] ?? row.kind }}</template>
-            </el-table-column>
-            <el-table-column label="语言" prop="lang" width="70" />
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag
-                  size="small"
-                  :type="
-                    row.status === 'failed'
-                      ? 'danger'
-                      : row.status === 'completed'
-                        ? 'success'
-                        : 'warning'
-                  "
-                >
-                  {{ JOB_STATUS_NAMES[row.status] ?? row.status }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="来源建议" width="90">
-              <template #default="{ row }">
-                {{ row.source_suggestion ? `#${row.source_suggestion}` : '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="结果" min-width="300">
-              <template #default="{ row }">
-                <span v-if="row.result?.error" class="hint">{{ String(row.result.error) }}</span>
-                <span v-else-if="row.result" class="hint">
-                  {{
-                    row.result.n_samples != null
-                      ? `${row.result.n_samples} 条样本`
-                      : row.result.applied
-                        ? `${row.result.applied.length} 条入库（${row.result.skipped ?? 0} 已存在）`
-                        : row.result.swapped != null
-                          ? `热切换=${row.result.swapped}（F1 ${row.result.before_f1 ?? '—'} → ${row.result.after_f1 ?? '—'}）`
-                          : row.result.total != null
-                            ? `池 ${row.result.total} 条（error ${row.result.error_count} / clean ${row.result.clean_count}）`
-                            : '—'
-                  }}
-                </span>
-                <span v-else class="hint">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="时间" prop="created_at" min-width="170" />
-          </el-table>
-        </el-card>
-        <div class="eval-grid">
-          <el-card shadow="never">
-            <template #header>
-              <div class="card-h">
-                <span class="card-t">领域池构建</span>
-                <el-select v-model="trainLang" size="small" style="width: 90px">
-                  <el-option label="zh" value="zh" />
-                  <el-option label="en" value="en" />
-                </el-select>
-              </div>
+          <p v-if="trainJobsLoading" class="hint">加载中…</p>
+          <LTable :columns="trainJobCols" :rows="trainJobs" compact>
+            <template #col-kind="{ row }">{{ JOB_KIND_NAMES[row.kind] ?? row.kind }}</template>
+            <template #col-status="{ row }">
+              <LTag :tone="trainStatusTone(row.status)">{{ JOB_STATUS_NAMES[row.status] ?? row.status }}</LTag>
             </template>
-            <div class="hint" style="margin-bottom: 8px">
+            <template #col-source="{ row }">
+              {{ row.source_suggestion ? `#${row.source_suggestion}` : '—' }}
+            </template>
+            <template #col-result="{ row }">
+              <span v-if="row.result?.error != null" class="job-err">{{ String(row.result.error) }}</span>
+              <span v-else class="hint">{{ resHint(row) }}</span>
+            </template>
+          </LTable>
+        </LSection>
+        <div class="eval-grid">
+          <LSection title="领域池构建">
+            <template #actions>
+              <LSelect
+                class="field-select-narrow"
+                :options="LANG_OPTIONS"
+                :model-value="trainLang"
+                @update:model-value="trainLang = asStr($event)"
+              />
+            </template>
+            <div class="hint sec-gap">
               模型层反馈（adopt=error / reject=clean）+ 飞轮确认样本 + 增强器干净句（互补单侧分配去重）
             </div>
-            <el-input
-              v-model="poolCleanSentences"
-              type="textarea"
-              :rows="3"
+            <textarea
+              class="l-area"
+              rows="3"
               placeholder="增强器：干净句（每行一条；用户自有语料——基准集句子禁止入池，防污染）"
-            />
-            <div style="margin-top: 8px">
-              <el-button type="primary" size="small" :loading="poolBusy" @click="buildPool">
+              :value="poolCleanSentences"
+              @input="setPoolText"
+            ></textarea>
+            <div class="btn-row">
+              <LButton variant="primary" size="sm" :loading="poolBusy" @click="buildPool">
                 构建领域池
-              </el-button>
+              </LButton>
             </div>
             <template v-if="poolResult">
               <h4 class="sec-t">
@@ -1323,131 +1444,105 @@ function goEvoStep(idx: number) {
                 <div v-for="[src, n] in poolResult.by_source" :key="src">{{ src }} × {{ n }}</div>
               </div>
             </template>
-          </el-card>
+          </LSection>
 
-          <div style="display: grid; gap: 12px">
-            <el-card shadow="never">
-              <template #header>
-                <div class="card-h">
-                  <span class="card-t">L3 重训练（飞轮）</span>
-                  <el-button type="primary" size="small" :loading="l3RetrainBusy" @click="runL3Retrain">
-                    触发重训练
-                  </el-button>
-                </div>
+          <div class="stack-col">
+            <LSection title="L3 重训练（飞轮）">
+              <template #actions>
+                <LButton variant="primary" size="sm" :loading="l3RetrainBusy" @click="runL3Retrain">
+                  触发重训练
+                </LButton>
               </template>
               <div class="hint">
                 合并确认样本 → 重训练 → dev 评测 → 热切换（F1 显著退化时保留旧模型）
               </div>
-              <div v-if="l3RetrainResult" class="hint" style="margin-top: 8px">
+              <div v-if="l3RetrainResult" class="hint sec-gap-top">
                 热切换：{{ l3RetrainResult.swapped ? '是' : '否' }}
                 <template v-if="l3RetrainResult.reason">（{{ l3RetrainResult.reason }}）</template>
                 · F1：{{ l3RetrainResult.before_f1 ?? '—' }} →
                 {{ l3RetrainResult.after_f1 ?? '—' }}
               </div>
-            </el-card>
+            </LSection>
 
-            <el-card shadow="never">
-              <template #header>
-                <div class="card-h">
-                  <span class="card-t">词表条件化入库</span>
-                </div>
-              </template>
-              <div class="hint">条件化排除条目（入库前先过测评消融）</div>
-              <el-input
+            <LSection title="词表条件化入库" desc="条件化排除条目（入库前先过测评消融）">
+              <LInput
                 v-model="lexRuleId"
-                size="small"
-                style="margin-top: 8px"
                 placeholder="规则 id（如 ZH_CONFUSABLE）"
+                aria-label="规则 id"
               />
-              <el-input
-                v-model="lexWords"
-                type="textarea"
-                :rows="2"
-                style="margin-top: 8px"
+              <textarea
+                class="l-area sec-gap-top"
+                rows="2"
                 placeholder="排除文本（每行一条）"
-              />
-              <div style="margin-top: 8px">
-                <el-button size="small" :loading="lexBusy" @click="applyLexicon">入库</el-button>
-                <span v-if="lexResult" class="hint" style="margin-left: 8px">
+                :value="lexWords"
+                @input="setLexWords"
+              ></textarea>
+              <div class="btn-row sec-gap-top">
+                <LButton size="sm" :loading="lexBusy" @click="applyLexicon">入库</LButton>
+                <span v-if="lexResult" class="hint">
                   {{ lexResult.applied.length }} 条新增（{{ lexResult.skipped }} 已存在）
                 </span>
               </div>
-            </el-card>
+            </LSection>
 
-            <el-card shadow="never">
-              <template #header>
-                <div class="card-h">
-                  <span class="card-t">LLM 训练数据</span>
-                  <el-button size="small" :loading="llmBusy" @click="buildLlmData">
-                    构建（SFT JSONL）
-                  </el-button>
-                </div>
+            <LSection title="LLM 训练数据">
+              <template #actions>
+                <LButton size="sm" :loading="llmBusy" @click="buildLlmData">
+                  构建（SFT JSONL）
+                </LButton>
               </template>
               <div class="hint">LLM 层 adopt 反馈（带修正）→ SFT 样本；可导出外部训练</div>
               <template v-if="llmDataResult">
-                <div class="hint" style="margin-top: 8px">
+                <div class="hint sec-gap-top">
                   {{ llmDataResult.samples.length }} 条样本（arm:
                   {{ llmDataResult.arm || '—' }}）
                 </div>
-                <pre
-                  v-if="llmDataResult.jsonl"
-                  class="hint"
-                  style="max-height: 120px; overflow: auto; white-space: pre-wrap"
-                >{{ llmDataResult.jsonl }}</pre>
+                <pre v-if="llmDataResult.jsonl" class="hint jsonl-pre">{{ llmDataResult.jsonl }}</pre>
               </template>
-            </el-card>
+            </LSection>
           </div>
         </div>
-      </el-tab-pane>
+      </div>
 
       <!-- ═══════════════ 贡献与轮次（P3） ═══════════════ -->
-      <el-tab-pane label="贡献与轮次" name="contribution">
-        <el-card shadow="never" class="report-card">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">层级贡献测量（消融 Δ 常态化）</span>
-            </div>
-          </template>
+      <div v-if="activeTab === 'contribution'">
+        <LSection title="层级贡献测量（消融 Δ 常态化）">
           <div class="eval-grid">
             <div>
               <p class="hint">
                 从测评报告派生：每层边际贡献 = Fβ(全开) − Fβ(该层关闭)。
                 点「一键测量层级贡献」会自动补跑缺失的报告（一次只关一层），跑完直接出表。
               </p>
-              <el-form label-width="84px" size="small">
-                <el-form-item label="报告组">
-                  <el-select
-                    v-model="contribGroup"
-                    style="width: 420px"
-                    placeholder="自动（最新组）"
-                    :disabled="ablRunning"
-                  >
-                    <el-option label="自动（取最新组）" value="" />
-                    <el-option v-for="g in contribGroups" :key="g.key" :label="groupLabel(g)" :value="g.key" />
-                  </el-select>
-                </el-form-item>
-              </el-form>
-              <div style="display: flex; gap: 8px">
-                <el-button type="primary" :loading="ablRunning" @click="autoMeasure">
+              <div class="field">
+                <div class="field-label">报告组</div>
+                <LSelect
+                  class="field-select field-select-wide"
+                  :options="contribGroupOptions"
+                  :model-value="contribGroup"
+                  :disabled="ablRunning"
+                  @update:model-value="contribGroup = asStr($event)"
+                />
+              </div>
+              <div class="btn-row">
+                <LButton variant="primary" :loading="ablRunning" @click="autoMeasure">
                   一键测量层级贡献
-                </el-button>
-                <el-button :disabled="ablRunning" :loading="contribLoading" @click="loadContributions">
+                </LButton>
+                <LButton :disabled="ablRunning" :loading="contribLoading" @click="loadContributions">
                   重新测量
-                </el-button>
+                </LButton>
               </div>
-              <div v-if="ablPlan.length" class="hint" style="margin-top: 10px">
-                <div v-for="s in ablPlan" :key="s.key" style="display: flex; gap: 8px; align-items: center; margin: 2px 0">
-                  <el-tag size="small" :type="s.status === 'done' || s.status === 'skipped' ? 'success' : s.status === 'error' ? 'danger' : s.status === 'running' ? 'warning' : 'info'">
-                    {{ s.status === 'skipped' ? '已有，跳过' : s.status === 'running' ? '运行中' : s.status === 'done' ? '完成' : s.status === 'error' ? '失败' : '等待' }}
-                  </el-tag>
+              <ul v-if="ablPlan.length" class="l-timeline sec-gap-top">
+                <li v-for="s in ablPlan" :key="s.key">
+                  <LDot :tone="ablDotTone(s.status)" />
+                  <LTag :tone="ablStepTone(s.status)">{{ ablStepLabel(s.status) }}</LTag>
                   <span>{{ s.label }}</span>
-                  <span v-if="s.status === 'running' && s.prog">{{ s.prog.done }}/{{ s.prog.total }} 句</span>
-                  <span v-if="s.status === 'error'" style="color: #f56c6c">{{ s.note }}</span>
-                </div>
-                <p v-if="ablRunning" class="hint" style="margin: 6px 0 0">
-                  后台顺序执行中；离开本页任务不中断，回来点「一键测量层级贡献」续跑
-                </p>
-              </div>
+                  <span v-if="s.status === 'running' && s.prog" class="hint">{{ s.prog.done }}/{{ s.prog.total }} 句</span>
+                  <span v-if="s.status === 'error'" class="job-err">{{ s.note }}</span>
+                </li>
+              </ul>
+              <p v-if="ablRunning" class="hint sec-gap-top">
+                后台顺序执行中；离开本页任务不中断，回来点「一键测量层级贡献」续跑
+              </p>
             </div>
             <div v-if="contribution">
               <p class="hint">
@@ -1457,191 +1552,149 @@ function goEvoStep(idx: number) {
                 · 全开 Fβ <b>{{ contribution.table.f_beta_full?.toFixed(3) ?? '—' }}</b>
                 <template v-if="contribution.table.f_beta_core != null">
                   · 核心基线（两层皆关）{{ contribution.table.f_beta_core.toFixed(3) }}</template>
-                <el-tag
+                <LTag
                   v-if="contribution.table.f_beta_full != null && contribution.table.f_beta_full <= 0.05"
-                  type="warning"
-                  size="small"
-                  style="margin-left: 6px"
-                  >
+                  tone="warn"
+                >
                   全开 Fβ 极低（{{ contribution.table.f_beta_full.toFixed(3) }}）：漏斗级联可能在上游丢失了大部分金句，看「测评」页该报告的 gate 召回 / LLM 触达率
-                </el-tag>
+                </LTag>
               </p>
-              <el-table v-if="contribution.table.layers.length" :data="contribution.table.layers" size="small" border>
-                <el-table-column label="层" prop="layer" width="110" />
-                <el-table-column label="Fβ 全开" width="100" align="right">
-                  <template #default="{ row }">{{ row.f_beta_full.toFixed(3) }}</template>
-                </el-table-column>
-                <el-table-column label="Fβ 该层关闭" width="110" align="right">
-                  <template #default="{ row }">{{ row.f_beta_ablated.toFixed(3) }}</template>
-                </el-table-column>
-                <el-table-column label="边际贡献 Δ" width="120" align="right">
-                  <template #default="{ row }">
-                    <b :style="{ color: row.delta >= 0 ? '#67c23a' : '#f56c6c' }">
-                      {{ row.delta >= 0 ? '+' : '' }}{{ row.delta.toFixed(3) }}
-                    </b>
-                  </template>
-                </el-table-column>
-                <el-table-column label="自决 TP" width="110" align="right">
-                  <template #default="{ row }">
-                    <span>{{ row.tp_self ?? 0 }}</span>
-                    <el-tag v-if="row.topological" type="warning" size="small" style="margin-left: 4px">
-                      拓扑
-                    </el-tag>
-                  </template>
-                </el-table-column>
-              </el-table>
+              <LTable v-if="contribution.table.layers.length" :columns="contribCols" :rows="contribution.table.layers" compact>
+                <template #col-f_beta_full="{ row }">{{ fmtNum(row.f_beta_full) }}</template>
+                <template #col-f_beta_ablated="{ row }">{{ fmtNum(row.f_beta_ablated) }}</template>
+                <template #col-delta="{ row }">
+                  <b :class="row.delta >= 0 ? 'delta-up' : 'delta-down'">
+                    {{ row.delta >= 0 ? '+' : '' }}{{ row.delta.toFixed(3) }}
+                  </b>
+                </template>
+                <template #col-tp_self="{ row }">
+                  <span>{{ row.tp_self ?? 0 }}</span>
+                  <LTag v-if="row.topological" tone="neutral">拓扑</LTag>
+                </template>
+              </LTable>
               <p
                 v-if="contribution.table.layers.some((l) => l.topological)"
-                class="hint"
-                style="margin: 6px 0 0"
+                class="hint sec-gap-top"
               >
                 ⚠ 拓扑假象：标「拓扑」的层自身零定案（自决 TP = 0），其 Δ 来自「该层作为下游开关」的级联效应
                 （关闭它连带改变了下游层的执行），不代表该层自身的解决能力——解读时该 Δ 不应记在该层名下。
               </p>
-              <div v-else class="hint" style="padding: 12px 0">
-                <p style="margin: 0">
+              <div v-else class="hint sec-gap-top">
+                <p class="flat-p">
                   该组只有全开报告（{{ contribution.table.reports }} 份），没有消融报告——贡献表需要「单层关闭」的消融报告才能逐层对比。
                 </p>
-                <p class="hint" style="margin: 6px 0 0">
+                <p class="hint sec-gap-top">
                   点上方「一键测量层级贡献」：自动补跑缺失的消融（一次只关一层），跑完直接出表。
                 </p>
               </div>
-              <p v-if="contribution.table.missing.length && contribution.table.layers.length" class="hint">
+              <p v-if="contribution.table.missing.length && contribution.table.layers.length" class="hint sec-gap-top">
                 缺失消融臂：{{ contribution.table.missing.join('、') }}（无对应报告，该层无法测量）
               </p>
             </div>
-            <el-empty v-else :image-size="60">
-              <p style="margin: 0">贡献尚未测量：贡献表从「测评」报告派生（每层边际贡献 = 全开 Fβ − 该层关闭 Fβ）</p>
-              <p class="hint" style="margin: 6px 0 0">
-                点「一键测量层级贡献」：自动补跑缺失的评测（全开 / 关闭决策层 / 关闭 L3 层），跑完直接出表
-              </p>
-            </el-empty>
+            <LEmpty v-else text="贡献尚未测量" hint="贡献表从「测评」报告派生（每层边际贡献 = 全开 Fβ − 该层关闭 Fβ）；点下方按钮自动补跑缺失的评测（全开 / 关闭决策层 / 关闭 L3 层），跑完直接出表">
+              <template #action>
+                <LButton variant="primary" :disabled="ablRunning" @click="autoMeasure">
+                  一键测量层级贡献
+                </LButton>
+              </template>
+            </LEmpty>
           </div>
-        </el-card>
+        </LSection>
 
-        <el-card shadow="never">
-          <template #header>
-            <div class="card-h">
-              <span class="card-t">优化轮次（自动评估 → 人工确认 → 执行）</span>
-              <el-button size="small" @click="loadRounds">刷新</el-button>
-            </div>
+        <LSection title="优化轮次（自动评估 → 人工确认 → 执行）">
+          <template #actions>
+            <LButton size="sm" :loading="roundsLoading" @click="loadRounds">刷新</LButton>
           </template>
           <div class="eval-grid">
             <div>
-              <el-form label-width="84px" size="small">
-                <el-form-item label="语言">
-                  <el-select v-model="roundLang" style="width: 120px">
-                    <el-option label="zh" value="zh" />
-                    <el-option label="en" value="en" />
-                  </el-select>
-                </el-form-item>
-              </el-form>
-              <el-button type="primary" :loading="roundEvaluating" @click="evaluateRound">
-                自动评估
-              </el-button>
-              <div v-if="roundEvalResult" style="margin-top: 10px">
-                <el-alert
-                  v-if="roundEvalResult.action === 'round_proposed'"
-                  type="success"
-                  :closable="false"
-                  show-icon
-                  :title="`轮次 #${roundEvalResult.round!.id} 已提案：${roundEvalResult.round!.reason}`"
+              <div class="field">
+                <div class="field-label">语言</div>
+                <LSelect
+                  class="field-select"
+                  :options="LANG_OPTIONS"
+                  :model-value="roundLang"
+                  @update:model-value="roundLang = asStr($event)"
                 />
-                <el-alert
-                  v-else
-                  type="info"
-                  :closable="false"
-                  show-icon
-                  title="无需开轮"
-                >
+              </div>
+              <LButton variant="primary" :loading="roundEvaluating" @click="evaluateRound">
+                自动评估
+              </LButton>
+              <div v-if="roundEvalResult" class="sec-gap-top">
+                <div v-if="roundEvalResult.action === 'round_proposed'" class="l-banner">
+                  轮次 #{{ roundEvalResult.round!.id }} 已提案：{{ roundEvalResult.round!.reason }}
+                </div>
+                <div v-else class="l-banner">
+                  <div>无需开轮</div>
                   <div v-for="(r, i) in roundEvalResult.reasons" :key="i" class="hint">{{ r }}</div>
-                </el-alert>
+                </div>
               </div>
             </div>
             <div>
-              <el-table :data="rounds" size="small" border v-loading="roundsLoading">
-                <el-table-column label="#" prop="id" width="50" />
-                <el-table-column label="语言" prop="lang" width="60" />
-                <el-table-column label="状态" width="110">
-                  <template #default="{ row }">
-                    <el-tag :type="roundStatusType(row.status)" size="small">{{ row.status }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="原因 / 动作" min-width="260">
-                  <template #default="{ row }">
-                    <div>{{ row.reason }}</div>
-                    <div class="hint">{{ roundActionsLabel(row) }}</div>
-                  </template>
-                </el-table-column>
-                <el-table-column label="操作" width="220">
-                  <template #default="{ row }">
-                    <el-tooltip
+              <p v-if="roundsLoading" class="hint">加载中…</p>
+              <LTable :columns="roundCols" :rows="rounds" compact>
+                <template #col-status="{ row }">
+                  <LTag :tone="roundStatusTone(row.status)">{{ row.status }}</LTag>
+                </template>
+                <template #col-reason="{ row }">
+                  <div>{{ row.reason }}</div>
+                  <div class="hint">{{ roundActionsLabel(row) }}</div>
+                </template>
+                <template #col-ops="{ row }">
+                  <span class="ops-row">
+                    <LButton
                       v-if="row.status === 'proposed'"
-                      content="确认后进入「已确认」状态：下一步可「执行」（应用优化动作）或「拒绝」；执行完成后点「报告」查看本轮完整结果与执行后测评证据"
-                      placement="top"
-                      :show-after="300"
+                      size="sm"
+                      variant="primary"
+                      title="确认后进入「已确认」状态：下一步可「执行」（应用优化动作）或「拒绝」；执行完成后点「报告」查看本轮完整结果与执行后测评证据"
+                      :loading="actingRoundId === row.id"
+                      @click="confirmRound(row.id)"
                     >
-                      <el-button
-                        size="small"
-                        type="primary"
-                        :loading="actingRoundId === row.id"
-                        @click="confirmRound(row.id)"
-                      >
-                        确认
-                      </el-button>
-                    </el-tooltip>
-                    <el-button
+                      确认
+                    </LButton>
+                    <LButton
                       v-if="row.status === 'proposed'"
-                      size="small"
+                      size="sm"
                       :loading="actingRoundId === row.id"
                       @click="rejectRound(row.id)"
                     >
                       拒绝
-                    </el-button>
-                    <el-button
+                    </LButton>
+                    <LButton
                       v-if="row.status === 'confirmed'"
-                      size="small"
-                      type="success"
+                      size="sm"
+                      variant="primary"
                       :loading="actingRoundId === row.id"
                       @click="executeRound(row.id)"
                     >
                       执行
-                    </el-button>
-                    <el-button size="small" @click="viewRoundReport(row.id)">
+                    </LButton>
+                    <LButton size="sm" @click="viewRoundReport(row.id)">
                       报告
-                    </el-button>
+                    </LButton>
                     <span v-if="row.status === 'completed' || row.status === 'failed'" class="hint">
                       {{ roundResultSummary(row) }}
                     </span>
-                  </template>
-                </el-table-column>
-              </el-table>
+                  </span>
+                </template>
+              </LTable>
             </div>
           </div>
-      <!-- 轮次报告 dialog -->
-      <el-dialog
-        v-model="roundReportVisible"
-        :title="`轮次 #${roundReport?.round.id ?? ''} 报告`"
-        width="720px"
-        append-to-body
-      >
-        <div v-loading="roundReportLoading">
-          <template v-if="roundReport">
-            <el-alert
-              :title="roundReport.summary"
-              :type="roundReport.round.status === 'failed' ? 'error' : roundReport.round.status === 'completed' ? 'success' : 'info'"
-              :closable="false"
-              show-icon
-              style="margin-bottom: 12px"
-            />
-            <div style="margin-bottom: 8px; color: #909399; font-size: 12px">
-              开轮原因：{{ roundReport.round.reason }}
+          <!-- 轮次报告：内联展开面板（不占用弹窗配额） -->
+          <div v-if="roundReportVisible" class="round-report sec-gap-top">
+            <div class="round-report-h">
+              <h4 class="sec-t">轮次 #{{ roundReport?.round.id ?? '' }} 报告</h4>
+              <LButton variant="ghost" size="sm" @click="roundReportVisible = false">收起</LButton>
             </div>
-            <el-table :data="roundReport.actions" size="small" border style="margin-bottom: 12px">
-              <el-table-column label="动作" prop="kind" width="150" />
-              <el-table-column label="目标" prop="target" width="140" />
-              <el-table-column label="结果摘要" min-width="260">
-                <template #default="{ row }">
+            <p v-if="roundReportLoading" class="hint">加载中…</p>
+            <template v-else-if="roundReport">
+              <div class="l-banner round-report-banner">
+                <LTag :tone="roundStatusTone(roundReport.round.status)">{{ roundReport.summary }}</LTag>
+              </div>
+              <div class="hint sec-gap-top">
+                开轮原因：{{ roundReport.round.reason }}
+              </div>
+              <LTable :columns="roundActionCols" :rows="roundReport.actions" compact>
+                <template #col-summary="{ row }">
                   <div>{{ row.summary }}</div>
                   <div v-if="row.job" class="hint">
                     作业 #{{ row.job.id }}（{{ row.job.status }}）
@@ -1650,132 +1703,217 @@ function goEvoStep(idx: number) {
                     </template>
                   </div>
                 </template>
-              </el-table-column>
-            </el-table>
-            <div v-if="roundReport.evidence?.length" style="margin-bottom: 8px; color: #909399; font-size: 12px">
-              证据：{{ roundReport.evidence.join('；') }}
-            </div>
-            <el-alert
-              v-if="roundReport.eval_after"
-              :title="`执行后测评：${roundReport.eval_after.arm} Fβ = ${roundReport.eval_after.f_beta}（报告 ${roundReport.eval_after.report_id}）`"
-              type="success"
-              :closable="false"
-              show-icon
-            />
-            <div v-else class="hint" style="margin-top: 8px">
-              执行后测评证据不可用（测评服务不可达或尚无新报告）
-            </div>
-          </template>
-        </div>
-      </el-dialog>
-        </el-card>
-      </el-tab-pane>
-    </el-tabs>
+              </LTable>
+              <div v-if="roundReport.evidence?.length" class="hint sec-gap-top">
+                证据：{{ roundReport.evidence.join('；') }}
+              </div>
+              <div v-if="roundReport.eval_after" class="l-banner sec-gap-top">
+                执行后测评：{{ roundReport.eval_after.arm }} Fβ = {{ roundReport.eval_after.f_beta }}（报告 {{ roundReport.eval_after.report_id }}）
+              </div>
+              <div v-else class="hint sec-gap-top">
+                执行后测评证据不可用（测评服务不可达或尚无新报告）
+              </div>
+            </template>
+          </div>
+        </LSection>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.evolution-center {
+  padding: var(--space-3) var(--space-4);
+}
 /* 闭环导览条（T2-1） */
 .evo-guide {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 10px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
-.evo-steps { flex: 1; min-width: 320px; }
-.evo-step { cursor: pointer; }
-.evo-step :deep(.el-step__title) { font-size: 13px; cursor: pointer; }
+.evo-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 320px;
+}
+.evo-step {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  padding: var(--space-1) var(--space-2);
+}
+.evo-step.is-done { color: var(--text-2); }
+.evo-step.is-current {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.evo-step-arrow { color: var(--muted); }
 .evo-guide-hint {
-  font-size: 12.5px;
-  color: var(--el-color-warning, #e6a23c);
+  font-size: var(--fs-sm);
+  color: var(--warn-ink, var(--warn));
   white-space: nowrap;
 }
+.evo-tabs { margin-bottom: var(--space-3); }
 /* 测评表单：主操作行 + 高级选项折叠区（T2-2） */
-.eval-actions { display: flex; gap: 8px; margin: 4px 0; }
-.eval-advanced { margin-top: 6px; padding-left: 2px; }
-.evolution-center {
-  padding: 12px 16px;
+.eval-actions { display: flex; gap: var(--space-2); margin: var(--space-1) 0; }
+.eval-advanced { margin-top: var(--space-2); }
+/* 表单字段布局 */
+.field { margin-bottom: var(--space-3); }
+.field-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
+.field-select { width: 100%; }
+.field-select-narrow { width: 120px; }
+.field-select-wide { max-width: 420px; }
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.btn-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ops-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.sec-gap { margin-bottom: var(--space-2); }
+.sec-gap-top { margin-top: var(--space-2); }
+.flat-p { margin: 0; }
 .eval-grid {
   display: grid;
   grid-template-columns: 360px 1fr;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
-.report-card {
-  margin-bottom: 12px;
-}
-.card-h {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.card-t {
-  font-weight: 600;
+.stack-col {
+  display: grid;
+  gap: var(--space-3);
 }
 .hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .job-meta {
-  margin: 8px 0 0;
-  font-size: 13px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-ui);
 }
 .job-err {
-  color: var(--el-color-danger);
-  font-size: 13px;
-  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: var(--fs-ui);
+  margin: var(--space-1) 0 0;
   word-break: break-all;
 }
 .overall-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 .metric {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
   min-width: 90px;
 }
 .metric .k {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .metric .v {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 700;
 }
 .sec-t {
-  margin: 14px 0 8px;
-  font-size: 14px;
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--fs-md);
 }
 .compare-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 12px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
-.delta-up {
-  color: var(--el-color-success);
-}
-.delta-down {
-  color: var(--el-color-danger);
-}
+.compare-select { width: 240px; }
+.delta-up { color: var(--ok); }
+.delta-down { color: var(--danger); }
 .findings {
-  margin: 0 0 8px;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.7;
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-5);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-body);
 }
-.findings {
-  margin: 0 0 8px;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.7;
+.l-area {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  font: inherit;
+  font-size: var(--fs-ui);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  resize: vertical;
 }
+.jsonl-pre {
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+/* 消融计划时间线 */
+.l-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.l-timeline li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* 轮次报告内联面板 */
+.round-report {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--space-3);
+}
+.round-report-h {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.round-report-h .l-btn { margin-left: auto; }
+.round-report-banner { margin-bottom: var(--space-2); }
 </style>

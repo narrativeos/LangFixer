@@ -3,9 +3,9 @@ import { computed, watch } from 'vue'
 import { randomSessionId } from '../lib/format'
 import { computePipelineLayers } from '../lib/pipeline'
 import { guideFor } from '../lib/guide'
-import { modeLabel } from '../lib/labels'
 import { isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
+import { LButton, LInput, LPopover, LTag } from '../ui'
 
 const store = useGecStore()
 
@@ -21,7 +21,7 @@ watch(
   },
 )
 
-/** 正文管线提示：预处理行跟随卡片标题行选中的语言 */
+/** 正文管线提示：预处理行跟随工具栏选中的语言 */
 const activeLang = computed(
   () => store.displayLangs.find((l) => l.lang === store.lang) ?? store.displayLangs[0],
 )
@@ -39,9 +39,7 @@ function useSample(s: { text: string }) {
   store.detect()
 }
 
-/** 检测管线四层（① 本地 ZEN 规则 → ② 决策模型 → ②.5 知识召回 → ③ LLM 兜底）：
- *  ①②②.5 状态来自服务端设置；③ 按「检查模式」（store.level，内部 level 1/2/3）动态显示
- *  （逻辑见 lib/pipeline.ts，有单测） */
+/** 检测管线四层（详情 popover 内展示，逻辑见 lib/pipeline.ts，有单测） */
 const pipelineLayers = computed(() =>
   computePipelineLayers({
     level: store.level,
@@ -51,22 +49,12 @@ const pipelineLayers = computed(() =>
     l3Enabled: store.l3Enabled,
   }),
 )
-
-// 检查模式用户语言命名（Phase 0 术语翻译 + 信息减负）：级联内部细节
-// （规则层编号 / 决策模型 / L3 特征模型 / LLM）退出主界面，收进「详情」tooltip；
-// 主界面只留一句人话的执行方式描述；模式名单源在 labels.ts modeLabel。
-const modeLabels: Record<number, string> = {
-  1: `${modeLabel(1)}（即时，本地规则）`,
-  2: `${modeLabel(2)}（推荐）`,
-  3: `${modeLabel(3)}（较慢，召回更高）`,
+const layerTagTone: Record<string, 'neutral' | 'ok' | 'warn'> = {
+  success: 'ok',
+  warning: 'warn',
+  info: 'neutral',
 }
-const modeHint = computed(() =>
-  store.level === 1
-    ? '本地检查，即时出结果，离线也能用。'
-    : store.level === 2
-      ? '本地能定的先定，拿不准的句子交给 AI 复查，需要几秒钟。'
-      : 'AI 对全文逐句复查，漏检最少，但需要一些时间。',
-)
+
 /** 主界面「检测方式」一句话摘要（人话；细节见「详情」） */
 const plainPipelineText = computed(() => {
   if (!store.llmEnabled && store.level > 1) return '本地检查（AI 复查未配置）'
@@ -79,7 +67,7 @@ const plainPipelineText = computed(() => {
     ? '本地快速定案 + AI 全文复查'
     : 'AI 全文复查'
 })
-// 标准检查门控语义（P0.5 重绑）：警告文案随之动态化，但只说用户听得懂的结果与出路。
+// 标准检查门控语义（P0.5 重绑）：能力缺口要说清结果与出路；深度选择在工具栏，此处只补缺口说明
 const l2Warn = computed(() => {
   if (store.level !== 2) return ''
   if (store.l3Enabled || store.decisionEnabled) {
@@ -94,192 +82,235 @@ const l2Warn = computed(() => {
 </script>
 
 <template>
-  <el-form label-position="top">
-    <el-form-item>
-      <template #label>
-        <span>待检测文本</span>
-        <span class="char-count">{{ store.text.length }} 字</span>
-        <span class="sample-links">
-          <span class="sample-label">试一试</span>
-          <el-button
-            v-for="s in samples"
-            :key="s.label"
-            link
-            type="primary"
-            size="small"
-            :disabled="store.loading"
-            @click="useSample(s)"
-          >
-            {{ s.label }}
-          </el-button>
-        </span>
-      </template>
-      <el-input
-        v-model="store.text"
-        type="textarea"
-        :rows="8"
-        placeholder="在此粘贴或输入待检测文本… 例如：他昨天报复很大。"
-      />
-    </el-form-item>
+  <div class="l-editor">
+    <div class="editor-meta">
+      <span>{{ store.text.length }} 字</span>
+      <span class="sample-links">
+        <span class="hint-label">试一试</span>
+        <button
+          v-for="s in samples"
+          :key="s.label"
+          type="button"
+          class="l-link"
+          :disabled="store.loading"
+          @click="useSample(s)"
+        >
+          {{ s.label }}
+        </button>
+      </span>
+    </div>
 
-    <div class="actions">
-      <el-button
-        type="primary"
+    <textarea
+      v-model="store.text"
+      class="l-canvas-text l-editor-area"
+      rows="10"
+      placeholder="在此粘贴或输入待检测文本… 例如：他昨天报复很大。"
+      aria-label="待检测文本"
+    />
+
+    <div class="editor-actions">
+      <LButton
+        variant="primary"
         :loading="store.isAnalyzing"
         :disabled="!store.text.trim() || (store.loading && !store.isAnalyzing)"
+        :title="isTauri ? '快捷键 ⌘Enter' : '快捷键 Ctrl+Enter'"
         @click="store.analyze(store.sessionId || undefined)"
       >
         {{ store.isAnalyzing ? '检测中…' : '检测 + 归因' }}
-      </el-button>
-      <el-button :disabled="store.loading || !store.text.trim()" @click="store.detect()">
-        仅检测
-      </el-button>
-      <el-tooltip
-        content="深度重查：检测完成后，再对全文跑一遍 AI 复查（LLM），找回规则漏掉的错误（较慢；需已配置 LLM）"
-        placement="top"
+      </LButton>
+      <LButton :disabled="store.loading || !store.text.trim()" @click="store.detect()">仅检测</LButton>
+      <LButton
+        variant="ghost"
+        :loading="store.isDetectingLlm"
+        :disabled="!store.text.trim() || (store.loading && !store.isDetectingLlm)"
+        title="深度重查：检测完成后，再对全文跑一遍 AI 复查（LLM），找回规则漏掉的错误（较慢；需已配置 LLM）"
+        @click="store.detectLlm()"
       >
-        <el-button
-          type="warning"
-          plain
-          :loading="store.isDetectingLlm"
-          :disabled="!store.text.trim() || (store.loading && !store.isDetectingLlm)"
-          @click="store.detectLlm()"
-        >
-          深度重查
-        </el-button>
-      </el-tooltip>
-      <el-tooltip
+        深度重查
+      </LButton>
+      <LButton
         v-if="store.loading"
-        :content="isTauri ? '取消：本次结果将在完成后被丢弃（桌面端无法中断后台执行）' : '取消本次检测请求'"
-        placement="top"
+        variant="ghost"
+        :title="isTauri ? '取消：本次结果将在完成后被丢弃（桌面端无法中断后台执行）' : '取消本次检测请求'"
+        @click="store.cancelDetect()"
       >
-        <el-button @click="store.cancelDetect()">取消</el-button>
-      </el-tooltip>
+        取消
+      </LButton>
+      <span class="l-spacer"></span>
+      <div class="session-id-row">
+        <span class="hint-label">会话</span>
+        <LInput v-model="store.sessionId" class="session-input" placeholder="会话 ID（可选）" />
+        <LButton variant="ghost" size="sm" @click="store.sessionId = randomSessionId()">随机</LButton>
+      </div>
     </div>
 
-    <div class="options-row">
-      <div class="options-col">
-        <el-form-item label="会话 ID（可选）">
-          <div class="session-id-row">
-            <el-input v-model="store.sessionId" placeholder="如：s_a1b2c3d4" />
-            <el-button @click="store.sessionId = randomSessionId()">随机生成</el-button>
-          </div>
-        </el-form-item>
-      </div>
-      <div class="options-col">
-        <el-form-item label="检查模式">
-          <el-select v-model="store.level" style="width: 100%">
-            <el-option :value="1" :label="modeLabels[1]">
-              <span class="level-opt">{{ modeLabels[1] }}</span>
-              <el-tag
-                :type="store.decisionEnabled ? 'success' : 'info'"
-                size="small"
-                class="level-tag"
-              >
-                {{ store.decisionEnabled ? '含快速定案' : '本地检查' }}
-              </el-tag>
-            </el-option>
-            <el-option :value="2" :label="modeLabels[2]">
-              <span class="level-opt">{{ modeLabels[2] }}</span>
-              <el-tag
-                :type="store.llmEnabled ? 'success' : 'warning'"
-                size="small"
-                class="level-tag"
-              >
-                {{ store.llmEnabled ? 'AI 复查可用' : 'AI 复查未配置' }}
-              </el-tag>
-            </el-option>
-            <el-option :value="3" :label="modeLabels[3]">
-              <span class="level-opt">{{ modeLabels[3] }}</span>
-              <el-tag
-                :type="store.l3Enabled ? 'success' : 'info'"
-                size="small"
-                class="level-tag"
-              >
-                {{ store.l3Enabled ? '含快速定案' : 'AI 全文复查' }}
-              </el-tag>
-            </el-option>
-          </el-select>
-          <div class="mode-hint">{{ modeHint }}</div>
-          <div v-if="l2Warn" class="level-warn">{{ l2Warn }}</div>
-        </el-form-item>
-      </div>
-    </div>
+    <p v-if="l2Warn" class="editor-warn" role="status">{{ l2Warn }}</p>
 
     <!-- 引擎信息（信息减负）：主界面只留一句人话「检测方式」；层级标签与预处理
          引擎等内部细节收进「详情」popover（渐进披露，运营/排障可查） -->
     <div class="engine-hint">
-      <div class="pipeline-row">
-        <span class="hint-label">检测方式</span>
-        <span>{{ plainPipelineText }}</span>
-        <el-popover placement="top" :width="380" trigger="hover">
-          <template #reference>
-            <el-button link type="primary" size="small" aria-label="查看检测管线细节">详情</el-button>
-          </template>
-          <div class="pipeline-detail">
-            <el-tag
-              v-for="l in pipelineLayers"
-              :key="l.no"
-              size="small"
-              :type="l.type"
-              effect="plain"
-            >
-              {{ l.label }}
-            </el-tag>
-            <div class="preprocess-row">
-              <span class="hint-label">预处理</span>
-              <span>{{ activeLang.nlp_service }}</span>
-            </div>
+      <span class="hint-label">检测方式</span>
+      <span>{{ plainPipelineText }}</span>
+      <LPopover align="start">
+        <template #trigger="{ toggle }">
+          <button type="button" class="l-link" aria-label="查看检测管线细节" @click="toggle()">详情</button>
+        </template>
+        <div class="pipeline-detail">
+          <LTag v-for="l in pipelineLayers" :key="l.no" :tone="layerTagTone[l.type] ?? 'neutral'">
+            {{ l.label }}
+          </LTag>
+          <div class="preprocess-row">
+            <span class="hint-label">预处理</span>
+            <span>{{ activeLang.nlp_service }}</span>
           </div>
-        </el-popover>
-      </div>
+        </div>
+      </LPopover>
     </div>
-  </el-form>
 
-  <el-alert
-    v-if="store.errorMsg"
-    type="error"
-    :closable="false"
-    show-icon
-    :title="store.errorMsg"
-    class="err-alert"
-  >
-    <!-- 修复指引（T1-5）：常见服务类错误附「如何修复」，可一键跳设置；最近一次检测可重试 -->
-    <div v-if="guideFor(store.errorMsg)" class="err-guide">
-      如何修复：{{ guideFor(store.errorMsg)!.text }}
-      <el-button
-        v-if="guideFor(store.errorMsg)!.view === 'settings'"
-        link
-        type="primary"
-        size="small"
-        @click="store.requestNav('settings')"
+    <div v-if="store.errorMsg" class="editor-error" role="alert">
+      <div class="editor-error-title">{{ store.errorMsg }}</div>
+      <!-- 修复指引（T1-5）：常见服务类错误附「如何修复」，可一键跳设置；最近一次检测可重试 -->
+      <div v-if="guideFor(store.errorMsg)" class="editor-error-guide">
+        如何修复：{{ guideFor(store.errorMsg)!.text }}
+        <LButton
+          v-if="guideFor(store.errorMsg)!.view === 'settings'"
+          variant="ghost"
+          size="sm"
+          @click="store.requestNav('settings')"
+        >
+          去设置
+        </LButton>
+      </div>
+      <LButton
+        v-if="store.lastDetectKind"
+        size="sm"
+        :disabled="store.loading"
+        @click="store.retryLast()"
       >
-        去设置
-      </el-button>
+        重试
+      </LButton>
     </div>
-    <div v-if="store.lastDetectKind" class="err-guide">
-      <el-button size="small" :disabled="store.loading" @click="store.retryLast()">重试</el-button>
-    </div>
-  </el-alert>
+  </div>
 </template>
 
 <style scoped>
-.err-alert { margin-top: 4px; }
-.err-guide { margin-top: 6px; font-size: 12.5px; line-height: 1.7; color: var(--el-text-color-regular); }
-.session-id-row { display: flex; gap: 8px; align-items: center; width: 100%; }
-.session-id-row :deep(.el-input) { flex: 1; min-width: 0; }
-/* 「检查模式」选项：左侧用户语言文案 + 右侧能力状态标签（级联细节只在此与管线状态条出现） */
-.level-opt { float: left; }
-.level-tag { float: right; margin-top: 2px; }
-.mode-hint {
-  margin-top: 6px; font-size: 12.5px; line-height: 1.6;
-  color: var(--el-text-color-secondary);
+.l-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
 }
-.level-warn {
-  margin-top: 6px; padding: 6px 10px;
-  background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: 6px;
-  font-size: 12.5px; color: var(--warn-ink); line-height: 1.6;
+.editor-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
-.pipeline-detail { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12.5px; }
-.pipeline-detail .preprocess-row { flex: 1 0 100%; display: flex; gap: 6px; color: var(--el-text-color-secondary); }
+.sample-links {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.hint-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.l-link {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.l-link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+/* 画布即正文:无边框、留白即容器;行长在 .l-canvas-text 内已限 76ch */
+.l-editor-area {
+  display: block;
+  width: 100%;
+  max-width: 76ch;
+  min-height: 40vh;
+  padding: var(--space-4) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  resize: vertical;
+  outline: none;
+}
+html.desktop .l-editor-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.l-editor-area::placeholder {
+  color: var(--muted);
+}
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.session-id-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.session-input {
+  width: 180px;
+}
+.editor-warn {
+  margin: 0;
+  max-width: 76ch;
+  padding: var(--space-2) var(--space-3);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--warn-ink);
+  line-height: var(--lh-body);
+}
+.engine-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.pipeline-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+}
+.pipeline-detail .preprocess-row {
+  flex: 1 0 100%;
+  display: flex;
+  gap: var(--space-2);
+  color: var(--muted);
+}
+.editor-error {
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+}
+.editor-error-title {
+  color: var(--danger);
+  font-weight: 600;
+  line-height: var(--lh-body);
+}
+.editor-error-guide {
+  margin-top: var(--space-2);
+  color: var(--text);
+  line-height: var(--lh-body);
+}
 </style>
