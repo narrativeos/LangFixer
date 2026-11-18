@@ -14,21 +14,40 @@
   否则按字符区间与 gold_edits 的重合启发切分，并统计与行计数不一致的行数。
 - 裁决 journal 追加落盘（done 必须落盘续跑——运维教训），重启即恢复。
 
+多人协作（产品级标准功能）：
+- `--room-key` 房间口令：启用登录页，裁决记录逐条署名 `who`（HMAC 签名 cookie）；
+  `--bind` 非本机时强制要求口令，编辑老师局域网内同地址登录。
+- 每人每 iid 一票（同名重裁覆盖自己，不覆盖他人）；`--quorum K`（默认 1）：
+  门槛只统计 ≥K 人有效裁决的条目，生效裁决=多数票，平票→存疑。
+- 条目软领取（`/api/claim`，15 分钟 TTL）防两人同时裁一条；页内展示彼此票与领取状态。
+
 用法：python3 serve.py [--data-dir ~/tmp/dataset_v22] [--state-dir 同上] [--port 8765]
+      [--bind 127.0.0.1] [--room-key 口令] [--quorum 1] [--owner 房主]
 支持 dataset_v2x 任意图本（从文件名尾缀识别，队列现算不信任行级字段）。
 """
-from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
+import os
 import re
+import sqlite3
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, unquote, urlparse
+
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:  # python3.6（server 公网实例）
+    from socketserver import ThreadingMixIn
+
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
 
 BUCKET_OF_TYPE = {
     "punct": "auto",                      # 标点：规则可复核
@@ -47,6 +66,7 @@ BUCKET_DESC = {
 GATE_MIN_REVIEWED = 58   # 每桶最少抽检条数（≈95% CI 纪律，与 zh_route_1k 同源）
 GATE_MAX_ERR = 0.02      # 抽检放弃率 ≤2% 才允许整桶升级
 SEED = "42"
+CLAIM_TTL = 15 * 60      # 条目软领取过期（秒）
 # 预筛信号（自动档的真实依据，不造规则）：
 #   no_error    — fix==片段且 why 判「此处无误/保留」：判无错记录误入队列，可批量放弃
 #   del_intent  — fix==片段但 why 讲「删除/多字/重复」：真错误、意图是删，导出归一为 delete
@@ -117,20 +137,83 @@ def overlaps(a: int, b: int, g: dict) -> bool:
 
 
 class Data:
-    def __init__(self, data_dir: Path, state_dir: Path, lexicon: Path):
+    def __init__(self, data_dir: Path, state_dir: Path, lexicon: Path,
+                 owner: str = "房主", room_key: Optional[str] = None, quorum: int = 1,
+                 token_db: Optional[str] = None):
         self.data_dir, self.state_dir = data_dir, state_dir
+        self.owner, self.room_key, self.quorum = owner, room_key, max(1, quorum)
+        self.token_db = Path(token_db).expanduser() if token_db else None
         self.lex = Lex(lexicon)
-        self.items: list[dict] = []
+        self.items: List[dict] = []
         self.sum_consensus = 0
         self.rows_seen = 0
         self.count_mismatch_rows = 0
         self.sum_row_new = 0
-        self.verdicts: dict[str, dict] = {}
-        self.promoted: dict[str, dict] = {}
+        # iid -> {who: rec}：每人一票，同名重裁覆盖自己（追加式 journal 全量留痕）
+        self.verdicts: Dict[str, Dict[str, dict]] = {}
+        self.promoted: Dict[str, dict] = {}
         self.report_ref: dict = {}
+        self.claims: Dict[str, Tuple[str, float]] = {}
         self.lock = threading.Lock()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._load()
+
+    def token(self, name: str) -> str:
+        return hmac.new((self.room_key or "").encode(), name.encode(),
+                        "sha256").hexdigest()[:16]
+
+    # ── 网关 token 模式（沿用 api-server 同一张 access_tokens）──────
+    def _secret(self) -> str:
+        p = self.state_dir / "session_secret"
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+        tok = os.urandom(16).hex()
+        p.write_text(tok, encoding="utf-8")
+        p.chmod(0o600)
+        return tok
+
+    def auth_token(self, token: str):
+        """校验评审令牌：返回 (token_id, label)，废/不存在→None。"""
+        if not self.token_db or not token:
+            return None
+        h = hashlib.sha256(token.encode()).hexdigest()
+        con = sqlite3.connect(f"file:{self.token_db}?mode=ro", uri=True)
+        try:
+            return con.execute("select id,label from access_tokens where hash=? and revoked_at is null",
+                               (h,)).fetchone()
+        finally:
+            con.close()
+
+    def sid_label(self, token_id: str):
+        """会话续签：令牌已吊销即失效（吊销即断，与网关一致）。"""
+        con = sqlite3.connect(f"file:{self.token_db}?mode=ro", uri=True)
+        try:
+            row = con.execute("select label, revoked_at from access_tokens where id=?",
+                              (token_id,)).fetchone()
+        finally:
+            con.close()
+        return None if not row or row[1] else row[0]
+
+    def make_sid(self, token_id: str) -> str:
+        exp = int(time.time()) + 12 * 3600  # 与网关会话同 12h
+        sig = hmac.new(self._secret().encode(), f"{token_id}|{exp}".encode(),
+                       "sha256").hexdigest()[:32]
+        return f"{token_id}.{exp}.{sig}"
+
+    def check_sid(self, sid: str):
+        """验签+验过期+验吊销；通过返回 (token_id, label)。"""
+        try:
+            token_id, exp, sig = sid.rsplit(".", 2)
+            if int(exp) < time.time():
+                return None
+            want = hmac.new(self._secret().encode(), f"{token_id}|{exp}".encode(),
+                            "sha256").hexdigest()[:32]
+            if not hmac.compare_digest(sig, want):
+                return None
+            label = self.sid_label(token_id)
+            return (token_id, label) if label else None
+        except ValueError:
+            return None
 
     # ── 装载 ─────────────────────────────────────────────
     def _load(self):
@@ -151,7 +234,9 @@ class Data:
                 for line in f:
                     if line.strip():
                         rec = json.loads(line)
-                        self.verdicts[rec["iid"]] = rec
+                        who = rec.get("who") or self.owner  # 旧 journal 无署名→归房主
+                        rec["who"] = who
+                        self.verdicts.setdefault(rec["iid"], {})[who] = rec
         pf = self.state_dir / "buckets_promoted.json"
         if pf.exists():
             self.promoted = json.loads(pf.read_text(encoding="utf-8"))
@@ -195,20 +280,61 @@ class Data:
                 "labeler": prov.get("labeler", ""),
             })
 
+    # ── 多人裁决聚合与领取 ────────────────────────────
+    def eff_verdict(self, iid: str) -> Tuple[Optional[str], int]:
+        """生效裁决=多数票（平票→存疑）；返回 (verdict, 人数)。"""
+        recs = self.verdicts.get(iid)
+        if not recs:
+            return None, 0
+        votes = [r["verdict"] for r in recs.values()]
+        mx = max(votes.count(v) for v in set(votes))
+        top = [v for v in sorted(set(votes)) if votes.count(v) == mx]
+        return (top[0] if len(top) == 1 else "uncertain"), len(recs)
+
+    def claim(self, iid: str, who: str) -> Tuple[Optional[str], bool]:
+        """软领取：返回 (当前持有人, 是否成功)。他人未过期领取则失败。"""
+        with self.lock:
+            c = self.claims.get(iid)
+            if c and c[0] != who and time.time() - c[1] < CLAIM_TTL:
+                return c[0], False
+            self.claims[iid] = (who, time.time())
+            return who, True
+
+    def claim_of(self, iid: str) -> Optional[str]:
+        c = self.claims.get(iid)
+        if c and time.time() - c[1] < CLAIM_TTL:
+            return c[0]
+        return None
+
+    def crew(self) -> dict:
+        """每位裁决人的逐条计数（审计面板）。"""
+        out: Dict[str, Dict[str, int]] = {}
+        for recs in self.verdicts.values():
+            for rec in recs.values():
+                w = out.setdefault(rec["who"], {"total": 0, "adopt": 0, "reject": 0,
+                                                "uncertain": 0, "latest": 0})
+                w["total"] += 1
+                w[rec["verdict"]] += 1
+                w["latest"] = max(w["latest"], rec["at"])
+        return out
+
     # ── 桶与门槛 ─────────────────────────────────────────
     def bucket_stats(self):
         out = {}
         for b in ("auto", "must", "audit", "audit-other"):
             its = [x for x in self.items if x["bucket"] == b]
-            rev = [self.verdicts.get(x["iid"]) for x in its]
-            rev = [r for r in rev if r]
-            rejects = sum(1 for r in rev if r["verdict"] == "reject")
-            uncertain = sum(1 for r in rev if r["verdict"] == "uncertain")
+            # 门槛只计 ≥quorum 人有效裁决的条目；生效裁决=多数票
+            eff = [self.eff_verdict(x["iid"]) for x in its]
+            rev = [v for v, n in eff if n >= self.quorum and v]
+            rejects = sum(1 for v in rev if v == "reject")
+            uncertain = sum(1 for v in rev if v == "uncertain")
+            voters = sum(1 for _, n in eff if n > 0)
             p = self.promoted.get(b)
             out[b] = {
                 "total": len(its),
                 "by_type": _type_dist(its),
                 "reviewed": len(rev),
+                "any_voters": voters,
                 "rejected": rejects,
                 "uncertain": uncertain,
                 "err_rate": (rejects / len(rev)) if rev else 0.0,
@@ -223,10 +349,13 @@ class Data:
         its.sort(key=lambda x: hashlib.md5(f"{SEED}|{x['iid']}".encode()).hexdigest())
         return [x["iid"] for x in its[:n]]
 
-    def record(self, iid: str, verdict: str, reason: str):
+    def record(self, iid: str, verdict: str, reason: str, who: Optional[str] = None):
         if not any(x["iid"] == iid for x in self.items):
             raise KeyError(iid)
-        rec = {"iid": iid, "verdict": verdict, "reason": reason, "at": int(time.time())}
+        if verdict not in ("adopt", "reject", "uncertain"):
+            raise ValueError(f"bad verdict: {verdict}")
+        rec = {"iid": iid, "verdict": verdict, "reason": reason,
+               "who": who or self.owner, "at": int(time.time())}
         with self.lock:
             with open(self.state_dir / "adjudications.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -234,17 +363,19 @@ class Data:
 
     PROTECTED_ADOPT = ("no_error", "del_intent", "noop_contra")  # fix==片段的三档，批量采纳一律跳过
 
-    def bulk(self, its: list, verdict: str, reason: str) -> int:
-        """批量裁决当前筛选集（已裁决跳过；fix==片段三档采纳保护，须逐条）。"""
+    def bulk(self, its: list, verdict: str, reason: str, who: Optional[str] = None) -> int:
+        """批量裁决当前筛选集（本人已裁跳过；fix==片段三档采纳保护，须逐条）。"""
         n = 0
+        who = who or self.owner
         with self.lock:
             with open(self.state_dir / "adjudications.jsonl", "a", encoding="utf-8") as f:
                 for x in its:
-                    if x["iid"] in self.verdicts:
+                    if who in self.verdicts.get(x["iid"], {}):
                         continue
                     if verdict == "adopt" and x["signal"] in self.PROTECTED_ADOPT:
                         continue
-                    rec = {"iid": x["iid"], "verdict": verdict, "reason": reason, "at": int(time.time())}
+                    rec = {"iid": x["iid"], "verdict": verdict, "reason": reason,
+                           "who": who, "at": int(time.time())}
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     self.verdicts[x["iid"]] = rec
                     n += 1
@@ -261,14 +392,14 @@ class Data:
 
 
 def _signal_dist(its):
-    m: dict[str, int] = {}
+    m: Dict[str, int] = {}
     for x in its:
         m[x["signal"] or "none"] = m.get(x["signal"] or "none", 0) + 1
     return dict(sorted(m.items(), key=lambda kv: -kv[1]))
 
 
 def _type_dist(its):
-    m: dict[str, int] = {}
+    m: Dict[str, int] = {}
     for x in its:
         m[x["type"]] = m.get(x["type"], 0) + 1
     return dict(sorted(m.items(), key=lambda kv: -kv[1]))
@@ -277,7 +408,7 @@ def _type_dist(its):
 DATA: Data  # set in main()
 
 
-def filtered_items(qs) -> list[dict]:
+def filtered_items(qs, who: Optional[str] = None) -> List[dict]:
     bucket = qs.get("bucket", [""])[0]
     setf = qs.get("set", [""])[0]
     text = qs.get("q", [""])[0]
@@ -294,9 +425,9 @@ def filtered_items(qs) -> list[dict]:
     if text:
         its = [x for x in its if text in x["id"] or text in x["src"] or text in x["fix"]]
     if status == "todo":
-        its = [x for x in its if x["iid"] not in DATA.verdicts]
+        its = [x for x in its if who not in DATA.verdicts.get(x["iid"], {})]
     elif status == "done":
-        its = [x for x in its if x["iid"] in DATA.verdicts]
+        its = [x for x in its if who in DATA.verdicts.get(x["iid"], {})]
     if sample and bucket:
         n = int(qs.get("n", [str(GATE_MIN_REVIEWED)])[0])
         order = {iid: i for i, iid in enumerate(DATA.sample_ids(bucket, n))}
@@ -308,13 +439,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code: int, body: bytes, ctype="application/json; charset=utf-8"):
+    def _send(self, code: int, body: bytes, ctype="application/json; charset=utf-8",
+              extra: Optional[dict] = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            for vv in ([v] if isinstance(v, str) else v):
+                self.send_header(k, vv)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ── 身份：网关 token 会话（lf_adj）或房间口令（neo_sid）─────
+    def _who(self) -> Optional[str]:
+        ck = self.headers.get("Cookie", "")
+        if DATA.token_db:
+            m = re.search(r"lf_adj=([^;]+)", ck)
+            got = DATA.check_sid(m.group(1)) if m else None
+            return got[1] if got else None
+        if not DATA.room_key:
+            return DATA.owner  # 单机模式：匿名即房主，行为与旧版一致
+        m = re.search(r"neo_sid=([^;]+)", ck)
+        if not m:
+            return None
+        tok, _, name = m.group(1).partition("|")
+        name = unquote(name)
+        return name if hmac.compare_digest(tok, DATA.token(name)) else None
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -323,6 +474,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 html = (Path(__file__).parent / "index.html").read_bytes()
                 return self._send(200, html, "text/html; charset=utf-8")
+            who = self._who()
+            if u.path == "/api/whoami":
+                return self._send(200, json.dumps(
+                    {"who": who, "room": bool(DATA.room_key or DATA.token_db),
+                     "token_mode": bool(DATA.token_db)}, ensure_ascii=False).encode())
+            if DATA.room_key and who is None:
+                return self._send(401, json.dumps({"error": "请先登录"}, ensure_ascii=False).encode())
             if u.path == "/api/state":
                 bs = DATA.bucket_stats()
                 return self._send(200, json.dumps({
@@ -336,26 +494,35 @@ class Handler(BaseHTTPRequestHandler):
                     "sets": sorted({x["set"] for x in DATA.items}),
                     "signals": _signal_dist(DATA.items),
                     "reviewed_total": len(DATA.verdicts),
-                    "gate": {"min_reviewed": GATE_MIN_REVIEWED, "max_err": GATE_MAX_ERR},
+                    "gate": {"min_reviewed": GATE_MIN_REVIEWED, "max_err": GATE_MAX_ERR,
+                             "quorum": DATA.quorum},
+                    "crew": DATA.crew(),
+                    "me": who,
                 }, ensure_ascii=False).encode())
             if u.path == "/api/items":
-                its = filtered_items(qs)
+                its = filtered_items(qs, who)
                 off = int(qs.get("offset", ["0"])[0])
                 lim = int(qs.get("limit", ["20"])[0])
                 page = its[off:off + lim]
                 out = []
                 for x in page:
                     y = dict(x)
-                    y["verdict"] = DATA.verdicts.get(x["iid"])
+                    recs = DATA.verdicts.get(x["iid"], {})
+                    y["mine"] = recs.get(who)
+                    y["votes"] = sorted(recs.values(), key=lambda r: r["at"])
+                    ev, n = DATA.eff_verdict(x["iid"])
+                    y["eff"], y["nvotes"] = ev, n
+                    cq = DATA.claim_of(x["iid"])
+                    y["claim"] = cq if cq and cq != who else None
                     out.append(y)
                 return self._send(200, json.dumps({"total": len(its), "offset": off, "items": out}, ensure_ascii=False).encode())
             if u.path == "/api/export":
                 adopted = []
                 for x in DATA.items:
-                    v = DATA.verdicts.get(x["iid"])
-                    if not v or v["verdict"] != "adopt":
+                    ev, _n = DATA.eff_verdict(x["iid"])
+                    if ev != "adopt":
                         continue
-                    y = x | {"verdict": v}
+                    y = x | {"verdict": DATA.verdicts[x["iid"]], "eff": ev}
                     if x["frag"] and x["frag"] == x["fix"]:
                         # fix==原文的采纳：删除意图归一为 delete，其余标 manual 待修
                         y["action"] = "delete" if x["signal"] == "del_intent" else "manual"
@@ -369,16 +536,60 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._send(500, json.dumps({"error": str(e)}).encode())
 
+    def do_HEAD(self):
+        u = urlparse(self.path)
+        if u.path in ("/", "/index.html"):
+            n = (Path(__file__).parent / "index.html").stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(n))
+            return self.end_headers()
+        self.send_response(200)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         u = urlparse(self.path)
         n = int(self.headers.get("Content-Length", "0"))
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
+            if u.path == "/api/login":
+                if DATA.token_db:  # 网关形态：一人一枚评审令牌，姓名即 label
+                    got = DATA.auth_token(str(body.get("token", "")))
+                    if not got:
+                        return self._send(403, json.dumps({"error": "令牌无效或已吊销"}, ensure_ascii=False).encode())
+                    sid = DATA.make_sid(got[0])
+                    ck = f"lf_adj={sid}; Path=/; Max-Age=43200; HttpOnly; SameSite=Lax"
+                    return self._send(200, json.dumps({"who": got[1]}).encode(),
+                                      extra={"Set-Cookie": ck})
+                name = (body.get("name") or "").strip()[:24]
+                if not name or not DATA.room_key:
+                    raise ValueError("参数不足")
+                if not hmac.compare_digest(str(body.get("key", "")), DATA.room_key):
+                    return self._send(403, json.dumps({"error": "口令不对"}, ensure_ascii=False).encode())
+                from urllib.parse import quote
+                tok = DATA.token(name)
+                ck = f"neo_sid={tok}|{quote(name)}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"
+                return self._send(200, json.dumps({"who": name}).encode(),
+                                  extra={"Set-Cookie": ck})
+            who = self._who()
+            if DATA.room_key and who is None:
+                return self._send(401, json.dumps({"error": "请先登录"}, ensure_ascii=False).encode())
+            if u.path == "/api/logout":
+                return self._send(200, b'{"ok":true}',
+                                  extra={"Set-Cookie": ["neo_sid=; Path=/; Max-Age=0",
+                                                        "lf_adj=; Path=/; Max-Age=0"]})
+            if u.path == "/api/claim":
+                holder, ok = DATA.claim(body["iid"], who)
+                return self._send(200, json.dumps({"claim": holder, "ok": ok}).encode())
             if u.path == "/api/verdict":
-                DATA.record(body["iid"], body["verdict"], body.get("reason", ""))
+                DATA.record(body["iid"], body["verdict"], body.get("reason", ""), who)
                 return self._send(200, b'{"ok":true}')
             if u.path == "/api/bulk":
-                n = DATA.bulk(filtered_items(parse_qs(u.query)), body["verdict"], body.get("reason", "预筛批量"))
+                n = DATA.bulk(filtered_items(parse_qs(u.query), who), body["verdict"],
+                              body.get("reason", "预筛批量"), who)
                 return self._send(200, json.dumps({"done": n}).encode())
             if u.path == "/api/promote":
                 DATA.promote(body["bucket"], body.get("note", ""))
@@ -395,13 +606,28 @@ def main():
     ap.add_argument("--state-dir", default=None, help="裁决 journal 目录（默认 = data-dir）")
     ap.add_argument("--lexicon", default=str(LEXICON_DEFAULT))
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--bind", default="127.0.0.1", help="非本机绑定时必须 --room-key（局域网多人）")
+    ap.add_argument("--room-key", default=None, help="房间口令：局域网协作用（与 --token-db 二选一）")
+    ap.add_argument("--token-db", default=None,
+                    help="网关 auth.db：用 access_tokens 登录（一人一枚令牌，署名=label）")
+    ap.add_argument("--owner", default="房主", help="无署名旧 journal 的归属名")
+    ap.add_argument("--quorum", type=int, default=1, help="门槛条目所需最少裁决人数（多人模式建议 2）")
     a = ap.parse_args()
-    DATA = Data(Path(a.data_dir).expanduser(), Path(a.state_dir or a.data_dir).expanduser(), Path(a.lexicon).expanduser())
+    if a.bind not in ("127.0.0.1", "localhost", "::1") and not (a.room_key or a.token_db):
+        sys.exit("非本机绑定必须 --room-key 或 --token-db，否则裁决无法署名/无法防冲突")
+    DATA = Data(Path(a.data_dir).expanduser(), Path(a.state_dir or a.data_dir).expanduser(),
+                Path(a.lexicon).expanduser(), owner=a.owner, room_key=a.room_key,
+                quorum=a.quorum, token_db=a.token_db)
     print(f"新增队列 {len(DATA.items)} 条（行新增计数和 {DATA.sum_row_new}，切分存疑行 {DATA.count_mismatch_rows}）")
     for b, s in DATA.bucket_stats().items():
         print(f"  {b:11s} {s['total']:6d}  {s['by_type']}")
-    print(f"http://127.0.0.1:{a.port}  data={DATA.data_dir} state={DATA.state_dir}")
-    ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+    mode = "网关令牌模式（沿用 access_tokens）" if a.token_db else ("多人登录模式" if a.room_key else "单机模式（匿名=房主）")
+    print(f"{mode} quorum={a.quorum}  http://{a.bind}:{a.port}  data={DATA.data_dir} state={DATA.state_dir}")
+    if a.room_key:
+        import socket
+        lan = socket.gethostbyname(socket.gethostname()) if a.bind == "0.0.0.0" else a.bind
+        print(f"编辑老师访问地址： http://{lan}:{a.port}")
+    ThreadingHTTPServer((a.bind, a.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

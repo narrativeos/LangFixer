@@ -6,6 +6,20 @@
 
 ### 新增
 
+- **label-adjudicate 公网发布（token 分发模式）**：登录支持 `--token-db` 直连网关
+  auth.db（sha256 校验 access_tokens，吊销即断，HMAC cookie `lf_adj` 12h），
+  一人一枚评审令牌；公网实例跑在 47.94.172.217（systemd
+  langfixer-adjudicate.service，quorum=2），经 Caddy `handle_path /adjudicate/*`
+  挂到 https://langfixer.jiulu.ltd/adjudicate/；serve.py 兼容服务器 CPython 3.6.8。
+- **label-adjudicate 多人协作产品化（`tools/label-adjudicate/`）**：登录页+房间口令
+  （HMAC 签名 cookie）、裁决逐条署名 `who`（旧 journal 无署名归房主）、每人一票
+  同名重裁覆盖自己、条目软领取防冲突、`--quorum K` 多数票共识门槛（平票→存疑，
+  默认 1 保持旧行为）、crew 审计面板；judge.py report 新增裁决人两两人人一致率
+  （逐位/采纳方向）并改比人工共识。v2.3 抽检自此双裁定账，单人裁决不再单独过闸门。
+- **label-judge 裁判口径 v2→v3（`tools/label-judge/`，未提交工具首次入账）**：
+  SuperVL 二审裁判 prompt 对齐人工金标口径（判修正本身而非原文是否必错）+〖〗就地
+  定位被标记范围+空 fix 显式注明删除；auto 桶 58 条人工交集上 一致率 50.0%→74.1%→75.9%，
+  误拦（裁reject/人adopt）18→5→4，**误放行（裁adopt/人reject）三版始终为 0**。
 - **router_ev 归因终版定账（`tools/tonight-queue/`，EVOLUTION §11.14 补七）**：
   train LLM 缓存扩容夜跑把 p̂ 测量面从 611 行补到 5,068/5,070（99.96%，缓存
   5,657 行；`.expand` 自包含落盘经两次中断零丢失）；`_v3` 终版重赛：真 p̂
