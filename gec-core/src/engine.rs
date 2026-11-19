@@ -95,15 +95,21 @@ pub trait GecEngine: Send + Sync {
     fn name(&self) -> &str;
     /// 检测文本中的错误
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError>;
+    /// 本次调用的**运行态输出通道**（C4 修复）：预算块/窗执行摘要与所有权空洞
+    /// 写入调用方自带的 [`RunReport`](crate::quality::RunReport)，经调用栈携带而非
+    /// 存入引擎共享槽——并发请求各用各的，质量/缓存核算不再互染。
+    /// 默认实现委托 [`detect`](Self::detect)（无预算块循环的引擎不写入）；有切块的
+    /// 引擎（stat 滑窗）覆写本方法。
+    async fn detect_run(
+        &self,
+        text: &str,
+        _run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        self.detect(text).await
+    }
     /// 最近一次 `detect` 中的 NLP 服务调用信息（`None` = 未调用 NLP 服务）。
     /// 组合引擎（级联 / 组合检测器）覆写本方法，从规则层转发。
     fn last_nlp_call(&self) -> Option<NlpCall> {
-        None
-    }
-    /// 最近一次 `detect` 的**预算块/窗**执行情况（[`crate::quality::ChunkStats`]）。
-    /// `None` = 本引擎无预算块切块（全文单层路径）；有切块的引擎（stat 滑窗）覆写，
-    /// 组合 / 级联引擎从成员转发（与 [`last_nlp_call`](Self::last_nlp_call) 同一先例）。
-    fn last_chunk_run(&self) -> Option<crate::quality::ChunkStats> {
         None
     }
     /// 本引擎组合中挂载的决策模型引擎（若有；查询模型版本号等元数据用）。
@@ -111,17 +117,19 @@ pub trait GecEngine: Send + Sync {
     fn decision_engine(&self) -> Option<&crate::decision::DecisionGecEngine> {
         None
     }
-    /// 带可选段级事件接收器的底层检测：默认实现委托 [`detect`](Self::detect)
-    /// （无预算块循环的引擎零事件）；执行循环内有切块的引擎（stat 滑窗）覆写
-    /// 本方法逐块推 [`crate::progress::StageEvent::ChunkBegin`] /
+    /// 带可选段级事件接收器与运行态输出的底层检测：默认实现委托
+    /// [`detect_run`](Self::detect_run)（无预算块循环的引擎零事件）；执行循环内
+    /// 有切块的引擎（stat 滑窗）覆写本方法逐块推
+    /// [`crate::progress::StageEvent::ChunkBegin`] /
     /// [`crate::progress::StageEvent::ChunkEnd`]。级联的 rule 分支经本方法注入 sink，
     /// 使 stat 臂的窗进度同样上屏。
     async fn detect_traced(
         &self,
         text: &str,
         _sink: Option<crate::progress::StageSink>,
+        run: &mut crate::quality::RunReport,
     ) -> Result<Vec<Error>, DetectorError> {
-        self.detect(text).await
+        self.detect_run(text, run).await
     }
     /// 三级响应检测：
     /// - `level = 1`：规则（+ 决策模型，若引擎组合中挂载）；
@@ -152,9 +160,11 @@ pub trait GecEngine: Send + Sync {
             )));
         }
         let started = std::time::Instant::now();
-        // ① 规则检测（计时含 NLP 服务调用；NLP 调用信息事后从引擎读取）
+        // ① 规则检测（计时含 NLP 服务调用；NLP 调用信息事后从引擎读取）；
+        // 预算窗执行摘要经 RunReport 随调用栈携带（C4：不落引擎共享槽）
+        let mut run = crate::quality::RunReport::default();
         let t_rule = std::time::Instant::now();
-        let mut errors = self.detect(text).await?;
+        let mut errors = self.detect_traced(text, None, &mut run).await?;
         let rule_ms = t_rule.elapsed().as_millis() as u64;
         let nlp = self.last_nlp_call();
         // 无来源错误补标 `rule`（组合引擎内部已自行补标的此处不再变化）
@@ -212,7 +222,7 @@ pub trait GecEngine: Send + Sync {
         }
         // S6 质量自描述（Detect Pipeline v2 §5）：段级预算（本层 LLM + 成员引擎的
         // 预算窗）进 chunks；layers → 降级项；句级单层引擎不核算
-        let mut chunk_stats: Option<crate::quality::ChunkStats> = self.last_chunk_run();
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = run.chunks.take();
         if let Some(c) = &llm_chunk {
             chunk_stats = Some(match chunk_stats {
                 Some(mut a) => {
@@ -233,7 +243,8 @@ pub trait GecEngine: Send + Sync {
             },
             None => crate::quality::ChunkStats::single(),
         };
-        let mut quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        let mut quality =
+            crate::quality::QualityReport::assemble(&layers, chunks.coverage(), run.unowned_chars);
         quality.dropped = dropped;
         Ok(DetectOutcome {
             errors,
@@ -487,10 +498,20 @@ pub async fn targeted_llm_review(
     text: &str,
     spans: &[[usize; 2]],
 ) -> Result<(Vec<Error>, crate::quality::DroppedLedger), DetectorError> {
-    // ① 越界钳制 + 排序 + 合并重叠/相邻 span
+    // ① 越界钓制 + 排序 + 合并重叠/相邻 span（钓制对齐字符边界，摘录切片不得 panic）
     let mut sp: Vec<[usize; 2]> = spans
         .iter()
-        .map(|s| [s[0].min(text.len()), s[1].min(text.len())])
+        .map(|s| {
+            let mut a = s[0].min(text.len());
+            let mut b = s[1].min(text.len());
+            while a > 0 && !text.is_char_boundary(a) {
+                a -= 1;
+            }
+            while b < text.len() && !text.is_char_boundary(b) {
+                b += 1;
+            }
+            [a, b]
+        })
         .filter(|s| s[0] < s[1])
         .collect();
     sp.sort_by_key(|s| s[0]);
@@ -587,12 +608,11 @@ pub async fn llm_layer_detect(
     let text: &str = mask.as_ref().map(|m| m.text.as_str()).unwrap_or(text);
     let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
     if threshold == 0 || text.chars().count() < threshold {
-        let mut errors = llm.detect(text).await?;
+        let (mut errors, parse_failed) = llm.detect_tracked(text).await?;
         let mut dropped = crate::quality::DroppedLedger::default();
         if let Some(m) = &mask {
             dropped.pii_mask = crate::mask::filter_masked_errors(&mut errors, m);
         }
-        let parse_failed = llm.take_parse_failed();
         let clean = errors.is_empty() && !parse_failed;
         let stats = crate::quality::ChunkStats {
             mode: "single".into(),
@@ -701,15 +721,59 @@ impl GecEngine for CompositeDetector {
             }
         }
     }
+    async fn detect_run(
+        &self,
+        text: &str,
+        run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        match self.primary.detect_run(text, run).await {
+            Ok(mut errors) => {
+                tag_source(&mut errors, self.primary.kind().as_str());
+                if let Some(fb) = &self.fallback {
+                    // 兜底引擎另用一份局部 RunReport：仅当主引擎无切块摘要时采用，
+                    // 空洞不重叠双计（与历史转发语义 primary or fallback 一致）
+                    let mut fb_run = crate::quality::RunReport::default();
+                    match fb.detect_run(text, &mut fb_run).await {
+                        Ok(mut rule_errors) => {
+                            tag_source(&mut rule_errors, fb.kind().as_str());
+                            merge_errors(&mut errors, rule_errors);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                engine = self.primary.name(),
+                                "兜底引擎检测失败，仅保留主引擎结果"
+                            );
+                        }
+                    }
+                    run.unowned_chars += fb_run.unowned_chars;
+                    if run.chunks.is_none() {
+                        run.chunks = fb_run.chunks;
+                    }
+                }
+                Ok(errors)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    engine = self.primary.name(),
+                    "主引擎不可用，回退兜底引擎"
+                );
+                match &self.fallback {
+                    Some(fb) => {
+                        let mut errors = fb.detect_run(text, run).await?;
+                        tag_source(&mut errors, fb.kind().as_str());
+                        Ok(errors)
+                    }
+                    None => Err(e),
+                }
+            }
+        }
+    }
     fn last_nlp_call(&self) -> Option<NlpCall> {
         self.primary
             .last_nlp_call()
             .or_else(|| self.fallback.as_ref().and_then(|fb| fb.last_nlp_call()))
-    }
-    fn last_chunk_run(&self) -> Option<crate::quality::ChunkStats> {
-        self.primary
-            .last_chunk_run()
-            .or_else(|| self.fallback.as_ref().and_then(|fb| fb.last_chunk_run()))
     }
 }
 
@@ -844,6 +908,8 @@ impl GecEngine for CascadeDetector {
         let p_rule = progress.clone();
         let p_dec = progress.clone();
         let p_l3 = progress.clone();
+        // ① 臂的本次调用运行态（窗摘要/空洞）：随调用栈携带，不落引擎共享槽（C4）
+        let mut rule_run = crate::quality::RunReport::default();
         // ①＋②（＋③-F）规则 / 决策模型 / L3 特征模型**并行**执行：
         // 三者都是全文级判断、互不依赖对方结果，总延迟 = 各层 max
         // （此前为串行求和）；规则不可用时回退决策模型（保持既有故障回退行为，
@@ -857,8 +923,11 @@ impl GecEngine for CascadeDetector {
             async {
                 let t = std::time::Instant::now();
                 // sink 透传到 rule 成员执行循环（stat 臂滑窗逐块推段级事件；
-                // 其余引擎经 trait 默认实现零事件）
-                let r = self.rule.detect_traced(text, p_rule.clone()).await;
+                // 其余引擎经 trait 默认实现零事件）；窗执行摘要写入 rule_run
+                let r = self
+                    .rule
+                    .detect_traced(text, p_rule.clone(), &mut rule_run)
+                    .await;
                 let ms = t.elapsed().as_millis() as u64;
                 if let Some(sink) = &p_rule {
                     sink(crate::progress::StageEvent::Stage {
@@ -1127,6 +1196,12 @@ impl GecEngine for CascadeDetector {
                 }
                 Err(e) => {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
+                    // R6：全文 LLM 未参与时，若 L3 部分定案留有灰区句且尚未
+                    // 定向复查（③-T 不跑）——灰区句本轮同样未复查，句级
+                    // 账本必须扣减，不得把待复查的灰区句计为已复查。
+                    if !targeted_spans.is_empty() {
+                        gray_unresolved = true;
+                    }
                     if let Some(sink) = &progress {
                         sink(crate::progress::StageEvent::Stage {
                             stage: shared_model::sources::LLM,
@@ -1237,10 +1312,11 @@ impl GecEngine for CascadeDetector {
         // - chunks：③ LLM 段级摘要 ⊕ 成员引擎预算窗摘要（stat 滑窗）；
         //   无任何预算层且未触发 LLM → 全文单发；触发但未成功 → 单发未复查；
         // - quality：layers 非 ran 项 → 降级项；coverage 由 chunks 核算；
-        //   unowned_chars 恒 0（docchunk 铺满不变式；stat 侧另记告警）；
+        //   unowned_chars：stat 臂窗切块空洞经 rule_run 入帐（R4：非零即降级，
+        //   不再只是日志）；
         // - sentences：句级恒切一次；③-T 未定案时灰区句不计入已复查（③ 全文
-        //   复查覆盖全文，不扣）。
-        let mut chunk_stats: Option<crate::quality::ChunkStats> = self.rule.last_chunk_run();
+        //   复查覆盖全文，不扣；③ 失败且有灰区句同样扣减，见 R6）。
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = rule_run.chunks.take();
         if let Some(c) = &llm_chunk {
             chunk_stats = Some(match chunk_stats {
                 Some(mut a) => {
@@ -1261,7 +1337,11 @@ impl GecEngine for CascadeDetector {
             },
             None => crate::quality::ChunkStats::single(),
         };
-        let mut quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        let mut quality = crate::quality::QualityReport::assemble(
+            &layers,
+            chunks.coverage(),
+            rule_run.unowned_chars,
+        );
         quality.dropped = dropped;
         let s_spans = crate::docchunk::sentence_spans(text);
         let unreviewed_sentences = if gray_unresolved {
@@ -3329,6 +3409,9 @@ mod tests {
         assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");
         assert_eq!(errors[0].correction.as_deref(), Some("抱负"));
         assert_eq!(status, "ran");
-        assert!(dropped.is_empty(), "区外检出保留时不应有丢弃记账: {dropped:?}");
+        assert!(
+            dropped.is_empty(),
+            "区外检出保留时不应有丢弃记账: {dropped:?}"
+        );
     }
 }

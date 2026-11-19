@@ -260,6 +260,19 @@ impl GecEngine for TerminologyEngine {
         self.terminology.apply(&lang, text, &mut outcome.errors);
         Ok(outcome)
     }
+    /// 运行态与阶段事件透传：内层引擎把预算窗覆盖写入 `run`，
+    /// 术语过滤在其后（保护词剔除不影响覆盖核算）。
+    async fn detect_traced(
+        &self,
+        text: &str,
+        sink: Option<crate::progress::StageSink>,
+        run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        let lang = self.inner.name().to_string();
+        let mut errors = self.inner.detect_traced(text, sink, run).await?;
+        self.terminology.apply(&lang, text, &mut errors);
+        Ok(errors)
+    }
     /// 阶段事件透传：不过滤事件直接交给内层引擎（术语处理本身在 End 之后，不单独设阶段）
     async fn detect_level_traced(
         &self,

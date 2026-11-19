@@ -197,10 +197,6 @@ pub struct LlmGecEngine {
     lang: String,
     client: reqwest::Client,
     config: LlmDetectConfig,
-    /// 上一次 `detect` 是否**响应成功但无法解析**（「复查失败」而非「复查确认干净」）。
-    /// 引擎按请求现构建（运行时配置），实例级标记即「本次调用」语义；
-    /// 由 [`Self::take_parse_failed`] 读取并复位。
-    parse_failed: std::sync::atomic::AtomicBool,
     /// 网关健康熔断（与决策 / L3 / 嵌入客户端同款三态熔断器）。
     /// api-server 形态下检测引擎**每次现构建**，熔断器必须从外部共享注入
     /// （`State::llm_breaker`），否则每次请求都是全新实例 = 永不开断。
@@ -232,17 +228,17 @@ impl LlmGecEngine {
             lang: lang.into(),
             client,
             config,
-            parse_failed: std::sync::atomic::AtomicBool::new(false),
             breaker,
         }
     }
 
-    /// 读取并复位「上次调用解析失败」标记。调用方据此把解析失败
-    /// 上报为层状态 `partial`（部分未复查），**绝不得**当作「无错误」
-    /// （审校产品最危险的失败模式：把系统故障伪装成阴性结论）。
-    pub fn take_parse_failed(&self) -> bool {
-        self.parse_failed
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    /// 带「解析失败」标记的单次检测：返回（错误列表，**响应成功但无法解析**）。
+    ///
+    /// 调用方据此把解析失败上报为层状态 `partial`（部分未复查），
+    /// **绝不得**当作「无错误」（审校产品最危险的失败模式：把系统故障
+    /// 伪装成阴性结论）。状态随返回值逐次传递，不在引擎实例上共享。
+    pub async fn detect_tracked(&self, text: &str) -> Result<(Vec<Error>, bool), DetectorError> {
+        self.detect_anchored(text).await
     }
 }
 
@@ -843,10 +839,7 @@ impl GecEngine for LlmGecEngine {
     }
 
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
-        let (errors, parse_failed) = self.detect_anchored(text).await?;
-        self.parse_failed
-            .store(parse_failed, std::sync::atomic::Ordering::Relaxed);
-        Ok(errors)
+        Ok(self.detect_anchored(text).await?.0)
     }
 }
 
@@ -854,7 +847,7 @@ impl LlmGecEngine {
     /// 单次检测的解析与锚定核心：返回（错误列表，**响应成功但解析失败**标记）。
     ///
     /// 解析失败时列表为空但标记为 `true`——调用方必须把「解析失败」与
-    /// 「模型确认无错」区分开（见 [`Self::take_parse_failed`]）。
+    /// 「模型确认无错」区分开（对外见 [`Self::detect_tracked`]）。
     pub(crate) async fn detect_anchored(
         &self,
         text: &str,
@@ -1953,17 +1946,18 @@ mod tests {
 
     #[tokio::test]
     async fn parse_failure_is_visible_not_silent() {
-        // 响应无法解析：结果为空但 take_parse_failed 置真（「复查失败」≠「确认干净」）
+        // 响应无法解析：结果为空但 detect_tracked 置真（「复查失败」≠「确认干净」）；
+        // 状态随返回值逐次传递，并发调用互不串扰
         let endpoint = mock_llm_server("抱歉，我无法完成该任务。").await;
         let engine = LlmGecEngine::new("zh", config(&endpoint));
-        assert!(engine.detect("正确句子").await.unwrap().is_empty());
-        assert!(engine.take_parse_failed(), "解析失败必须显式可见");
-        assert!(!engine.take_parse_failed(), "读取后复位");
-        // 正常响应不置标记
+        let (errors, parse_failed) = engine.detect_tracked("正确句子").await.unwrap();
+        assert!(errors.is_empty());
+        assert!(parse_failed, "解析失败必须显式可见");
+        // 下一次调用不继承上次标记（正常响应不置标记）
         let endpoint = mock_llm_server("[]").await;
         let engine = LlmGecEngine::new("zh", config(&endpoint));
-        engine.detect("正确句子").await.unwrap();
-        assert!(!engine.take_parse_failed());
+        let (_, parse_failed) = engine.detect_tracked("正确句子").await.unwrap();
+        assert!(!parse_failed);
     }
 
     #[tokio::test]

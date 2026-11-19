@@ -156,14 +156,20 @@ impl ChunkStats {
         }
     }
 
-    /// 多预算层贡献合并（任一 chunked 即整体记 chunked；各计数相加）。
-    /// 单发贡献按 1 块计入 total/done（解析失败记 parse_failed）。
+    /// 多**扫描同一文本的不同层**的合并（任一 chunked 即整体记 chunked）。
+    /// R5：coverage 取并集而非分母相加——各层扫的是同一段文本，stat 滑窗
+    /// 9/9 叠 LLM 全文 1/1 仍是全文复查，不得变 10/11，否则全链路跑满的
+    /// 请求会被无端 demote 出缓存。total 取较大侧为基准，done 按“两侧都
+    /// 漏”的补集折算；failed/parse_failed 按层累加仅作诊断展示（重叠区
+    /// 可双计，coverage 不从它们派生）。
     pub fn merge(&mut self, other: &ChunkStats) {
         if other.mode == "chunked" || self.mode == "chunked" {
             self.mode = "chunked".into();
         }
-        self.total += other.total;
-        self.done += other.done;
+        let ca = self.coverage().unwrap_or(0.0);
+        let cb = other.coverage().unwrap_or(0.0);
+        self.total = self.total.max(other.total);
+        self.done = ((1.0 - (1.0 - ca) * (1.0 - cb)) * self.total as f64).round() as usize;
         self.failed += other.failed;
         self.parse_failed += other.parse_failed;
     }
@@ -189,6 +195,18 @@ pub struct SentenceStats {
     pub total: usize,
     /// 已被某复查层覆盖的句数（L3 部分定案的灰区句未经 ③-T/③ 复查时扣减）
     pub reviewed: usize,
+}
+
+/// 每次调用的**运行态输出**（C4 修复）：stat 滑窗执行摘要与所有权空洞不再
+/// 存入引擎共享的 Mutex/Atomic（并发请求互染质量/缓存判定），而是由调用方
+/// 创建并随调用栈携带；各并发请求各用各的，结束即丢弃。
+#[derive(Debug, Default, Clone)]
+pub struct RunReport {
+    /// 本次调用的预算块/窗执行摘要（`None` = 本引擎无切块，全文单层路径）
+    pub chunks: Option<ChunkStats>,
+    /// 所有权图空洞字节数（R4：stat 侧切块空洞写入本字段并进质量帐单，
+    /// 非零即 `degraded`，不再只是日志）
+    pub unowned_chars: usize,
 }
 
 #[cfg(test)]
@@ -288,6 +306,8 @@ mod tests {
         bad.parse_failed = 1;
         assert_eq!(bad.coverage(), Some(0.0));
 
+        // R5 并集语义：单层扫全文成功（coverage 1.0）叠另一层 3/4 →并集 1.0，
+        // 失败计数仅作诊断保留
         let mut a = ChunkStats::single();
         let b = ChunkStats {
             mode: "chunked".into(),
@@ -298,8 +318,27 @@ mod tests {
         };
         a.merge(&b);
         assert_eq!(a.mode, "chunked");
-        assert_eq!((a.total, a.done, a.failed), (5, 4, 1));
-        assert_eq!(a.coverage(), Some(0.8));
+        assert_eq!((a.total, a.done, a.failed), (4, 4, 1));
+        assert_eq!(a.coverage(), Some(1.0));
+
+        // 双侧都未全覆盖：4/8 ⊕ 4/8 并集 = 6/8 = 75%，不得报 8/16。
+        // 并集 done 按独立失败概率折算后四舍五入（至多半块误差，如 5/10 ⊕ 5/10 → 8/10）
+        let mut c = ChunkStats {
+            mode: "chunked".into(),
+            total: 8,
+            done: 4,
+            failed: 4,
+            parse_failed: 0,
+        };
+        c.merge(&ChunkStats {
+            mode: "chunked".into(),
+            total: 8,
+            done: 4,
+            failed: 4,
+            parse_failed: 0,
+        });
+        assert_eq!((c.total, c.done), (8, 6));
+        assert_eq!(c.coverage(), Some(0.75));
 
         let none = ChunkStats {
             mode: "single".into(),
@@ -309,5 +348,34 @@ mod tests {
             parse_failed: 0,
         };
         assert_eq!(none.coverage(), None);
+    }
+
+    /// R5：stat 9/9 ⊕ LLM 全文单发 1/1 = 全文复查（1.0），不是 10/11；
+    /// 否则全链路跑满的整次运行被无端排除在缓存外。
+    #[test]
+    fn merge_coverage_is_union_not_sum() {
+        let stat = ChunkStats {
+            mode: "chunked".into(),
+            total: 9,
+            done: 9,
+            failed: 0,
+            parse_failed: 0,
+        };
+        let mut merged = stat;
+        merged.merge(&ChunkStats::single());
+        assert_eq!((merged.total, merged.done), (9, 9));
+        assert_eq!(merged.coverage(), Some(1.0));
+
+        // stat 有一窗失败但 LLM 全文成功：全文仍被至少一层复查 → 1.0
+        let stat_bad = ChunkStats {
+            mode: "chunked".into(),
+            total: 9,
+            done: 8,
+            failed: 1,
+            parse_failed: 0,
+        };
+        let mut merged2 = stat_bad;
+        merged2.merge(&ChunkStats::single());
+        assert_eq!(merged2.coverage(), Some(1.0));
     }
 }

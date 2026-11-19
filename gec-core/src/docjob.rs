@@ -20,8 +20,8 @@ use rusqlite::{Connection, params};
 use shared_model::Error;
 
 use crate::detector::DetectorError;
-use crate::docchunk::{split_document, DocChunk};
-use crate::llm::{remap_chunk_errors, LlmGecEngine};
+use crate::docchunk::{DocChunk, split_document};
+use crate::llm::{LlmGecEngine, remap_chunk_errors};
 use crate::triage::{FAST_THRESHOLD, chunk_risk};
 
 /// 作业状态机：`created → running → done / cancelled`（`cancelling` 为过渡态）
@@ -144,7 +144,8 @@ impl DocJobStore {
                  send_len INTEGER NOT NULL,
                  result_json TEXT NOT NULL,
                  created_at TEXT NOT NULL
-             );")?;
+             );",
+        )?;
         // 迁移：旧库补 risk 列（-1 = 未计算）
         let has_risk: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('doc_chunks') WHERE name = 'risk'",
@@ -152,7 +153,10 @@ impl DocJobStore {
             |r| r.get(0),
         )?;
         if has_risk == 0 {
-            conn.execute("ALTER TABLE doc_chunks ADD COLUMN risk REAL NOT NULL DEFAULT -1", [])?;
+            conn.execute(
+                "ALTER TABLE doc_chunks ADD COLUMN risk REAL NOT NULL DEFAULT -1",
+                [],
+            )?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -266,16 +270,16 @@ impl DocJobStore {
     }
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), rusqlite::Error> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("UPDATE doc_jobs SET status = ?2 WHERE id = ?1", params![id, status])?;
+        self.conn.lock().unwrap().execute(
+            "UPDATE doc_jobs SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )?;
         Ok(())
     }
 
     fn progress_conn(conn: &Connection, id: &str) -> Result<DocJobProgress, rusqlite::Error> {
-        let mut q =
-            conn.prepare("SELECT status, COUNT(*) FROM doc_chunks WHERE job_id = ?1 GROUP BY status")?;
+        let mut q = conn
+            .prepare("SELECT status, COUNT(*) FROM doc_chunks WHERE job_id = ?1 GROUP BY status")?;
         let mut p = DocJobProgress::default();
         let rows = q.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         for (s, n) in rows.flatten() {
@@ -589,10 +593,12 @@ pub async fn run_doc_job(
     // 终态：仍有 pending（取消）→ cancelled；否则 done
     let progress = store
         .progress(job_id)
-
-
         .map_err(|e| DetectorError::DetectionFailed(format!("进度读取失败: {e}")))?;
-    let final_status = if progress.pending > 0 { "cancelled" } else { "done" };
+    let final_status = if progress.pending > 0 {
+        "cancelled"
+    } else {
+        "done"
+    };
     store
         .set_status(job_id, final_status)
         .map_err(|e| DetectorError::DetectionFailed(format!("作业状态写入失败: {e}")))?;
@@ -621,7 +627,7 @@ mod tests {
         .with_retry(Vec::new(), 0)
     }
 
-    /// 动态 mock：`respond(user)` 为 None → HTTP 400（网络层失败臂）
+    /// 动态 mock：`respond(user)` 为 None → HTTP 400（网络层失败臂）。
     async fn mock_server(respond: fn(&str) -> Option<String>) -> String {
         let app = axum::Router::new().route(
             "/v1/chat/completions",
@@ -690,7 +696,10 @@ mod tests {
         ids.sort();
         assert_eq!(ids, vec!["a".to_string(), "d".to_string()]);
         // 被打断的 running 作业：块仍是 pending，天然可续
-        assert_eq!(store.pending_chunks("a").unwrap().len(), store.progress("a").unwrap().total);
+        assert_eq!(
+            store.pending_chunks("a").unwrap().len(),
+            store.progress("a").unwrap().total
+        );
     }
 
     #[tokio::test]
@@ -731,7 +740,13 @@ mod tests {
         assert_eq!(errors[0].span, [expect, expect + "甲错".len()]);
         assert_eq!(store.job("j1").unwrap().unwrap().status, "done");
         // checkpoint 已持久化：done 块带 result_json
-        assert!(store.chunks("j1").unwrap().iter().all(|c| c.status == "done"));
+        assert!(
+            store
+                .chunks("j1")
+                .unwrap()
+                .iter()
+                .all(|c| c.status == "done")
+        );
     }
 
     #[tokio::test]
@@ -798,9 +813,18 @@ mod tests {
         let store = Arc::new(DocJobStore::open_in_memory().unwrap());
         let text = sample_doc();
         let n = store.create_job("j1", "zh", &text, None, 50).unwrap();
-        let (p, _) = run_doc_job(store.clone(), llm, "j1", 4, false, DocBudget::All, None, Arc::new(AtomicBool::new(true)))
-            .await
-            .unwrap();
+        let (p, _) = run_doc_job(
+            store.clone(),
+            llm,
+            "j1",
+            4,
+            false,
+            DocBudget::All,
+            None,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
         assert_eq!(p.pending, n, "取消位置位 → 全部块保持 pending");
         assert_eq!(p.coverage(), 0.0);
         assert_eq!(store.job("j1").unwrap().unwrap().status, "cancelled");
@@ -921,7 +945,10 @@ mod tests {
         let risky_start = text.find("第四段").unwrap();
         let risky = rows.iter().find(|c| c.owner[1] > risky_start).unwrap();
         let clean = rows.iter().find(|c| c.owner[0] == 0).unwrap();
-        assert!(risky.risk > clean.risk, "风险分应持久化且高危更高: {rows:?}");
+        assert!(
+            risky.risk > clean.risk,
+            "风险分应持久化且高危更高: {rows:?}"
+        );
         // 经济模式：低风险块按地板抽样后 skipped，高风险块正常复查
         let (p, _) = run_doc_job(
             store.clone(),
@@ -1041,7 +1068,10 @@ mod tests {
                 }
             }
             for e in errs {
-                if !gold_ranges.iter().any(|r| e.span[0] < r[1] && r[0] < e.span[1]) {
+                if !gold_ranges
+                    .iter()
+                    .any(|r| e.span[0] < r[1] && r[0] < e.span[1])
+                {
                     fp += 1;
                 }
             }
@@ -1051,10 +1081,18 @@ mod tests {
         // 臂 A：full（cache 开启，为臂 C 预热）
         let store_a = Arc::new(DocJobStore::open_in_memory().unwrap());
         store_a.create_job("full", "zh", &doc, None, 400).unwrap();
-        let (pa, ea) =
-            run_doc_job(store_a.clone(), llm.clone(), "full", 8, true, DocBudget::All, None, no_cancel())
-                .await
-                .unwrap();
+        let (pa, ea) = run_doc_job(
+            store_a.clone(),
+            llm.clone(),
+            "full",
+            8,
+            true,
+            DocBudget::All,
+            None,
+            no_cancel(),
+        )
+        .await
+        .unwrap();
         let (hits_a, fp_a) = metrics(&ea);
 
         // 臂 B：economical（独立 store，避免缓存影响 skipped 语义）
@@ -1089,7 +1127,9 @@ mod tests {
         // 臂 C：修订文档（复制一句制造重复 → 该块必须重跑，其余块应命中缓存）
         let dup = clean[7].clone();
         let revised = format!("{doc}{dup}\n");
-        store_a.create_job("rev", "zh", &revised, None, 400).unwrap();
+        store_a
+            .create_job("rev", "zh", &revised, None, 400)
+            .unwrap();
         let (pc, ec) = run_doc_job(
             store_a.clone(),
             llm.clone(),
