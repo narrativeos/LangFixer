@@ -20,6 +20,7 @@ use shared_model::session_store::SqliteSessionStore;
 use crate::cache::LruCache;
 use crate::custom_words::CustomWordStore;
 use crate::detect_history::DetectHistoryStore;
+use crate::request_summary::RequestSummaryStore;
 use crate::settings::AppSettings;
 use crate::table_history::TableHistoryStore;
 
@@ -63,6 +64,9 @@ pub struct AppState {
     pub custom_words: CustomWordStore,
     /// 检测历史（SQLite 持久化，全部留存）
     pub detect_history: DetectHistoryStore,
+    /// 请求级摘要账本（§7 可观测性：每次 detect/analyze 一行，看板/告警数据源；
+    /// 与 detect_history 共用同一 db 文件）
+    pub request_summary: RequestSummaryStore,
     /// 多模态审校 job 存储（内存表 + `{workdir}/{job_id}/` 目录；
     /// 原件只读副本隔离，见 `media_flow::jobs` 与 `MULTIMODAL.md` §9）
     /// `Arc` 是为了把同一份 store 交给 `media_flow::FlowCtx`（编排层与路由共享状态）
@@ -296,6 +300,16 @@ impl AppState {
             }
         };
 
+        // 初始化请求摘要存储（SQLite §7，与 detect_history 共用同一个 db 文件）
+        let request_summary = match RequestSummaryStore::open(&db_path) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(error = %e, "请求摘要存储初始化失败，将使用临时库（看板/告警仍可用）");
+                let tmp = std::env::temp_dir().join("langfixer_summary.db");
+                RequestSummaryStore::open(&tmp).expect("无法打开临时摘要 SQLite")
+            }
+        };
+
         // 初始化决策表版本历史存储（SQLite，与 detect_history 共用同一个 db 文件）
         let table_history = match TableHistoryStore::open(&db_path) {
             Ok(store) => {
@@ -436,6 +450,7 @@ impl AppState {
             cache: LruCache::default(),
             custom_words,
             detect_history,
+            request_summary,
             lexicon_hash: RwLock::new(lexicon_hash),
             table_history,
             learned_knowledge,

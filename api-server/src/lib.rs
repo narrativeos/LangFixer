@@ -14,6 +14,7 @@ pub mod knowledge_recall;
 // 链路）；这里按原名转发，既有测试与 `media-report` 二进制的引用不变。
 pub use media_flow::{jobs as media_jobs, report as media_report, vision as media_vision};
 pub mod middleware;
+pub mod request_summary;
 pub mod routes;
 pub mod settings;
 pub mod state;

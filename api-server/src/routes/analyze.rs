@@ -90,9 +90,11 @@ pub async fn analyze(
         from_history,
         version,
         params,
+        summary_id,
     } = run_pipeline(
         state.clone(),
         PipelineSpec {
+            entry: "analyze",
             lang: &req.lang,
             text: &req.text,
             category: &None,
@@ -173,6 +175,21 @@ pub async fn analyze(
             None => None,
         };
         analyzed.push(AnalyzedError { error, attribution });
+    }
+
+    // §7 质量告警数据源：归因落进 grammar_novice（规则缺失兜底）的条数回填摘要行
+    if let Some(id) = summary_id {
+        let fallback = analyzed
+            .iter()
+            .filter(|a| {
+                a.attribution
+                    .as_ref()
+                    .is_some_and(|at| at.trace.matched_rule == "grammar_novice")
+            })
+            .count();
+        if let Err(e) = state.request_summary.set_fallback(id, fallback) {
+            tracing::warn!(error = %e, "摘要行兜底归因回填失败（不影响返回结果）");
+        }
     }
 
     // 自动持久化（含归因结果 + 各阶段计时 + 参数快照 + 文本哈希；后台写入，不阻塞检测响应）

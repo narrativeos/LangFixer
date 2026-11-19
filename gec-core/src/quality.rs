@@ -24,6 +24,56 @@ pub struct QualityReport {
     /// 降级原因（`"{layer}_unavailable"` / `"{layer}_partial"` / `"coverage:…"` 等）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub degraded_reasons: Vec<String>,
+    /// 检出丢弃账本（Detect Pipeline v2 §7：丢弃必须留痕，不得静默吞噬）。
+    /// 各计数默认 0；装配方在 `assemble` 之后按来源直接赋值/合并。
+    #[serde(default, skip_serializing_if = "DroppedLedger::is_empty")]
+    pub dropped: DroppedLedger,
+}
+
+/// 检出丢弃账本（按**原因**分桶；总量非零即完整性告警信号）。
+///
+/// 来源接线：
+/// - `ownership`：③-T 定向复查中 LLM 检出落在任何灰区段之外（定位失败/幻觉位置）；
+/// - `pii_mask`：PII 掩码区（`*`）内的检出丢弃（filter_masked_errors）；
+/// - `out_of_range`：跨出送审文本边界的检出——stat 臂只钳制不丢弃，恒 0 预留；
+/// - `out_of_scope`：分块前缀区双报丢弃（所有权归上一块，remap_chunk_errors）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DroppedLedger {
+    /// 所有权图外（不属于任何归属区/灰区段）
+    #[serde(default)]
+    pub ownership: usize,
+    /// PII 掩码区检出
+    #[serde(default)]
+    pub pii_mask: usize,
+    /// 越出送审范围（预留：现行各臂只钳制不丢弃）
+    #[serde(default)]
+    pub out_of_range: usize,
+    /// 域外双报（上下文前缀区，归上一块）
+    #[serde(default)]
+    pub out_of_scope: usize,
+}
+
+impl DroppedLedger {
+    /// 四项全零（账本无内容，序列化可省略）
+    pub fn is_empty(&self) -> bool {
+        self.ownership == 0
+            && self.pii_mask == 0
+            && self.out_of_range == 0
+            && self.out_of_scope == 0
+    }
+
+    /// 丢弃总数（非零即告警级完整性信号）
+    pub fn total(&self) -> usize {
+        self.ownership + self.pii_mask + self.out_of_range + self.out_of_scope
+    }
+
+    /// 逐桶累加（多来源合并，如全文 LLM ⊕ 定向复查）
+    pub fn merge(&mut self, other: &DroppedLedger) {
+        self.ownership += other.ownership;
+        self.pii_mask += other.pii_mask;
+        self.out_of_range += other.out_of_range;
+        self.out_of_scope += other.out_of_scope;
+    }
 }
 
 impl QualityReport {
@@ -71,6 +121,7 @@ impl QualityReport {
             coverage,
             unowned_chars: unowned,
             degraded_reasons: reasons,
+            dropped: DroppedLedger::default(),
         }
     }
 
@@ -204,6 +255,29 @@ mod tests {
         let q = QualityReport::assemble(&[layer("rule", "ran")], Some(1.0), 7);
         assert_eq!(q.status, "degraded");
         assert_eq!(q.unowned_chars, 7);
+    }
+
+    #[test]
+    fn dropped_ledger_defaults_empty_and_merges() {
+        let mut a = DroppedLedger::default();
+        assert!(a.is_empty());
+        assert_eq!(a.total(), 0);
+        a.pii_mask = 2;
+        a.merge(&DroppedLedger {
+            pii_mask: 1,
+            out_of_scope: 3,
+            ..Default::default()
+        });
+        assert_eq!(a.pii_mask, 3);
+        assert_eq!(a.out_of_scope, 3);
+        assert_eq!(a.total(), 6);
+        assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn assemble_keeps_dropped_zero_field() {
+        let q = QualityReport::assemble(&[layer("rule", "ran")], Some(1.0), 0);
+        assert!(q.dropped.is_empty());
     }
 
     #[test]

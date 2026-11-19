@@ -334,6 +334,8 @@ pub(crate) async fn run_detection(
 
 /// 统一管线入参（[`run_pipeline`]）：执行参数 + 历史落库策略
 pub(crate) struct PipelineSpec<'a> {
+    /// 入口标识（§7 摘要行归属："detect" | "analyze"）
+    pub entry: &'static str,
     pub lang: &'a str,
     pub text: &'a str,
     pub category: &'a Option<String>,
@@ -356,6 +358,8 @@ pub(crate) struct PipelineResult {
     pub version: Option<serde_json::Value>,
     /// 本次执行的参数快照（仅实际检测时）
     pub params: Option<shared_model::DetectParams>,
+    /// 摘要行 id（§7；analyze 归因后回填 fallback_count 用；写失败为 None）
+    pub summary_id: Option<i64>,
 }
 
 /// 唯一执行入口（Detect Pipeline v2 P4 入口收敛）：detect / detect_lang / analyze
@@ -443,11 +447,66 @@ pub(crate) async fn run_pipeline(
         params = Some(snapshot);
     }
 
+    // §7 摘要行：每次请求留痕，**不受 cacheable / from_history 门控**——
+    // partial / degraded / 回放更要留痕（回放行 quality/status 为空）。
+    // 同步写入：账本不许丢，单行 INSERT 微秒级。
+    let degraded_json = outcome
+        .quality
+        .as_ref()
+        .filter(|q| !q.degraded_reasons.is_empty())
+        .and_then(|q| serde_json::to_string(&q.degraded_reasons).ok());
+    let summary_row = crate::request_summary::SummaryRow {
+        entry: spec.entry,
+        lang: spec.lang,
+        level: spec.level.unwrap_or(1),
+        quality_status: outcome.quality.as_ref().map(|q| q.status.as_str()),
+        coverage: outcome.quality.as_ref().and_then(|q| q.coverage),
+        unowned_chars: outcome
+            .quality
+            .as_ref()
+            .map(|q| q.unowned_chars)
+            .unwrap_or(0),
+        dropped: outcome
+            .quality
+            .as_ref()
+            .map(|q| q.dropped)
+            .unwrap_or_default(),
+        degraded_json,
+        chunks: outcome.chunks.as_ref(),
+        sentences: outcome.sentences.as_ref(),
+        version_json: version.as_ref().map(|v| v.to_string()),
+        error_count: outcome.errors.len(),
+        from_history,
+        from_cache: !from_history && outcome.quality.is_none(),
+        total_ms: (!outcome.timings.is_empty()).then(|| outcome.timings.total_ms),
+    };
+    // 告警①即时面：所有权空洞 / 丢弃账本非零 = 数据静默丢失，当场最高级日志
+    if let Some(q) = outcome.quality.as_ref() {
+        if q.unowned_chars != 0 || !q.dropped.is_empty() {
+            tracing::error!(
+                unowned_chars = q.unowned_chars,
+                dropped_ownership = q.dropped.ownership,
+                dropped_pii_mask = q.dropped.pii_mask,
+                dropped_out_of_range = q.dropped.out_of_range,
+                dropped_out_of_scope = q.dropped.out_of_scope,
+                "§7 完整性告警：本次请求存在数据丢失（所有权空洞或检出丢弃）"
+            );
+        }
+    }
+    let summary_id = match state.request_summary.insert(&summary_row) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!(error = %e, "请求摘要写入失败（不影响返回结果）");
+            None
+        }
+    };
+
     Ok(PipelineResult {
         outcome,
         from_history,
         version,
         params,
+        summary_id,
     })
 }
 
@@ -626,6 +685,7 @@ pub async fn detect(
     } = run_pipeline(
         state,
         PipelineSpec {
+            entry: "detect",
             lang: &req.lang,
             text: &req.text,
             category: &q.category,
@@ -694,6 +754,7 @@ pub async fn detect_lang(
     } = run_pipeline(
         state,
         PipelineSpec {
+            entry: "detect",
             lang: &lang,
             text: &req.text,
             category: &q.category,

@@ -19,6 +19,7 @@ import {
 } from '../ui'
 import type { LColumn } from '../ui'
 import { api } from '../api/client'
+import ObservabilityPanel from './ObservabilityPanel.vue'
 import type {
   EvalRunRequest,
   EvalJob,
@@ -43,13 +44,14 @@ import type {
   RoundReportAction,
 } from '../types'
 
-type ActiveTab = 'eval' | 'reflect' | 'train' | 'contribution'
+type ActiveTab = 'eval' | 'reflect' | 'train' | 'contribution' | 'observability'
 const activeTab = ref<ActiveTab>('eval')
 const TAB_OPTIONS: { value: ActiveTab; label: string }[] = [
   { value: 'eval', label: '测评' },
   { value: 'reflect', label: '反思' },
   { value: 'train', label: '训练' },
   { value: 'contribution', label: '贡献与轮次' },
+  { value: 'observability', label: '可观测' },
 ]
 const store = useGecStore()
 
@@ -1716,6 +1718,11 @@ function fmtNum(v: number | null | undefined, digits = 3): string {
             </template>
           </div>
         </LSection>
+      </div>
+
+      <!-- ═══════════════ 可观测（§7） ═══════════════ -->
+      <div v-if="activeTab === 'observability'">
+        <ObservabilityPanel />
       </div>
     </div>
   </div>

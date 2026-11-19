@@ -493,6 +493,24 @@ level 1 无 LLM，即 web-ui 生产默认配置）：
   **残余差异**：桌面仍为独立实现（非共享 crate）但语义同构；进程级 LRU
   缓存桌面本就无，未补。cargo check --workspace 全绿，桌面 2 / api lib 45 /
   api 58 全绿，无断言修改
+- **1.1e 可观测性四件套（2026-11-19，DETECT_PIPELINE §7）**：
+  ① **dropped 账本**（gec-core）：`DroppedLedger{ownership, pii_mask, out_of_range,
+  out_of_scope}` 挂 `QualityReport.dropped`（serde default + 空则省略）；掩码过滤、
+  所有权段外丢弃、分块前缀重映射出块丢弃逐桶计数（并发分块用流循环局部变量
+  累加防跨请求串账），assemble 签名不变；② **每请求 summary**（api-server 新模块
+  `request_summary.rs`）：`run_pipeline` 在历史写入之后无条件落一行 SQLite 账本
+  （detect×2 / analyze 两入口；回放行 quality/status 置 NULL；doc-jobs / media /
+  桌面不写，遗余），含版本向量 / quality / chunks / sentences / dropped / 耗时；
+  ③ **两告警**（§5 危险象限的机器盯梢）：完整性（24h 内 unowned≠0 或 dropped
+  非零的行数 >0，写行处同时 `tracing::error!` 即时点名）+ 质量（grammar_novice
+  兜底率 >30% 且样本 ≥20，或 partial∧零检出 ≥5 次），
+  `GET /gec/observability/alerts`；④ **看板**：`GET /gec/observability/summary?days=N`
+  按 day × rules_fingerprint 内存聚合（请求数 / coverage 均值 / 句复查率 /
+  unavailable 率 / cache 命中 / history 复用 / dropped 分原因 / LLM 块完成数代理 /
+  总耗时 P95 最近秩），web-ui 进化中心新增「可观测」标签页
+  （ObservabilityPanel：两告警卡 + 窗口选择 + 聚合表）。
+  gec-core 289 / api lib 51 / api 58 / vitest 126 全绿。
+  **遗余**：块级 P95（需块级耗时列，二期）、doc-jobs/media/桌面 summary 写入
 - **1.3 重训无效标记**：`reflection_center` 新增 `L3RetrainStateIn`
   （最近 completed `l3_retrain` 作业的 gate_f1/report_id + 当前报告复测 F1）；
   复测 F1 未超过重训前值 +0.05 → 不再提议 `l3_sample`，改出 findings

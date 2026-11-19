@@ -257,6 +257,9 @@ pub struct DocLlmOutcome {
     pub failed_chunks: usize,
     /// 响应成功但解析失败的块数（同样属于「未复查」）
     pub parse_failed_chunks: usize,
+    /// 上下文前缀区双报丢弃数（所有权归上一块，remap_chunk_errors；
+    /// §7 dropped 账本 `out_of_scope` 桶来源；单发路径恒 0）
+    pub prefix_dropped: usize,
 }
 
 impl DocLlmOutcome {
@@ -300,6 +303,7 @@ impl LlmGecEngine {
                 chunks: 1,
                 failed_chunks: 0,
                 parse_failed_chunks: parse_failed as usize,
+                prefix_dropped: 0,
             });
         }
         use futures_util::StreamExt;
@@ -339,6 +343,7 @@ impl LlmGecEngine {
         let mut out: Vec<Error> = Vec::new();
         let mut failed = 0usize;
         let mut parse_failed = 0usize;
+        let mut prefix_dropped = 0usize;
         let mut first_err: Option<DetectorError> = None;
         while let Some((c, r)) = stream.next().await {
             match r {
@@ -346,7 +351,12 @@ impl LlmGecEngine {
                     if pf {
                         parse_failed += 1;
                     }
-                    out.extend(remap_chunk_errors(&c, errors));
+                    let n_before = errors.len();
+                    let mapped = remap_chunk_errors(&c, errors);
+                    // 前缀区双报丢弃计数（流循环局部变量，并发安全；
+                    // 不用引擎内原子——跨请求会串账）
+                    prefix_dropped += n_before - mapped.len();
+                    out.extend(mapped);
                 }
                 Err(e) => {
                     failed += 1;
@@ -372,6 +382,7 @@ impl LlmGecEngine {
             chunks: n_chunks,
             failed_chunks: failed,
             parse_failed_chunks: parse_failed,
+            prefix_dropped,
         })
     }
 }
@@ -2048,6 +2059,10 @@ mod tests {
             "span 必须是文档字节偏移"
         );
         assert_eq!(e.source.as_deref(), Some("llm"));
+        assert!(
+            o.prefix_dropped >= 1,
+            "前缀区双报丢弃必须记账（dropped 账本来源）"
+        );
     }
 
     #[tokio::test]

@@ -69,7 +69,7 @@ pub use optimization_round::{
 };
 pub use pipeline::DetectionPipeline;
 pub use progress::{StageEvent, StageSink};
-pub use quality::{ChunkStats, QualityReport, SentenceStats};
+pub use quality::{ChunkStats, DroppedLedger, QualityReport, SentenceStats};
 pub use reflection::{
     ExampleInfo, KnowledgeInfo, ReflectionContext, ReflectionReport, ReflectionSuggestion,
     RuleDefInfo, normalize_source, reflect_rejection, suggestion_kinds,

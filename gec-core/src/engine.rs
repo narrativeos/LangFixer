@@ -170,6 +170,8 @@ pub trait GecEngine: Send + Sync {
         let mut llm_ms = None;
         let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
         let mut llm_ran = false;
+        // ⑦ dropped 账本（§7）：本路径来源只有 LLM 层；out_of_range 恒 0 预留
+        let mut dropped = crate::quality::DroppedLedger::default();
         if force_llm || level == 3 {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -184,11 +186,12 @@ pub trait GecEngine: Send + Sync {
             // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
             // 那是要人改设置，不是运行时故障。
             match llm_layer_detect(llm, text, None).await {
-                Ok((extra, llm_status, clean, chunk)) => {
+                Ok((extra, llm_status, clean, chunk, ledger)) => {
                     llm_ms = Some(t_llm.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
                     llm_ran = true;
                     llm_chunk = Some(chunk);
+                    dropped.merge(&ledger);
                     layers.push(LayerReport::new(
                         shared_model::sources::LLM,
                         llm_status,
@@ -230,7 +233,8 @@ pub trait GecEngine: Send + Sync {
             },
             None => crate::quality::ChunkStats::single(),
         };
-        let quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        let mut quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        quality.dropped = dropped;
         Ok(DetectOutcome {
             errors,
             decision_abstained: false,
@@ -475,11 +479,14 @@ pub fn merge_errors(primary: &mut Vec<Error>, extra: impl IntoIterator<Item = Er
 /// - 摘录以 `\n` 分隔各段；LLM 返回的 span 若落在分隔符或跨段，
 ///   钳制到最近重叠段（LLM 偶发跨句编辑时保守收缩，不丢整条）；
 /// - 无法对应任何段的 LLM 错误（span 越界）丢弃并记 warn。
+///
+/// 返回（错误列表，dropped 账本）：账本桶 `pii_mask`（掩码区检出丢弃）、
+/// `ownership`（落在任何灰区段外的丢弃）；§7 完整性告警数据源。
 pub async fn targeted_llm_review(
     llm: &LlmGecEngine,
     text: &str,
     spans: &[[usize; 2]],
-) -> Result<Vec<Error>, DetectorError> {
+) -> Result<(Vec<Error>, crate::quality::DroppedLedger), DetectorError> {
     // ① 越界钳制 + 排序 + 合并重叠/相邻 span
     let mut sp: Vec<[usize; 2]> = spans
         .iter()
@@ -495,7 +502,7 @@ pub async fn targeted_llm_review(
         }
     }
     if merged.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), crate::quality::DroppedLedger::default()));
     }
     // ② 摘录 + 段表 [excerpt_start, excerpt_end, orig_start]
     let mut excerpt = String::new();
@@ -517,8 +524,9 @@ pub async fn targeted_llm_review(
         None => excerpt,
     };
     let mut found = llm.detect(&excerpt).await?;
+    let mut dropped = crate::quality::DroppedLedger::default();
     if let Some(m) = &mask {
-        crate::mask::filter_masked_errors(&mut found, m);
+        dropped.pii_mask = crate::mask::filter_masked_errors(&mut found, m);
     }
     let mut out = Vec::with_capacity(found.len());
     for mut err in found {
@@ -530,6 +538,7 @@ pub async fn targeted_llm_review(
                 original = %err.original,
                 "定向 LLM 复查：错误 span 不在任何灰区段内，丢弃"
             );
+            dropped.ownership += 1;
             continue;
         };
         let shift = os - gs;
@@ -539,7 +548,7 @@ pub async fn targeted_llm_review(
         ];
         out.push(err);
     }
-    Ok(out)
+    Ok((out, dropped))
 }
 
 /// 全文 LLM 层统一执行入口：短文本单发、长文本**分块并行复查**
@@ -550,16 +559,27 @@ pub async fn targeted_llm_review(
 /// - `GEC_LLM_CHUNK_TARGET`：目标块大小字符数（默认 1500）；
 /// - `GEC_LLM_CONCURRENCY`：块并发（默认 8）。
 ///
-/// 返回（错误列表，层状态，`llm_confirmed_clean`，段级执行摘要）：
+/// 返回（错误列表，层状态，`llm_confirmed_clean`，段级执行摘要，dropped 账本）：
 /// - 解析失败（单发）或块失败/解析失败（分块）→ 层状态 `partial`，
 ///   且 `confirmed_clean` 必为 `false`——**解析失败不得伪装成「无错误」**；
 /// - 分块路径全部块失败 → [`Err`]（与单发网络失败同语义，由调用方降级）；
-/// - 第四位 [`ChunkStats`] 供调用方织入 quality.coverage / chunks（Detect Pipeline v2）。
+/// - 第四位 [`ChunkStats`] 供调用方织入 quality.coverage / chunks（Detect Pipeline v2）；
+/// - 第五位 [`DroppedLedger`](crate::quality::DroppedLedger)：`pii_mask`（掩码区检出）
+///   与 `out_of_scope`（分块前缀区双报）；`out_of_range` 恒 0 预留（§7）。
 pub async fn llm_layer_detect(
     llm: &LlmGecEngine,
     text: &str,
     progress: Option<crate::progress::StageSink>,
-) -> Result<(Vec<Error>, &'static str, bool, crate::quality::ChunkStats), DetectorError> {
+) -> Result<
+    (
+        Vec<Error>,
+        &'static str,
+        bool,
+        crate::quality::ChunkStats,
+        crate::quality::DroppedLedger,
+    ),
+    DetectorError,
+> {
     // 隐私防线：送 LLM（可能为外部端点）前掩码 PII（手机号 / 身份证 / 固话 /
     // 长数字串 / 邮箱本地部分；等长替换，span 字节偏移空间不变）；
     // 与被掩区域重叠的 LLM 检出丢弃。GEC_LLM_MASK_PII=0 可关
@@ -568,8 +588,9 @@ pub async fn llm_layer_detect(
     let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
     if threshold == 0 || text.chars().count() < threshold {
         let mut errors = llm.detect(text).await?;
+        let mut dropped = crate::quality::DroppedLedger::default();
         if let Some(m) = &mask {
-            crate::mask::filter_masked_errors(&mut errors, m);
+            dropped.pii_mask = crate::mask::filter_masked_errors(&mut errors, m);
         }
         let parse_failed = llm.take_parse_failed();
         let clean = errors.is_empty() && !parse_failed;
@@ -585,6 +606,7 @@ pub async fn llm_layer_detect(
             if parse_failed { "partial" } else { "ran" },
             clean,
             stats,
+            dropped,
         ))
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
@@ -592,8 +614,12 @@ pub async fn llm_layer_detect(
         let mut o = llm
             .detect_document(text, target, concurrency, progress)
             .await?;
+        let mut dropped = crate::quality::DroppedLedger {
+            out_of_scope: o.prefix_dropped,
+            ..Default::default()
+        };
         if let Some(m) = &mask {
-            crate::mask::filter_masked_errors(&mut o.errors, m);
+            dropped.pii_mask = crate::mask::filter_masked_errors(&mut o.errors, m);
         }
         let bad = o.failed_chunks + o.parse_failed_chunks;
         let clean = bad == 0 && o.errors.is_empty();
@@ -618,7 +644,7 @@ pub async fn llm_layer_detect(
             failed: o.failed_chunks,
             parse_failed: o.parse_failed_chunks,
         };
-        Ok((o.errors, status, clean, stats))
+        Ok((o.errors, status, clean, stats, dropped))
     }
 }
 
@@ -1068,6 +1094,8 @@ impl GecEngine for CascadeDetector {
         // 段级预算块执行摘要（③ LLM）与灰区句未复查标记（③-T 句级核算）
         let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
         let mut gray_unresolved = false;
+        // ⑦ dropped 账本（§7）：来③ 全文/分块 LLM ⊕ ③-T 定向复查；out_of_range 恒 0 预留
+        let mut dropped = crate::quality::DroppedLedger::default();
         if need_llm {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -1081,11 +1109,12 @@ impl GecEngine for CascadeDetector {
             // 层记 `unavailable`，不把整次 detect 打回 502。
             // 长文本分块路径的段级事件经同一 sink 透传（chunk_begin/chunk_end）
             match llm_layer_detect(llm, text, progress.clone()).await {
-                Ok((extra, llm_status, clean, chunk)) => {
+                Ok((extra, llm_status, clean, chunk, ledger)) => {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
                     llm_ran = true;
                     llm_chunk = Some(chunk);
+                    dropped.merge(&ledger);
                     if let Some(sink) = &progress {
                         sink(crate::progress::StageEvent::Stage {
                             stage: shared_model::sources::LLM,
@@ -1116,7 +1145,8 @@ impl GecEngine for CascadeDetector {
                 Some(l) => {
                     let t = std::time::Instant::now();
                     match targeted_llm_review(l, text, &targeted_spans).await {
-                        Ok(extra) => {
+                        Ok((extra, ledger)) => {
+                            dropped.merge(&ledger);
                             llm_ms = Some(t.elapsed().as_millis() as u64);
                             llm_confirmed_clean = extra.is_empty();
                             llm_ran = true;
@@ -1231,7 +1261,8 @@ impl GecEngine for CascadeDetector {
             },
             None => crate::quality::ChunkStats::single(),
         };
-        let quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        let mut quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        quality.dropped = dropped;
         let s_spans = crate::docchunk::sentence_spans(text);
         let unreviewed_sentences = if gray_unresolved {
             s_spans
@@ -2831,11 +2862,27 @@ mod tests {
         let llm = llm_engine(&mock_llm_service().await);
         // 第一句「今天天气很好。」7 字 21 字节；第二句字节 [21,45)
         let text = "今天天气很好。他昨天报复很大。";
-        let mapped = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
+        let (mapped, ledger) = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped[0].original, "报复");
         // 「报复」在原文字符 [10,12) → 字节 [30,36)
         assert_eq!(mapped[0].span, [30, 36]);
+        assert!(ledger.is_empty(), "正常映射不应有丢弃记账: {ledger:?}");
+    }
+
+    /// dropped 账本：LLM 检出无法对应任何灰区段（定位失败）→ ownership 桶计数
+    #[tokio::test]
+    async fn targeted_llm_review_ledgers_out_of_segment_drop() {
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"不存在的词","correction":null,"message":"幻觉位置"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let text = "今天天气很好。他昨天报复很大。";
+        let (mapped, ledger) = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
+        assert!(mapped.is_empty(), "段外检出必须丢弃: {mapped:?}");
+        assert_eq!(ledger.ownership, 1, "段外丢弃计入 ownership 桶");
+        assert_eq!(ledger.total(), 1);
     }
 
     /// 决策模型弃权 + L3 部分定案 → 全文 LLM（覆盖灰区，不重复定向调用）
@@ -3070,20 +3117,21 @@ mod tests {
         // （「复查失败」绝不得伪装成「复查确认干净」）
         let endpoint = mock_llm_content("抱歉，我无法完成该任务。").await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, confirmed_clean, chunk) =
+        let (errors, status, confirmed_clean, chunk, dropped) =
             llm_layer_detect(&llm, "正确句子", None).await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "partial");
         assert!(!confirmed_clean, "解析失败不得当作确认干净");
         assert_eq!(chunk.mode, "single");
         assert_eq!((chunk.total, chunk.done, chunk.parse_failed), (1, 0, 1));
+        assert!(dropped.is_empty());
     }
 
     #[tokio::test]
     async fn llm_layer_normal_run_marks_ran() {
         let endpoint = mock_llm_content("[]").await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, confirmed_clean, chunk) =
+        let (errors, status, confirmed_clean, chunk, _dropped) =
             llm_layer_detect(&llm, "正确句子", None).await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "ran");
@@ -3102,7 +3150,8 @@ mod tests {
         let o = llm.detect_document(text, 50, 4, None).await.unwrap();
         assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
         assert_eq!(o.coverage(), 1.0);
-        let (errors, _status, _clean, _chunk) = llm_layer_detect(&llm, text, None).await.unwrap();
+        let (errors, _status, _clean, _chunk, _dropped) =
+            llm_layer_detect(&llm, text, None).await.unwrap();
         assert!(errors.is_empty());
     }
 
@@ -3253,14 +3302,16 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _clean, _chunk) = llm_layer_detect(&llm, "电话13800138000有误", None)
-            .await
-            .unwrap();
+        let (errors, status, _clean, _chunk, dropped) =
+            llm_layer_detect(&llm, "电话13800138000有误", None)
+                .await
+                .unwrap();
         assert!(
             errors.is_empty(),
             "被掩区域（`*`）的检出应被过滤：{errors:?}"
         );
         assert_eq!(status, "ran");
+        assert_eq!(dropped.pii_mask, 1, "掩码区丢弃必须计入 dropped 账本");
     }
 
     #[tokio::test]
@@ -3271,11 +3322,13 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _, _chunk) = llm_layer_detect(&llm, "他13800138000说报负很大", None)
-            .await
-            .unwrap();
+        let (errors, status, _, _chunk, dropped) =
+            llm_layer_detect(&llm, "他13800138000说报负很大", None)
+                .await
+                .unwrap();
         assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");
         assert_eq!(errors[0].correction.as_deref(), Some("抱负"));
         assert_eq!(status, "ran");
+        assert!(dropped.is_empty(), "区外检出保留时不应有丢弃记账: {dropped:?}");
     }
 }

@@ -1,7 +1,7 @@
 # 检测处理流程设计（Detect Pipeline v2）
 
 > 状态：**P1–P3 已实现**（2026-11-19，本文同时是实现契约，§2 流程图与代码同步）；
-> P4 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，见 §7）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口，detect×2 / analyze 降为驱动，见 §8）；**桌面并轨** ✅（桌面端 `commands.rs` 新增同构 `run_pipeline`，detect / analyze 降为驱动；残余差异：桌面仍为独立实现但语义同构，进程级 LRU 缓存桌面缺失；zh 归因改按粗族折叠对齐 api，见 §8）。
+> P4 全部落地：**段级进度事件** ✅（chunk_begin/chunk_end，见 §7）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口，detect×2 / analyze 降为驱动，见 §8）；**桌面并轨** ✅（桌面端 `commands.rs` 新增同构 `run_pipeline`，detect / analyze 降为驱动；残余差异：桌面仍为独立实现但语义同构，进程级 LRU 缓存桌面缺失；zh 归因改按粗族折叠对齐 api，见 §8）；**可观测性四件套** ✅（dropped 账本 / 每请求 summary / 两告警 / 看板，见 §7）。
 > 动因：2026-11 缓存/切块排查（旧结果命中、忽略缓存同结果、CSC 臂静默截断、归因兜底桶误导排查）暴露的设计成因见 `docs/UX_REVIEW.md` 后续与 EVOLUTION 记录；本文的设计与 §8 分期进度即现状。
 
 ## 1. 设计原则（不可协商项）
@@ -105,7 +105,7 @@ flowchart TD
 前端一等公民展示：`quality.status ≠ full` 徽标 + 悬浮原因；归因兜底桶渲染为「未定位到具体规则」的告警样式，文案不得呈现常规补救卡。
 
 **已实现契约（P1 落地版，与代码一致）**：
-- `quality` = `{status, coverage?, unowned_chars, degraded_reasons[]}`；`dropped` 账本属 §7 可观测性，尚未落地；LRU / 历史回放不携 `quality`；
+- `quality` = `{status, coverage?, unowned_chars, degraded_reasons[], dropped?}`；`dropped` = 四桶丢弃账本（§7 已落地：ownership / pii_mask / out_of_range / out_of_scope，空则省略）；LRU / 历史回放不携 `quality`；
 - `chunks` = `{mode, total, done, failed, parse_failed}`（无 `cache_hit`）；
 - `sentences` = `{total, reviewed}`；
 - `version` 实际成分 = `{rules_fingerprint, model_version?, splitter}`（决策表 / prompt 漂移已分别被规则指纹哈希与模型版本号覆盖，不单列；`spec` 未入键）；仅实检返回；
@@ -124,11 +124,11 @@ flowchart TD
 ## 7. 可观测性与告警
 
 - 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`——**已实现**（`StageEvent::ChunkBegin/ChunkEnd`，wire kind `chunk_begin`/`chunk_end`；③ LLM 整文档分块与 stat 滑窗两条预算路径；短文本单块不推）；
-- 每请求一行结构化 summary（含版本向量 + quality + chunks + dropped），按天 × 版本聚合；
-- **两个必设告警**：
-  1. `unowned_chars ≠ 0` 或发生任何静默截断 → 完整性回归（本类事故的探测器）；
-  2. 归因兜底桶命中率突增 / `quality=partial 且 errors=空` 危险象限 → 质量回归。
-- 其余面板：coverage（段级侧）、句未复查率（句级侧）、层 unavailable 率、dropped 分原因、cache 命中率、llm_calls（done + cached 块数）、每块 P95。
+- 每请求一行结构化 summary（含版本向量 + quality + chunks + dropped）——**已实现**（api-server `request_summary` SQLite 账本：detect / analyze 每次实检在 `run_pipeline` 内无条件落行，回放行 quality 置 NULL；按天 × 版本聚合见 summary 端点。**残余**：doc-jobs / media / 桌面不写行）；
+- **两个必设告警**——**已实现**（`GET /gec/observability/alerts`，24h 窗口）：
+  1. `unowned_chars ≠ 0` 或发生任何静默截断（dropped 四桶非零）→ 完整性回归（本类事故的探测器；写行处同时 `tracing::error!` 即时点名）；
+  2. 归因兜底桶命中率突增（grammar_novice 兜底率 >30% 且样本 ≥20）/ `quality=partial 且 errors=空` 危险象限成模式（≥5 次）→ 质量回归。
+- 其余面板——**已实现**（`GET /gec/observability/summary?days=N`：day × 规则指纹聚合——coverage 均值、句未复查率（reviewed 侧）、层 unavailable 率、cache 命中率、history 复用率、dropped 分原因、LLM 调用代理（段级完成块数）、总耗时 P95；web-ui 进化中心「可观测」标签页。**残余**：每块 P95 需块级耗时列，二期）。
 
 ## 8. 入口（驱动）与迁移路线
 
@@ -138,6 +138,6 @@ flowchart TD
 1. **P1（小）** ✅：Outcome v2 的 `quality/chunks/sentences/version` 字段（向后兼容可选字段）+ 前端降级徽标 + 归因兜底桶改样式；金集评测（media_gold_eval）在 CI。
 2. **P2（中）** ✅：切块统一到所有权不变式原语（docchunk）；stat/CSC 滑窗修复 + 字节 span 重映射钳制；引擎合并测试按钳制语义重写。
 3. **P3（中）** ✅：版本向量含 `splitter`（缓存键 `:s…` 段）+ 缓存资格规则（仅 full 可写 LRU/历史，detect/analyze/桌面三门同构）；切块预算进设置面板——**未做**，遗余。
-4. **P4（大）** 大部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，LLM 分块 + stat 滑窗两条预算路径）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口：detect×2 的重复 persist 块与 analyze 的内联执行实现全部消除，analyze 降为 detect+归因组合驱动并从此获得 LRU / anomaly 采纳 / L3 后台任务；mcp / media 直驱 `run_detection`）；**桌面并轨** ✅（桌面 `commands.rs` 新增 `run_pipeline`（历史复用 / 级联 / 抑制过滤 / issue_type / anomaly 采纳 / L3 采集 / 参数快照单一实现），detect / analyze 降为驱动；历史表补齐 corrected_text / layers_json 两列（轻量迁移）并支持 layers 回放；analyze 归因 zh 按粗族折叠对齐 api（§11.11 兼容）。残余差异：桌面仍为独立实现（非共享 crate）但语义同构；进程级 LRU 缓存桌面本就无，未补）。
+4. **P4（大）** ✅（「桌面并轨」子项于收尾落地）：**段级进度事件** ✅（chunk_begin/chunk_end，LLM 分块 + stat 滑窗两条预算路径）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口：detect×2 的重复 persist 块与 analyze 的内联执行实现全部消除，analyze 降为 detect+归因组合驱动并从此获得 LRU / anomaly 采纳 / L3 后台任务；mcp / media 直驱 `run_detection`）；**桌面并轨** ✅（桌面 `commands.rs` 新增 `run_pipeline`（历史复用 / 级联 / 抑制过滤 / issue_type / anomaly 采纳 / L3 采集 / 参数快照单一实现），detect / analyze 降为驱动；历史表补齐 corrected_text / layers_json 两列（轻量迁移）并支持 layers 回放；analyze 归因 zh 按粗族折叠对齐 api（§11.11 兼容）。残余差异：桌面仍为独立实现（非共享 crate）但语义同构；进程级 LRU 缓存桌面本就无，未补）；**可观测性四件套** ✅（dropped 账本 / 每请求 summary / 两告警端点 / 看板与进化中心「可观测」页，见 §7）。
 
 **验收**（每期）：现有 api-server/gec-core 全套 + 新增契约测试（所有权铺满全文、预算不超限、span 重映射往返、版本漂移）+ 黄金集 F1 不退化 + 两告警零命中。

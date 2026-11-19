@@ -1895,3 +1895,44 @@ export interface DocJobCreated {
   status: string
 }
 
+// ── §7 可观测性（DETECT_PIPELINE.md）：request_summary 账本只读面 ────────────
+
+/** dropped 账本四桶（丢弃的检出，按归属原因分） */
+export interface ObservabilityDropped {
+  ownership: number
+  pii_mask: number
+  out_of_range: number
+  out_of_scope: number
+}
+
+/** GET /gec/observability/alerts — 24h 窗口两路告警 */
+export interface ObservabilityAlerts {
+  window_hours: number
+  integrity: { lossy_rows: number; triggered: boolean }
+  quality: {
+    analyze_rows: number
+    fallback_sum: number
+    error_sum: number
+    fallback_ratio: number
+    partial_empty_runs: number
+    triggered: boolean
+  }
+}
+
+/** GET /gec/observability/summary 单行：day × 规则指纹聚合 */
+export interface ObservabilityDayRow {
+  day: string
+  rules_fingerprint: string
+  requests: number
+  coverage_avg: number | null
+  sentences_reviewed_rate: number | null
+  unavailable_rate: number
+  cache_hit_rate: number
+  history_reuse_rate: number
+  dropped: ObservabilityDropped
+  /** 段级完成块数 ≈ LLM 出站调用数（预算层执行代理指标） */
+  llm_calls: number
+  chunks_total: number
+  p95_total_ms: number | null
+}
+

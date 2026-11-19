@@ -98,14 +98,17 @@ pub fn maybe_mask(text: &str) -> Option<PiiMask> {
     if m.ranges.is_empty() { None } else { Some(m) }
 }
 
-/// 丢弃 span 与任一被掩区间重叠的错误（`*` 区域产出的检出必为噪声）
-pub fn filter_masked_errors(errors: &mut Vec<shared_model::Error>, mask: &PiiMask) {
+/// 丢弃 span 与任一被掩区间重叠的错误（`*` 区域产出的检出必为噪声）。
+/// 返回丢弃条数（§7 dropped 账本 `pii_mask` 桶计数来源）。
+pub fn filter_masked_errors(errors: &mut Vec<shared_model::Error>, mask: &PiiMask) -> usize {
+    let before = errors.len();
     errors.retain(|e| {
         !mask
             .ranges
             .iter()
             .any(|r| e.span[0] < r[1] && r[0] < e.span[1])
     });
+    before - errors.len()
 }
 
 #[cfg(test)]
@@ -159,8 +162,9 @@ mod tests {
             Error::new("zh", "spelling", 0.9, r, "***********", None, "masked"),
             Error::new("zh", "spelling", 0.9, [0, 6], "电话", None, "real"),
         ];
-        filter_masked_errors(&mut errors, &m);
+        let dropped = filter_masked_errors(&mut errors, &m);
         assert_eq!(errors.len(), 1);
+        assert_eq!(dropped, 1, "丢弃计数必须上报（dropped 账本来源）");
         assert_eq!(errors[0].original, "电话");
     }
 }

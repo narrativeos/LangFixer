@@ -92,6 +92,8 @@ import type {
   MediaProbes,
   MediaReportBody,
   MediaReportResult,
+  ObservabilityAlerts,
+  ObservabilityDayRow,
 } from '../types'
 
 const http = axios.create({ baseURL: '/', timeout: 60000 })
@@ -1655,6 +1657,20 @@ export const api = {
   roundReport(id: number): Promise<RoundReport> {
     if (inTauri) return tauri!.invoke('round_report', { id }).then((r) => r as RoundReport)
     return http.get<RoundReport>(`/gec/round/${id}/report`).then((r) => r.data)
+  },
+
+  // ── §7 可观测性：request_summary 账本只读面（纯 GET，无副作用） ──────────────
+
+  /** GET /gec/observability/alerts — 24h 窗口两路告警（完整性 / 质量） */
+  observabilityAlerts(): Promise<ObservabilityAlerts> {
+    return http.get<ObservabilityAlerts>('/gec/observability/alerts').then((r) => r.data)
+  },
+
+  /** GET /gec/observability/summary?days=N — day × 规则指纹聚合看板数据 */
+  observabilitySummary(days: number): Promise<ObservabilityDayRow[]> {
+    return http
+      .get<ObservabilityDayRow[]>(`/gec/observability/summary?days=${days}`)
+      .then((r) => r.data)
   },
 
   // ── 载体（图片）审校：MULTIMODAL.md §7 面板 / §8 设置 ──────────────────────

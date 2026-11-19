@@ -21,6 +21,7 @@ pub mod learned_knowledge;
 pub mod llm_feedback;
 pub mod mcp;
 pub mod media;
+pub mod observability;
 pub mod optimization;
 pub mod reflection_center;
 pub mod rules;
@@ -154,6 +155,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/gec/deps", axum::routing::get(deps::list))
         .route("/gec/deps/start", axum::routing::post(deps::start))
         .route("/gec/deps/recheck", axum::routing::post(deps::recheck))
+        // §7 可观测性：两路告警 + 按天聚合看板（数据源 request_summary 账本）
+        .route(
+            "/gec/observability/alerts",
+            axum::routing::get(observability::alerts),
+        )
+        .route(
+            "/gec/observability/summary",
+            axum::routing::get(observability::summary),
+        )
         .route(
             "/gec/eval/contributions",
             axum::routing::post(optimization::contributions),
