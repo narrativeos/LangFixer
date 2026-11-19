@@ -57,11 +57,25 @@ async fn main() {
         .ok()
         .filter(|v| !v.is_empty())
         .or_else(|| dotenv.get("LANGFIXER_BIND").cloned())
-        .unwrap_or_else(|| "0.0.0.0".to_string());
+        // 默认只绑回环：登录门/口令在 LAN 上裸跑不如不绑；确实要对外用
+        // LANGFIXER_BIND=0.0.0.0 显式声明，下方对危险组合照旧 WARN。
+        .unwrap_or_else(|| "127.0.0.1".to_string());
     if gateway.enabled && host == "0.0.0.0" {
         tracing::warn!(
             "网关形态仍监听 0.0.0.0：公网入口应只由反向代理持有，建议 LANGFIXER_BIND=127.0.0.1"
         );
+    } else if !gateway.enabled && gateway.login_gate && host == "0.0.0.0" {
+        tracing::warn!(
+            "登录门形态监听 0.0.0.0：登录入口直接暴露给局域网/公网，建议 LANGFIXER_BIND=127.0.0.1 或置于反向代理之后"
+        );
+        if gateway
+            .password
+            .matches(api_server::auth::DEFAULT_ADMIN_PASSWORD)
+        {
+            tracing::warn!(
+                "默认管理员密码仍生效且端口对外暴露：请立即改密（运营台改密表单或 POST /auth/password）"
+            );
+        }
     }
     let app = routes::router(state.clone())
         .merge(routes::auth::router(gateway.clone()))
@@ -82,5 +96,11 @@ async fn main() {
         tables = %state.settings.read().unwrap().tables_dir,
         "LangFixer API 服务已启动"
     );
-    axum::serve(listener, app).await.expect("server error");
+    // ConnectInfo 供登录限流取对端 IP（反代部署下另有 XFF 头优先，见 routes/auth.rs::client_ip）
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

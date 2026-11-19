@@ -104,9 +104,13 @@ fn digest_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 /// 摘要是**内部可变**的：显式轮换（`GatewayConfig::rotate_admin_token`）换掉的
 /// 就是这一份，旧密钥即刻不再匹配，不需要重启进程。`Clone` 与原对象共享同一份
 /// 摘要（`Arc`），因此已注入各路由扩展的 `GatewayConfig` 会一起认新钥匙。
+///
+/// 密码类凭证带 `salt`（改密落库为 SHA-256(salt ‖ 明文)），旧无盐摘要与密钥类
+/// 凭证 salt 为 None（比较退回单轮 SHA-256，语义不变）。
 #[derive(Clone)]
 pub struct AdminCred {
     pub digest: Arc<RwLock<Option<[u8; 32]>>>,
+    salt: Arc<RwLock<Option<Vec<u8>>>>,
 }
 
 impl AdminCred {
@@ -115,13 +119,23 @@ impl AdminCred {
             digest: Arc::new(RwLock::new(
                 token.filter(|t| !t.is_empty()).map(|t| sha256(&t)),
             )),
+            salt: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// 从已落库的 SHA-256 摘要直接构造（密码存的就是摘要，不回明文）。
+    /// 从已落库的**无盐** SHA-256 摘要直接构造（旧格式兼容路径）。
     pub fn from_digest(digest: [u8; 32]) -> Self {
         Self {
             digest: Arc::new(RwLock::new(Some(digest))),
+            salt: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// 从带盐摘要构造（新格式 `s1$…`）：比较时先喂 salt。
+    pub fn from_salted(salt: Vec<u8>, digest: [u8; 32]) -> Self {
+        Self {
+            digest: Arc::new(RwLock::new(Some(digest))),
+            salt: Arc::new(RwLock::new(Some(salt))),
         }
     }
 
@@ -135,16 +149,30 @@ impl AdminCred {
 
     pub fn matches(&self, presented: &str) -> bool {
         let digest = self.digest.read().unwrap_or_else(|e| e.into_inner());
+        let salt = self.salt.read().unwrap_or_else(|e| e.into_inner());
         match &*digest {
-            Some(expected) => digest_eq(expected, &sha256(presented)),
+            Some(expected) => {
+                let got = match &*salt {
+                    Some(s) => salted_digest(s, presented),
+                    None => sha256(presented),
+                };
+                digest_eq(expected, &got)
+            }
             None => false,
         }
     }
 
-    /// 换成新密钥（进程内立刻生效）。调用方负责**先落库再调用**：库写失败时
+    /// 换成新密钥（进程内立刻生效，无盐）。调用方负责**先落库再调用**：库写失败时
     /// 不会留下「内存是新的、库里是旧的」这种重启即回退的分裂状态。
     pub fn swap(&self, token: &str) {
         *self.digest.write().unwrap_or_else(|e| e.into_inner()) = Some(sha256(token));
+        *self.salt.write().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// 带盐版 `swap`（改密专用）：内存摘要 = SHA-256(salt ‖ 明文)。
+    pub fn swap_salted(&self, salt: &[u8], token: &str) {
+        *self.digest.write().unwrap_or_else(|e| e.into_inner()) = Some(salted_digest(salt, token));
+        *self.salt.write().unwrap_or_else(|e| e.into_inner()) = Some(salt.to_vec());
     }
 
     /// 当前活着的密钥指纹（SHA-256 前 8 位 hex）。用来核对「这台实例用的是哪把」，
@@ -635,9 +663,12 @@ pub struct GatewayConfig {
     /// 未登录一律 401 + `login_required`；默认开启，`LANGFIXER_LOGIN=0` 回到
     /// 「零变化」直通。网关形态恒 false（已有全量鉴权门，本开关不参与）。
     pub login_gate: bool,
-    /// 管理员登录密码（内存只留 SHA-256 摘要）：来源语义与超管密钥同款——
+    /// 管理员登录密码（内存只留摘要，改密后为带盐 SHA-256）：来源语义与超管密钥同款——
     /// env 给了以 env 为准（不进库），否则用库里的摘要，都没有时以默认密码初始化落库。
     pub password: AdminCred,
+    /// 登录失败限流（按来源 IP）：连续失败计数 + 封锁起点。
+    /// 内存态即可：重启把封锁清零可接受，目标是挡住脚本暴破而非持久惩罚。
+    pub login_throttle: Arc<Mutex<HashMap<String, (u32, std::time::Instant)>>>,
 }
 
 #[derive(Debug)]
@@ -738,16 +769,40 @@ impl GatewayConfig {
         }
         let password = match env_pw {
             Some(p) => AdminCred::from_token(Some(p)),
-            None => match stored_pw.as_deref().and_then(decode_digest_hex) {
-                Some(d) => AdminCred::from_digest(d),
+            None => match stored_pw.as_deref().map(decode_stored_pw) {
+                Some(StoredPw::Salted { salt, digest }) => AdminCred::from_salted(salt, digest),
+                Some(StoredPw::Legacy(d)) => {
+                    tracing::info!(
+                        "gw_meta.{META_ADMIN_PASSWORD} 是旧版无盐 SHA-256 摘要：下次改密自动升级为带盐格式"
+                    );
+                    AdminCred::from_digest(d)
+                }
+                Some(StoredPw::Invalid) => {
+                    // 有值但解不开：损坏或篡改。绝不静默重播种回公开的默认密码——
+                    // 那等于把「密码被重置成所有人都知道的值」伪装成首次启动。
+                    tracing::error!(
+                        "gw_meta.{META_ADMIN_PASSWORD} 有值但无法解码（损坏或被篡改）：密码登录已禁用。
+                         请用超级管理员密钥登录后重新改密，或设 LANGFIXER_ADMIN_PASSWORD 后重启"
+                    );
+                    AdminCred::from_token(None)
+                }
                 None => {
+                    // 首次启动：落带盐摘要（新格式从第一天就用上），WARN 不再念明文。
+                    let mut salt = [0u8; 16];
+                    rand::thread_rng().fill_bytes(&mut salt);
                     store
-                        .meta_set(META_ADMIN_PASSWORD, &hex(&sha256(DEFAULT_ADMIN_PASSWORD)))
+                        .meta_set(
+                            META_ADMIN_PASSWORD,
+                            &encode_salted(&salt, &salted_digest(&salt, DEFAULT_ADMIN_PASSWORD)),
+                        )
                         .map_err(GatewayConfigError::Store)?;
                     tracing::warn!(
-                        "已用默认管理员密码初始化（用户名 {ADMIN_USERNAME} / 密码 {DEFAULT_ADMIN_PASSWORD}）：请尽快在设置面改密，或 POST /auth/password"
+                        "已用默认管理员密码初始化（用户名 {ADMIN_USERNAME}，密码见 README/OPERATIONS.md）：请尽快改密，或 POST /auth/password"
                     );
-                    AdminCred::from_token(Some(DEFAULT_ADMIN_PASSWORD.to_string()))
+                    AdminCred::from_salted(
+                        salt.to_vec(),
+                        salted_digest(&salt, DEFAULT_ADMIN_PASSWORD),
+                    )
                 }
             },
         };
@@ -765,6 +820,7 @@ impl GatewayConfig {
             admin_source,
             login_gate,
             password,
+            login_throttle: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -774,11 +830,19 @@ impl GatewayConfig {
     }
 
     /// 改管理员密码：**先落库再换内存摘要**（与密钥轮换同序，避免分裂）。
+    /// 落库一律用带盐格式；连带清掉全部在途超管会话——改密的典型动机就是
+    /// 旧密码疑似泄露，不清会话等于旧密码换的 cookie 仍持续有效（与密钥轮换同理）。
+    /// 调用方若要保留当前会话，清完后自行 `create_session` 重发即可。
     pub fn rotate_password(&self, new: &str) -> Result<(), String> {
-        self.store
-            .meta_set(META_ADMIN_PASSWORD, &hex(&sha256(new)))?;
-        self.password.swap(new);
-        tracing::warn!(password_fingerprint = %self.password.fingerprint().unwrap_or_default(), "管理员密码已变更");
+        let mut salt = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut salt);
+        self.store.meta_set(
+            META_ADMIN_PASSWORD,
+            &encode_salted(&salt, &salted_digest(&salt, new)),
+        )?;
+        self.password.swap_salted(&salt, new);
+        self.store.clear_sessions(ADMIN_TOKEN_ID)?;
+        tracing::warn!(password_fingerprint = %self.password.fingerprint().unwrap_or_default(), "管理员密码已变更：旧密码与其全部会话即刻失效（新会话需重新领取）");
         Ok(())
     }
 
@@ -867,6 +931,62 @@ fn decode_digest_hex(s: &str) -> Option<[u8; 32]> {
         *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect()
+}
+
+/// 带盐摘要：SHA-256(salt ‖ 明文)。单轮无盐 SHA-256 对离线暴破太便宜（泄露的
+/// auth.db 一个哈希就是全部），改密后一律用此格式；旧格式比较时仍兼容。
+fn salted_digest(salt: &[u8], plain: &str) -> [u8; 32] {
+    let mut h = <Sha256 as sha2::Digest>::new();
+    h.update(salt);
+    h.update(plain.as_bytes());
+    h.finalize().into()
+}
+
+/// 新格式落库串：`s1$<hex salt>$<hex digest>`。
+fn encode_salted(salt: &[u8], digest: &[u8; 32]) -> String {
+    format!("s1${}${}", hex(salt), hex(digest))
+}
+
+/// `gw_meta.admin_password_hash` 的存储形态。区分「旧格式」与「解不开」：
+/// 损坏/篡改绝不能静默回落到公开的默认密码（那是把锁被拆了当重置用）。
+enum StoredPw {
+    Salted {
+        salt: Vec<u8>,
+        digest: [u8; 32],
+    },
+    /// 旧格式：64 位 hex 的无盐 SHA-256（比较兼容，下次改密自动升级）。
+    Legacy([u8; 32]),
+    /// 有值但无法解码：损坏或篡改。
+    Invalid,
+}
+
+fn decode_stored_pw(s: &str) -> StoredPw {
+    if let Some(rest) = s.strip_prefix("s1$") {
+        let Some((salt_hex, digest_hex)) = rest.split_once('$') else {
+            return StoredPw::Invalid;
+        };
+        // salt 至少 8 字节 hex（防手工截短）；摘要仍是 64 hex
+        let Some(salt) = hex_decode(salt_hex).filter(|v| v.len() >= 8) else {
+            return StoredPw::Invalid;
+        };
+        return match decode_digest_hex(digest_hex) {
+            Some(digest) => StoredPw::Salted { salt, digest },
+            None => StoredPw::Invalid,
+        };
+    }
+    match decode_digest_hex(s) {
+        Some(d) => StoredPw::Legacy(d),
+        None => StoredPw::Invalid,
+    }
 }
 
 /// 每个请求的作用域（owner 隔离与用量归户都读它）。
@@ -1062,6 +1182,64 @@ mod tests {
         );
         assert!(!map.contains_key("LANGFIXER_TEST_C"));
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// 改密落库必须是带盐新格式，且连带清掉超管在途会话（旧 cookie 不能幸存）。
+    #[test]
+    fn rotate_password_salts_and_clears_admin_sessions() {
+        let db = temp_db("rot-pw");
+        let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        let sid = cfg.store.create_session(ADMIN_TOKEN_ID).unwrap();
+        cfg.rotate_password("FreshPass@12345").unwrap();
+        // 旧会话即刻失效
+        assert_eq!(cfg.store.resolve_session(&sid).unwrap().is_none(), true);
+        // 新密码可用；旧默认密码废弃
+        assert!(cfg.verify_password(ADMIN_USERNAME, "FreshPass@12345"));
+        assert!(!cfg.verify_password(ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD));
+        // 重启重建：库里是带盐格式，新密码仍认
+        let cfg2 = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        assert!(cfg2.verify_password(ADMIN_USERNAME, "FreshPass@12345"));
+        let stored = cfg2.store.meta_get(META_ADMIN_PASSWORD).unwrap().unwrap();
+        assert!(stored.starts_with("s1$"), "应落带盐格式，实际 {stored}");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 摘要损坏/篡改：禁用密码登录，绝不静默回落默认密码，库里坏值原样保留。
+    #[test]
+    fn corrupted_password_digest_disables_login_without_reseeding() {
+        let db = temp_db("corrupt-pw");
+        {
+            let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+            cfg.store
+                .meta_set(META_ADMIN_PASSWORD, "not-a-digest!!")
+                .unwrap();
+        }
+        let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        assert!(!cfg.password.is_set(), "损坏摘要必须禁用密码登录");
+        assert!(!cfg.verify_password(ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD));
+        // 未被重播种：库里的坏值仍在（留给运维取证，不是被我们洗成默认密码）
+        let stored = cfg.store.meta_get(META_ADMIN_PASSWORD).unwrap().unwrap();
+        assert_eq!(stored, "not-a-digest!!");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 旧库的无盐 64-hex 摘要仍可比对（升级前兼容），改密后自动升级带盐。
+    #[test]
+    fn legacy_unsalted_digest_compatible_then_upgraded() {
+        let db = temp_db("legacy-pw");
+        {
+            let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+            // 手工把库里摘要写成旧格式：sha256(已知密码)
+            cfg.store
+                .meta_set(META_ADMIN_PASSWORD, &hex(&sha256("OldSaltlessPass1")))
+                .unwrap();
+        }
+        let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        assert!(cfg.verify_password(ADMIN_USERNAME, "OldSaltlessPass1"));
+        cfg.rotate_password("FreshPass@12345").unwrap();
+        let stored = cfg.store.meta_get(META_ADMIN_PASSWORD).unwrap().unwrap();
+        assert!(stored.starts_with("s1$"), "改密必须升级带盐格式");
+        let _ = std::fs::remove_file(&db);
     }
 
     #[test]

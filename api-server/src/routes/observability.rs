@@ -19,7 +19,7 @@ pub async fn alerts(
         .request_summary
         .alerts()
         .map(Json)
-        .map_err(|e| ApiError::Conflict(format!("告警查询失败: {e}")))
+        .map_err(|e| ApiError::Internal(format!("告警查询失败: {e}")))
 }
 
 #[derive(serde::Deserialize)]
@@ -39,5 +39,5 @@ pub async fn summary(
         .request_summary
         .daily_summary(days)
         .map(Json)
-        .map_err(|e| ApiError::Conflict(format!("摘要聚合失败: {e}")))
+        .map_err(|e| ApiError::Internal(format!("摘要聚合失败: {e}")))
 }

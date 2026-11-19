@@ -161,6 +161,91 @@ async fn login(
 }
 
 #[tokio::test]
+async fn deps_health_get_public_but_process_spawn_posts_require_login() {
+    let _g = env_guard();
+    let app = app(&[]).await;
+    // 体检快照保持公开（保活探测用）
+    let (status, _) = get_json(&app, "/gec/deps", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    // 同前缀下的 POST 会拉起本机进程，不得匿名可达
+    let (status, body, _) =
+        post_json(&app, "/gec/deps/start", json!({ "id": "decision" }), None).await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, _) = post_json(&app, "/gec/deps/recheck", json!({}), None).await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_bruteforce_locks_after_five_failures() {
+    let _g = env_guard();
+    let app = app(&[]).await;
+    for i in 0..5 {
+        let (status, _) = login(&app, "admin", &format!("wrong-{i}")).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "第 {i} 次失败应仍回 401"
+        );
+    }
+    // 封锁窗口内：正确密码也拒（否则限流形同虚设）
+    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn change_password_rotates_caller_session() {
+    let _g = env_guard();
+    let app = app(&[]).await;
+    let (_, old_cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    let old_cookie = old_cookie.expect("登录必须下发 lf_session cookie");
+    // 改密当场重发新会话（旧会话被 rotate 连坐作废）
+    let (status, _body, new_cookie) = post_json(
+        &app,
+        "/auth/password",
+        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "FreshPass@12345" }),
+        Some(&old_cookie),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let new_cookie = new_cookie.expect("改密响应必须重发 lf_session");
+    // 旧 cookie 即刻失效（旧密码泄露后的改密才真正止血）
+    let (status, _) = get_json(&app, "/gec/tables", Some(&old_cookie)).await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    // 调用者自己的会话无缝存活，不用重新登录
+    let (status, _) = get_json(&app, "/gec/tables", Some(&new_cookie)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn change_password_rejects_default_and_short() {
+    let _g = env_guard();
+    let app = app(&[]).await;
+    let (_, cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    let cookie = cookie.expect("登录必须下发 lf_session cookie");
+    // 默认密码本身拒用（它写在文档里，等于没有口令）
+    let (status, _, _) = post_json(
+        &app,
+        "/auth/password",
+        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": DEFAULT_ADMIN_PASSWORD }),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    // 长度按字符计：三个汉字（9 字节）不再冒充「至少 8 位」
+    let (status, _, _) = post_json(
+        &app,
+        "/auth/password",
+        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "密码口" }),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    // 拒绝性改密后旧密码仍可用（没改成就什么都没变）
+    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn default_login_gate_blocks_business_but_keeps_probe_public() {
     let _g = env_guard();
     let app = app(&[]).await;

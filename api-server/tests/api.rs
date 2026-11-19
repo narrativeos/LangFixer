@@ -3780,3 +3780,38 @@ async fn eval_layers_reads_report_archive() {
     assert_eq!(reports[1]["id"], "r_old");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// F2: 检测失败同样要在 §7 账本留痕——引擎级错误计入 alerts.failure，
+/// 客户端错（语言不支持）留痕为 rejected、不得污染失败告警
+#[tokio::test]
+async fn detect_failure_leaves_summary_row_and_alert() {
+    let base = start_server().await; // 内部持锁并清除 LLM 配置
+    // LLM 未配置 + level 3 → LlmNotConfigured：引擎级失败（503）
+    let status = client()
+        .post(format!("{base}/gec/detect"))
+        .json(&serde_json::json!({ "lang": "zh", "text": "他昨天报复很大。", "level": 3 }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    // 客户端错误：语言不支持（404，路由无 de 引擎）
+    let status = client()
+        .post(format!("{base}/gec/detect"))
+        .json(&serde_json::json!({ "lang": "de", "text": "some text" }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::NOT_FOUND);
+    let alerts: serde_json::Value = client()
+        .get(format!("{base}/gec/observability/alerts"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(alerts["failure"]["rows"].as_i64(), Some(1), "仅引擎级失败计入: {alerts}");
+    assert_eq!(alerts["failure"]["triggered"].as_bool(), Some(true));
+}

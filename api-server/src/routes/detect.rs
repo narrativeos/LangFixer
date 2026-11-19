@@ -375,7 +375,7 @@ pub(crate) async fn run_pipeline(
     state: Arc<AppState>,
     spec: PipelineSpec<'_>,
 ) -> Result<PipelineResult, ApiError> {
-    let (outcome, from_history) = run_detection(
+    let (outcome, from_history) = match run_detection(
         state.clone(),
         spec.lang,
         spec.text,
@@ -385,7 +385,41 @@ pub(crate) async fn run_pipeline(
         spec.refresh,
         spec.progress_id,
     )
-    .await?;
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // §7 失败也要留痕：错误同样写摘要行，否则仪表盘/告警对「检测失败」
+            // 完全失明。客户端错（参数/语言不支持）计 rejected，引擎/上游错计
+            // failed（后者才进失败告警，用户拼错 lang 不得污染告警）。
+            let status = if matches!(e, ApiError::BadRequest(_) | ApiError::NotFound(_)) {
+                "rejected"
+            } else {
+                "failed"
+            };
+            let row = crate::request_summary::SummaryRow {
+                entry: spec.entry,
+                lang: spec.lang,
+                level: spec.level.unwrap_or(1),
+                quality_status: Some(status),
+                coverage: None,
+                unowned_chars: 0,
+                dropped: Default::default(),
+                degraded_json: Some(serde_json::json!([format!("engine_error: {e}")]).to_string()),
+                chunks: None,
+                sentences: None,
+                version_json: None,
+                error_count: 0,
+                from_history: false,
+                from_cache: false,
+                total_ms: None,
+            };
+            if let Err(se) = state.request_summary.insert(&row) {
+                tracing::warn!(error = %se, "失败请求摘要写入失败（不影响返回结果）");
+            }
+            return Err(e);
+        }
+    };
 
     let mut version: Option<serde_json::Value> = None;
     let mut params: Option<shared_model::DetectParams> = None;
@@ -521,19 +555,13 @@ async fn collect_clean_sentences(state: &AppState, lang: &str, text: &str) {
     if !matches!(lang, "en" | "zh") {
         return;
     }
-    // 简易切句（。！？；.!? + 换行），避免引入 regex 依赖
-    let mut sentences: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for c in text.chars() {
-        cur.push(c);
-        if matches!(c, '。' | '！' | '？' | '；' | '.' | '!' | '?' | '\n') {
-            let s = cur.trim().to_string();
-            if s.chars().count() >= 4 {
-                sentences.push(s);
-            }
-            cur.clear();
-        }
-    }
+    // 切句统一走 gec-core 切块器（单一 splitter 口径，不再维护第二套切句规则；
+    // 对 L3 负样本采集仅差「英文句点不作断点」这一点，无害）
+    let sentences: Vec<String> = gec_core::docchunk::sentence_spans(text)
+        .into_iter()
+        .map(|s| text[s[0]..s[1]].trim().to_string())
+        .filter(|s| s.chars().count() >= 4)
+        .collect();
     let dir = crate::routes::l3::l3_data_dir();
     let mut count = 0usize;
     for sentence in sentences {

@@ -190,6 +190,13 @@ impl RequestSummaryStore {
         } else {
             0.0
         };
+        // ③ 失败面：引擎/上游错误留痕行（run_pipeline 失败摘要），有即告警
+        let failed_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM request_summary
+             WHERE created_at >= datetime('now', '-1 day') AND quality_status = 'failed'",
+            [],
+            |r| r.get(0),
+        )?;
         // 样本门槛 ≥20 防个位数误报；partial∧零检出 ≥5 视为模式而非巧合
         let quality_triggered = (err_sum >= 20 && fallback_ratio > 0.30) || partial_empty >= 5;
         Ok(serde_json::json!({
@@ -205,6 +212,10 @@ impl RequestSummaryStore {
                 "fallback_ratio": (fallback_ratio * 1000.0).round() / 1000.0,
                 "partial_empty_runs": partial_empty,
                 "triggered": quality_triggered,
+            },
+            "failure": {
+                "rows": failed_rows,
+                "triggered": failed_rows > 0,
             },
         }))
     }

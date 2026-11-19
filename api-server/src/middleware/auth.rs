@@ -40,7 +40,8 @@ pub async fn gate(State(cfg): State<Arc<GatewayConfig>>, mut req: Request, next:
             authed |= matches!(cfg.store.resolve_session(sid), Ok(Some(_)));
         }
         let path = req.uri().path();
-        if !authed && cfg.login_gate && !is_public_path(path) {
+        let method = req.method().clone();
+        if !authed && cfg.login_gate && !is_public_path(&method, path) {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -259,10 +260,11 @@ pub fn with_standalone_tenant(app: axum::Router) -> axum::Router {
 }
 
 /// 放行：注入身份双扩展与身份上下文（admin / 单机形态的 Tenant.token_id 恒 None = 不隔离不计量）。
-/// 单机登录门的公开路径：/auth/* 探测与登录本身必须永远可达；
-/// /gec/deps 是依赖监督/重启保活的体检面，不得被登录拦住。
-fn is_public_path(path: &str) -> bool {
-    path.starts_with("/auth/") || path == "/gec/deps" || path.starts_with("/gec/deps/")
+/// 单机登录门的公开面：/auth/* 探测与登录本身必须永远可达；
+/// /gec/deps 体检只有 GET 快照开放（依赖监督/重启保活探测）——
+/// 同前缀下的 POST start/recheck 会 posix_spawn 拉起本机进程，必须过登录。
+fn is_public_path(method: &axum::http::Method, path: &str) -> bool {
+    path.starts_with("/auth/") || (*method == axum::http::Method::GET && path == "/gec/deps")
 }
 
 fn admit(req: &mut Request, cfg: &Arc<GatewayConfig>, scope: RequestScope, authed: bool) {
