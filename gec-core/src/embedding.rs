@@ -69,10 +69,15 @@ pub struct EmbeddingEngine {
 
 impl EmbeddingEngine {
     pub fn new(config: EmbeddingConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .unwrap_or_default();
+        #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs));
+        #[cfg(test)]
+        {
+            // mock 全在 127.0.0.1，不走系统代理，见 statistical.rs 根因注释
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().unwrap_or_default();
         Self {
             config,
             client,

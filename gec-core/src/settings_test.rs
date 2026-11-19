@@ -96,10 +96,15 @@ pub async fn test_hanlp(endpoint: &str) -> TestResult {
             started,
         );
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10));
+    #[cfg(test)]
+    {
+        // 健康探测在测试里指向 127.0.0.1 mock，不走系统代理，见 statistical.rs 根因注释
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().unwrap_or_default();
     let url = format!("{}/analyze", endpoint.trim_end_matches('/'));
     let resp = client
         .post(&url)
@@ -147,10 +152,15 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
         return err_result(target, "LLM Base URL 未配置", started);
     }
     // 测试请求用更短的超时（配置超时上限 10 秒），避免慢服务长时间挂起测试
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)))
-        .build()
-        .unwrap_or_default();
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)));
+    #[cfg(test)]
+    {
+        // 同上：测试端点为本机 mock，不走系统代理
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().unwrap_or_default();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": model,
@@ -296,10 +306,14 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
 async fn decision_service_health(
     config: &DecisionConfig,
 ) -> (Option<String>, Vec<(String, String)>) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(3));
+    #[cfg(test)]
     {
+        // 同上：测试端点为本机 mock，不走系统代理
+        builder = builder.no_proxy();
+    }
+    let client = match builder.build() {
         Ok(c) => c,
         Err(_) => return (None, Vec::new()),
     };

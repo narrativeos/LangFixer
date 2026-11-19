@@ -163,10 +163,15 @@ pub struct L3FeatureEngine {
 
 impl L3FeatureEngine {
     pub fn new(lang: impl Into<String>, config: L3FeatureConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs.max(1)))
-            .build()
-            .unwrap_or_default();
+        #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs.max(1)));
+        #[cfg(test)]
+        {
+            // mock 全在 127.0.0.1，不走系统代理，见 statistical.rs 根因注释
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().unwrap_or_default();
         Self {
             lang: lang.into(),
             client,

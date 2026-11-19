@@ -219,11 +219,19 @@ impl LlmGecEngine {
         breaker: Arc<crate::circuit::CircuitBreaker>,
     ) -> Self {
         let timeout = Duration::from_secs(config.timeout_secs.max(1));
-        let client = reqwest::Client::builder()
+        #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(timeout)
-            .read_timeout(timeout)
-            .build()
-            .unwrap_or_default();
+            .read_timeout(timeout);
+        #[cfg(test)]
+        {
+            // 根因：本机系统代理软件会转发到 127.0.0.1 mock 服务的连接，并行连接
+            // 抖动下代理上游竞态随机 RST/FIN，产生 IncompleteMessage 类 flake。
+            // bypass 名单实测对 reqwest 的系统代理读取不生效，故仅测试构建显式
+            // no_proxy；生产与 api-server 行为不变。
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().unwrap_or_default();
         Self {
             lang: lang.into(),
             client,

@@ -66,10 +66,18 @@ pub struct StatisticalGecEngine {
 
 impl StatisticalGecEngine {
     pub fn new(lang: impl Into<String>, config: StatisticalConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .unwrap_or_default();
+        #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+        let mut builder = reqwest::Client::builder();
+        #[cfg(test)]
+        {
+            // 仅单测构建：mock 服务全在本地回环，绝不走系统代理——机器上
+            // 若运行本地代理软件，它并行转发本机连接时上游竞态会随机回
+            // RST/FIN，造成全套并行的偶发窗失败（flake 根因）；生产不变。
+            // 系统代理 bypass 名单经实测不被 reqwest 的系统代理读取采纳，
+            // 故在代码层显式 no_proxy，不依赖任何机器配置。
+            builder = builder.no_proxy();
+        }
+        let client = builder.timeout(config.timeout).build().unwrap_or_default();
         // 默认 500 字/窗：MacBERT 类服务 max_length=512 token（含 [CLS]/[SEP]，
         // 中文约 1 字/token），预留边距避免服务侧静默截断尾 2 token
         let window_chars = std::env::var("GEC_STAT_WINDOW_CHARS")
