@@ -31,8 +31,8 @@ pub mod settings_test;
 pub mod statistical;
 pub mod terminology;
 pub mod timings;
-pub mod triage;
 pub mod training_center;
+pub mod triage;
 
 pub use agent::{
     ActionTier, AgentError, AgentRunResult, AgentToolExecutor, ExecutedAction, ManagedTool,
@@ -45,7 +45,7 @@ pub use contribution::{
 };
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
-pub use docchunk::{DocChunk, DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, split_document};
+pub use docchunk::{DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, split_document};
 pub use docjob::{DocBudget, DocJob, DocJobProgress, DocJobStore, run_doc_job};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};
 pub use engine::{
@@ -76,9 +76,9 @@ pub use reflection_center::{
 pub use settings_test::TestResult;
 pub use statistical::{StatisticalConfig, StatisticalGecEngine};
 pub use timings::{DetectTimings, NlpCall};
-pub use triage::{ChunkRisk, ReviewMode, chunk_risk, review_mode};
 pub use training_center::{
     DomainPool, LlmTrainingData, LlmTrainingSample, PoolInput, PoolSample, TrainingJob,
     build_domain_pool, build_llm_training_data, is_model_source, job_kind, job_status,
     plan_from_suggestion,
 };
+pub use triage::{ChunkRisk, ReviewMode, chunk_risk, review_mode};
