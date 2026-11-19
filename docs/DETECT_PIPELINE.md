@@ -22,7 +22,7 @@ flowchart TD
     S2 --> S3[S3 层执行 并行<br/>①规则+NLP+stat滑窗 ∥ ②决策 ∥ ③-F L3]
     S3 --> S25[②.5 知识召回<br/>句级 · 并行组结束后串行]
     S25 --> S3T[③-T 灰区句定向复查<br/>仅 L3 部分定案时触发 · stage 事件 stage=targeted]
-    S3T --> S3L[③ LLM 兕底 按 level/门控<br/>预算块并行 · 所有权去重]
+    S3T --> S3L[③ LLM 兜底 按 level/门控<br/>预算块并行 · 所有权去重]
     S3L --> S4[S4 合并<br/>排序钳制 / 共识去重 also_found_by<br/>④术语守卫 / 规则开关过滤 / 白名单]
     S4 --> S5[S5 归因 zh_gec_attribution<br/>规则精确 → 知识点 → 未定位桶 降级样式]
     S5 --> S6[S6 组装 DetectOutcome v2<br/>errors/layers/quality/chunks/version/timings]

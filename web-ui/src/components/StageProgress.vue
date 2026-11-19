@@ -75,16 +75,17 @@ const featureDecided = computed(() =>
 )
 
 /** 该层本次检出条数（LayerReport.found）；③-T 的结果层归因记在 llm 名下
- * （DETECT_PIPELINE §5：layers 不含 targeted），故重定向读取 */
+ * （DETECT_PIPELINE §5：layers 不含 targeted），故重定向读取。
+ * skipped/canceled 节点显示的是另一条路径的检出数，不挂命中数 */
 function foundOf(s: StageView): number | null {
-  if (!isSettled(s)) return null
+  if (!isSettled(s) || s.status === 'skipped' || s.status === 'canceled') return null
   const n = s.key === 'targeted' ? foundMap.value.llm : foundMap.value[s.key]
   return n != null && n > 0 ? n : null
 }
 
-/** 共识命中数（仅落定步骤；③-T 同样经 llm 归因） */
+/** 共识命中数（仅落定步骤；③-T 同样经 llm 归因；skipped/canceled 不挂） */
 function alsoOf(s: StageView): number {
-  if (!isSettled(s)) return 0
+  if (!isSettled(s) || s.status === 'skipped' || s.status === 'canceled') return 0
   return alsoMap.value[s.key === 'targeted' ? 'llm' : s.key] ?? 0
 }
 
