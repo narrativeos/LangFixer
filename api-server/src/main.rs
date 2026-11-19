@@ -44,6 +44,12 @@ async fn main() {
         let st = state.clone();
         tokio::spawn(async move { api_server::deps::supervise_init(st).await });
     }
+    // 依赖保活：启动监督只跑一次，周期重探把拉起服务的事后死亡 / failed 的事后恢复
+    // 压到分钟级内被状态面感知（只探测不拉起，见 deps::keepalive_loop）
+    {
+        let st = state.clone();
+        tokio::spawn(async move { api_server::deps::keepalive_loop(st).await });
+    }
     // 网关形态（评测通道）：.env 提供开关与超管令牌，单机形态鉴权整体关闭（见 docs/GATEWAY_AUTH.md）
     let dotenv = api_server::auth::load_dotenv(std::path::Path::new(".env"));
     let gateway = Arc::new(api_server::auth::GatewayConfig::from_env(&dotenv));

@@ -5,9 +5,12 @@
 //!
 //! - 本机可管服务（`decision-model` / `feature-model` / 字级判别侧车）：loopback 地址 +
 //!   仓库内 venv 存在 + 资源门槛通过时自动 `spawn`，轮询 `/health` 确认；
-//! - 远程服务（HanLP / LLM 网关 / 嵌入）：只探测不拉起，失败给出「换其他机器/地址」提示；
+//! - 远程服务（HanLP / LLM 网关 / 嵌入 / 统计 GEC 深度纠错臂）：只探测不拉起，
+//!   失败给出「换其他机器/地址」提示；
 //! - 所有状态沉淀在 `AppState::deps`（`GET /gec/deps` 读取），运营台「依赖服务」卡片
-//!   展示原因与补救动作（拉起 / 改地址后重测）。
+//!   展示原因与补救动作（拉起 / 改地址后重测）；
+//! - [`keepalive_loop`]：启动监督一次性，周期保活让已拉起服务的事后死亡 /
+//!   已恢复服务在分钟级内被状态面感知，不再停留在过期的 ok。
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -26,6 +29,7 @@ pub const DEPS: &[(&str, &str)] = &[
     ("decision", "决策模型服务"),
     ("l3", "快速定案服务（特征模型）"),
     ("char_gate", "字级判别侧车（可选）"),
+    ("stat", "深度纠错服务（统计 GEC 臂）"),
     ("hanlp", "文本处理服务（HanLP）"),
     ("llm", "AI 复查网关（LLM）"),
     ("embedding", "向量检索服务"),
@@ -96,6 +100,7 @@ fn find_endpoint(s: &AppSettings, id: &str) -> String {
         "decision" => s.decision.endpoint.clone(),
         "l3" => s.l3.endpoint.clone(),
         "char_gate" => char_gate_endpoint(s),
+        "stat" => stat_endpoint(s),
         "hanlp" => s.hanlp_endpoint.clone(),
         "llm" => s.llm.base_url.clone(),
         "embedding" => s.embedding.endpoint.clone(),
@@ -106,6 +111,37 @@ fn find_endpoint(s: &AppSettings, id: &str) -> String {
 /// 字级判别侧车地址（settings 未建模；env 可覆盖，默认 4811）
 fn char_gate_endpoint(_s: &AppSettings) -> String {
     std::env::var("GEC_CHAR_GATE_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:4811".to_string())
+}
+
+/// 统计 GEC 臂地址（单一来源：gec-core StatisticalConfig，默认 4803）
+fn stat_endpoint(_s: &AppSettings) -> String {
+    gec_core::statistical::StatisticalConfig::from_env().endpoint
+}
+
+/// 统计臂「不参与检测」的判定（off 短路，不探测不报红）：
+/// 未配地址；或配了地址但 GEC_ENGINE_{ZH,EN,JA} 无一设为 statistical（与
+/// gec-core GecEngineKind::from_env 的组合语义对齐）
+fn stat_off_reason_for(endpoint_env: &str, engine_envs: [Option<String>; 3]) -> Option<String> {
+    if endpoint_env.trim().is_empty() {
+        return Some("未配置（GEC_STAT_ENDPOINT 未设），检测默认纯规则".to_string());
+    }
+    let mounted = engine_envs
+        .iter()
+        .flatten()
+        .any(|v| v.eq_ignore_ascii_case("statistical"));
+    if !mounted {
+        return Some(
+            "已配置地址，但 GEC_ENGINE_{ZH,EN,JA} 均未设为 statistical，该臂不参与检测".to_string(),
+        );
+    }
+    None
+}
+
+fn stat_off_reason() -> Option<String> {
+    stat_off_reason_for(
+        &std::env::var("GEC_STAT_ENDPOINT").unwrap_or_default(),
+        ["ZH", "EN", "JA"].map(|l| std::env::var(format!("GEC_ENGINE_{l}")).ok()),
+    )
 }
 
 /// 从 endpoint 提取 loopback 主机与端口；非 loopback 返回 None（远程服务不拉起）
@@ -286,6 +322,49 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                     ok: false,
                     message: format!("{url} 无响应"),
                     latency_ms: 0,
+                }
+            }
+        }
+        "stat" => {
+            // 先探 /health（csc_server 等自带）；未实现 /health 的通用统计服务
+            // 退到 POST /gec 探测句验连通（与 statistical.rs 消费面同构）
+            let base = stat_endpoint(s).trim_end_matches('/').to_string();
+            if probe_http(&format!("{base}/health")).await {
+                gec_core::settings_test::TestResult {
+                    target: id.to_string(),
+                    ok: true,
+                    message: "深度纠错服务在线（/health）".to_string(),
+                    latency_ms: 0,
+                }
+            } else {
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap_or_default();
+                match client
+                    .post(format!("{base}/gec"))
+                    .json(&serde_json::json!({ "text": "测试。", "lang": "zh" }))
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => gec_core::settings_test::TestResult {
+                        target: id.to_string(),
+                        ok: true,
+                        message: "深度纠错服务在线（POST /gec 探测句）".to_string(),
+                        latency_ms: 0,
+                    },
+                    Ok(r) => gec_core::settings_test::TestResult {
+                        target: id.to_string(),
+                        ok: false,
+                        message: format!("{base}/gec 探测句返回 {}", r.status()),
+                        latency_ms: 0,
+                    },
+                    Err(e) => gec_core::settings_test::TestResult {
+                        target: id.to_string(),
+                        ok: false,
+                        message: format!("{base} 无响应：{e}"),
+                        latency_ms: 0,
+                    },
                 }
             }
         }
@@ -554,6 +633,18 @@ fn bring_up_local<'a>(
 pub async fn recheck(state: &Arc<AppState>, id: &str) {
     let s = state.settings.read().unwrap().clone();
     let endpoint = find_endpoint(&s, id);
+    // 统计臂未挂载时 off 短路（纯 env 判定，不探测）
+    if id == "stat" {
+        if let Some(reason) = stat_off_reason() {
+            update(state, id, |it| {
+                it.endpoint = endpoint;
+                it.state = "off";
+                it.reason = Some(reason);
+                it.hint = None;
+            });
+            return;
+        }
+    }
     // off 短路
     match id {
         "decision" if !s.decision.enabled => {
@@ -646,6 +737,76 @@ pub async fn supervise_init(state: Arc<AppState>) {
         tracing::warn!(
             deps = bad.join("、"),
             "依赖监督：部分依赖不可用，请见 GET /gec/deps 与运营台「依赖服务」卡片"
+        );
+    }
+}
+
+/// 保活重探间隔（秒）：启动监督只跑一次，本循环把「拉起的服务事后死亡」
+/// 与「failed 的服务事后恢复」压到分钟级内被状态面感知
+const KEEPALIVE_SECS: u64 = 60;
+
+/// 周期保活：低频全量重探（只探测不拉起，避免重启风暴；拉起仍走启动监督 /
+/// 手动按钮）。例外：skipped（资源门槛下的可选侧车）不自动升级；off 短路零成本；
+/// LLM 探测含真实模型往返，已 ok 时不再重复，避免每轮的 token 成本
+pub async fn keepalive_loop(state: Arc<AppState>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(KEEPALIVE_SECS)).await;
+        let reg = snapshot(&state);
+        for (id, _) in DEPS {
+            let cur = reg
+                .items
+                .iter()
+                .find(|i| i.id == *id)
+                .map(|i| i.state)
+                .unwrap_or("pending");
+            if cur == "skipped" || (*id == "llm" && cur == "ok") {
+                continue;
+            }
+            let before = cur;
+            recheck(&state, id).await;
+            let after = snapshot(&state)
+                .items
+                .iter()
+                .find(|i| i.id == *id)
+                .map(|i| i.state)
+                .unwrap_or("pending");
+            // 状态翻转才记日志，避免周期噪音
+            if before != after {
+                tracing::warn!(
+                    id,
+                    from = before,
+                    to = after,
+                    "依赖保活：状态翻转（周期重探）"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stat_off_reason_for;
+
+    #[test]
+    fn stat_off_when_endpoint_unset() {
+        let r = stat_off_reason_for("", [None, None, None]);
+        assert!(r.unwrap().contains("GEC_STAT_ENDPOINT"));
+    }
+
+    #[test]
+    fn stat_off_when_configured_but_not_mounted() {
+        let r = stat_off_reason_for("http://127.0.0.1:4807", [Some("rule".into()), None, None]);
+        assert!(r.unwrap().contains("GEC_ENGINE"));
+    }
+
+    #[test]
+    fn stat_on_when_any_lang_mounted() {
+        assert_eq!(
+            stat_off_reason_for(
+                "http://127.0.0.1:4807",
+                [None, Some("Statistical".into()), None]
+            ),
+            None
         );
     }
 }
