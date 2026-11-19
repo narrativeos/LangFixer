@@ -383,7 +383,7 @@ cd web-ui && npm run typecheck && npm run build
 2. **统计 GEC 模型**（✅ 挂载点就位）：`gec-core` 引擎路由抽象（`GecEngine` / `GecEngineKind`，
    rule / statistical / llm 按语言经 `GEC_ENGINE_{LANG}` 分发）+ `StatisticalGecEngine` 统计服务客户端
    （Harper / HuggingFace 序列模型，`POST /gec`）；统计引擎为主、规则引擎兜底合并（按 span 去重），
-   突破纯规则引擎的召回率上限——接入真实模型服务只需配置 `GEC_ENGINE_*` + `GEC_STAT_*`。
+   突破纯规则引擎的召回率上限——接入真实模型服务只需配置 `GEC_ENGINE_*` + `GEC_STAT_*`。例：中文深度纠错臂（MacBERT-CSC，`jev-gec/serve/csc_server.py`，:4807，`CSC_MOCK=1` 可离线 mock）即经此路径挂载，无需改 Rust。
 3. **vegaml 决策模型层**（**已退役出产品路径**，EVOLUTION.md §13 #10：选型未落地、被 L3
    严格覆盖、生产实测贡献 0——代码保留为实验路径，`GEC_DEC_ENABLED=1` 显式开启）：
    `gec-core` 的 `DecisionGecEngine`（`POST /decide`
