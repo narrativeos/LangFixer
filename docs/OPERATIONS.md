@@ -38,6 +38,7 @@
 | `LLM_PROMPTS_DIR` | `prompts` | 提示词模板目录（`{lang}_{cefr}_prompt.json`，改文件即热更新；含 `{lang}_detect` 兜底检测模板） |
 | `LLM_RETRY_BACKOFF_SECS` | `5,20` | 检测级联 LLM 兜底的退避表（逗号分隔，长度即重试次数；空 = 不重试）。网关 503/429/传输层超时按「没排到」退避重试，4xx 鉴权类不重试 |
 | `LLM_RETRY_BUDGET_SECS` | `120` | 上述重试的**挂钟总预算**（含每次请求自身耗时，不是只算睡眠）：必须落在前端 level ≥ 2 请求超时（180s）之内；网关卡死时到点收手 |
+| `GEC_LLM_MASK_PII` | `1`（默认开启） | **LLM 出站前 PII 脱敏**：发往 LLM 的文本中等长掩码身份证号 / 手机号 / 固话 / 邮箱本地部分 / 长数字串（掩码后与被掩区间重叠的 LLM 检出丢弃，防幻觉回填）；显式 `0`/`false` 关闭。规则 / L3 / 本地层仍看原文，仅 LLM 出站路径受影响 |
 | `GEC_TABLES_UPDATE_TOKEN` | — | 运营写操作鉴权 token；设置后 `PUT /gec/tables/:lang` / `POST /gec/tables/:lang/rollback` / 知识库 PUT / 数据集导入 / `POST /gec/ops/unlock`（前端「平台运营」角色解锁）需携带匹配的 `X-Tables-Update-Token` 头（未设置时不鉴权） |
 | `GEC_RULE_STATE_FILE` | `langfixer-rule-state.json` | 规则运行时开关持久化文件（`{rule_id: bool}`；启动时加载，`PUT /gec/rules/:lang/toggles` 后写回） |
 | `CORS_ORIGINS` | — | 允许的跨域来源（逗号分隔）；未设置时允许任意来源（本地开发） |

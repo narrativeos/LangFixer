@@ -21,6 +21,7 @@ pub mod knowledge_recall;
 pub mod l3;
 pub mod language;
 pub mod llm;
+pub mod mask;
 pub mod models;
 pub mod optimization_round;
 pub mod pipeline;

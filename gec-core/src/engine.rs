@@ -439,7 +439,17 @@ pub async fn targeted_llm_review(
         segs.push([es, excerpt.len(), s]);
     }
     // ③ LLM 检测摘录（span 相对摘录），映射回原文
-    let found = llm.detect(&excerpt).await?;
+    // ②.5 PII 掩码：摘录送 LLM 前等长掩码（span 空间不变），
+    // 与被掩区域重叠的检出丢弃（`*` 区不可能产出有效检出）
+    let mask = crate::mask::maybe_mask(&excerpt);
+    let excerpt = match &mask {
+        Some(m) => m.text.clone(),
+        None => excerpt,
+    };
+    let mut found = llm.detect(&excerpt).await?;
+    if let Some(m) = &mask {
+        crate::mask::filter_masked_errors(&mut found, m);
+    }
     let mut out = Vec::with_capacity(found.len());
     for mut err in found {
         let seg = segs
@@ -478,16 +488,27 @@ pub async fn llm_layer_detect(
     llm: &LlmGecEngine,
     text: &str,
 ) -> Result<(Vec<Error>, &'static str, bool), DetectorError> {
+    // 隐私防线：送 LLM（可能为外部端点）前掩码 PII（手机号 / 身份证 / 固话 /
+    // 长数字串 / 邮箱本地部分；等长替换，span 字节偏移空间不变）；
+    // 与被掩区域重叠的 LLM 检出丢弃。GEC_LLM_MASK_PII=0 可关
+    let mask = crate::mask::maybe_mask(text);
+    let text: &str = mask.as_ref().map(|m| m.text.as_str()).unwrap_or(text);
     let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
     if threshold == 0 || text.chars().count() < threshold {
-        let errors = llm.detect(text).await?;
+        let mut errors = llm.detect(text).await?;
+        if let Some(m) = &mask {
+            crate::mask::filter_masked_errors(&mut errors, m);
+        }
         let parse_failed = llm.take_parse_failed();
         let clean = errors.is_empty() && !parse_failed;
         Ok((errors, if parse_failed { "partial" } else { "ran" }, clean))
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
         let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
-        let o = llm.detect_document(text, target, concurrency).await?;
+        let mut o = llm.detect_document(text, target, concurrency).await?;
+        if let Some(m) = &mask {
+            crate::mask::filter_masked_errors(&mut o.errors, m);
+        }
         let bad = o.failed_chunks + o.parse_failed_chunks;
         let clean = bad == 0 && o.errors.is_empty();
         let status = if bad == 0 {
@@ -2901,5 +2922,39 @@ mod tests {
             "受保护术语上的错误应被过滤：{:?}",
             outcome.errors
         );
+    }
+
+    // ── 成熟架构补强：LLM 出站 PII 掩码 ──
+
+    #[tokio::test]
+    async fn llm_layer_masks_pii_and_drops_masked_region_errors() {
+        // 送 LLM 前掩码手机号；LLM 对被掩区域的检出（`*` 引用）被丢弃
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"***********","correction":null,"message":"masked noise"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, _clean) = llm_layer_detect(&llm, "电话13800138000有误").await.unwrap();
+        assert!(
+            errors.is_empty(),
+            "被掩区域（`*`）的检出应被过滤：{errors:?}"
+        );
+        assert_eq!(status, "ran");
+    }
+
+    #[tokio::test]
+    async fn llm_layer_keeps_errors_outside_masked_regions() {
+        // 掩码不影响被掩区域之外的检出
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"报负","correction":"抱负","message":"x"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, _) = llm_layer_detect(&llm, "他13800138000说报负很大")
+            .await
+            .unwrap();
+        assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");
+        assert_eq!(errors[0].correction.as_deref(), Some("抱负"));
+        assert_eq!(status, "ran");
     }
 }
