@@ -16,8 +16,8 @@
 | `SUDACHI_ENDPOINT` | `http://localhost:4802` | 日文 Sudachi 分词服务 |
 | `GEC_OFFLINE` | — | `1` 时全部检测器强制离线模式 |
 | `GEC_ENGINE_{ZH,EN,JA}` | `rule` | 该语言的检测引擎：`rule`（默认）/ `statistical`（统计模型为主 + 规则兜底，结果合并）/ `llm`（预留） |
-| `GEC_STAT_ENDPOINT` | `http://127.0.0.1:4803` | 统计 GEC 服务（Harper / HuggingFace transformers server 类，`POST /gec`） |
-| `GEC_STAT_TIMEOUT_SECS` | `30` | 统计 GEC 服务请求超时 |
+| `GEC_STAT_ENDPOINT` | `http://127.0.0.1:4803` | 统计 GEC 服务（Harper / HuggingFace transformers server 类，`POST /gec`；MacBERT-CSC 臂见 jev-gec `serve/csc_server.py` :4807）。已纳入依赖监督（`GET /gec/deps` 第 7 项「深度纠错服务」，外部只探测不拉起；未配地址或 `GEC_ENGINE_*` 非 statistical 时显示 off 不报红） |
+| `GEC_STAT_TIMEOUT_SECS` | `30` | 统计 GEC 服务请求超时；**实时路径建议 2–3**（服务挂起时超时才触发规则兜底，30s 会把交互式请求白等满） |
 | `GEC_STAT_MODEL` | `hf-gec` | 统计模型名（日志 / 元数据） |
 | `GEC_DEC_ENABLED` | `0`（默认关闭） | **vegaml 决策模型层**开关——该层**已退役出产品路径**（EVOLUTION.md §13 #10，2026-11-02 执行：设置界面入口移除）；代码保留为实验路径，显式 `1`/`true` 时开启 |
 | `GEC_DEC_ENDPOINT` | `http://127.0.0.1:4804` | vegaml 决策模型服务（`POST /decide`；`decision-model/server.py`，`VEGAML_MOCK=1` 可离线 mock） |
