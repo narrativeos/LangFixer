@@ -52,6 +52,8 @@ import type {
   RulePlan,
   RulesResponse,
   SettingsTestResult,
+  DepStatus,
+  DepsSnapshot,
   SettingsTestTarget,
   SessionAnalysis,
   SessionMeta,
@@ -1119,6 +1121,27 @@ export const api = {
     return http
       .post<SettingsTestResult>('/gec/settings/test', { target }, { timeout: 90000 })
       .then((r) => r.data)
+  },
+
+  /** GET /gec/deps — 依赖服务状态快照（服务端启动自检 + 主动拉起结果）；
+   *  桌面端引擎进程内运行、无独立依赖服务，回退空快照 */
+  listDeps(): Promise<DepsSnapshot> {
+    if (inTauri)
+      return Promise.resolve({ updated_at: '', items: [] } as DepsSnapshot)
+    return http.get<DepsSnapshot>('/gec/deps').then((r) => r.data)
+  },
+
+  /** POST /gec/deps/start — 拉起单个本机可管依赖（decision / l3 / char_gate）；
+   *  侧车加载 torch 模型可达分钟级，超时放宽到 10 分钟 */
+  startDep(id: string): Promise<DepStatus> {
+    return http
+      .post<DepStatus>('/gec/deps/start', { id }, { timeout: 600000 })
+      .then((r) => r.data)
+  },
+
+  /** POST /gec/deps/recheck — 重新探测（可指定单项 id；不拉起、不改配置） */
+  recheckDeps(id?: string): Promise<DepsSnapshot> {
+    return http.post<DepsSnapshot>('/gec/deps/recheck', { id: id ?? null }).then((r) => r.data)
   },
 
   /** POST /gec/explain — LLM 个性化讲解

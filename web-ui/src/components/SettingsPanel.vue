@@ -6,6 +6,7 @@ import { modeLabel } from '../lib/labels'
 import {
   LButton,
   LCheckbox,
+  LDot,
   LEmpty,
   LInput,
   LSection,
@@ -19,7 +20,7 @@ import { toast } from '../ui/toast'
 import { api, isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
 import type { LColumn } from '../ui'
-import type { AppSettings, L3FlywheelStatus, ModelView, SettingsTestResult, SettingsTestTarget } from '../types'
+import type { AppSettings, DepStatus, L3FlywheelStatus, ModelView, SettingsTestResult, SettingsTestTarget } from '../types'
 
 const store = useGecStore()
 
@@ -444,6 +445,7 @@ async function save(): Promise<boolean> {
 onMounted(() => {
   // Web 端 / 桌面端均加载设置：桌面端走 Tauri 命令（设置文件 > 环境变量 > 内置默认）
   load()
+  void refreshDeps()
 })
 
 // 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
@@ -491,6 +493,88 @@ watch(l3Enabled, async (v, old) => {
     }, 8000)
   }
 })
+
+// ── 依赖服务（服务端启动自检 + 监督器主动拉起；GET/POST /gec/deps）──
+// 拉不起来的不能静默：逐项展示原因，并提供「拉起服务」/「其他机器地址」两条补救路径
+const depsBusy = ref<Record<string, boolean>>({})
+const depsMsg = ref<Record<string, string>>({})
+const depsAlt = ref<Record<string, string>>({})
+const depsRecheck = ref(false)
+
+const DEP_STATE_TEXT: Record<DepStatus['state'], string> = {
+  ok: '就绪',
+  starting: '拉起中…',
+  failed: '不可用',
+  skipped: '已跳过（资源不足）',
+  off: '未启用 / 未配置',
+  pending: '未探测',
+}
+const DEP_STATE_TONE: Record<DepStatus['state'], 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  ok: 'ok',
+  starting: 'warn',
+  failed: 'danger',
+  skipped: 'warn',
+  off: 'neutral',
+  pending: 'neutral',
+}
+const DEP_DOT_TONE: Record<DepStatus['state'], 'ok' | 'warn' | 'danger' | 'muted'> = {
+  ok: 'ok',
+  starting: 'warn',
+  failed: 'danger',
+  skipped: 'warn',
+  off: 'muted',
+  pending: 'muted',
+}
+
+async function refreshDeps() {
+  await store.loadDeps()
+}
+
+async function recheckDeps() {
+  depsRecheck.value = true
+  try {
+    await api.recheckDeps()
+  } catch (e) {
+    toast(`重新探测失败：${errMsg(e)}`, 'warn')
+  } finally {
+    await refreshDeps()
+    depsRecheck.value = false
+  }
+}
+
+async function startDep(d: DepStatus) {
+  depsBusy.value[d.id] = true
+  depsMsg.value[d.id] = '正在拉起（侧车模型加载可能需要 1–2 分钟）…'
+  try {
+    const item = await api.startDep(d.id)
+    depsMsg.value[d.id] = item.state === 'ok' ? '已就绪' : item.reason || '拉起未完成'
+  } catch (e) {
+    depsMsg.value[d.id] = `拉起失败：${errMsg(e)}`
+  } finally {
+    await refreshDeps()
+    depsBusy.value[d.id] = false
+  }
+}
+
+/** 拉不起来时的另一条路：该服务部署在其他机器 → 保存新地址（设置侧会自动重探） */
+async function saveDepEndpoint(d: DepStatus) {
+  const v = (depsAlt.value[d.id] || '').trim()
+  if (!v) return
+  depsBusy.value[d.id] = true
+  depsMsg.value[d.id] = '地址已保存，正在探测…'
+  try {
+    await api.updateSettings(
+      d.id === 'decision' ? { decision: { endpoint: v } } : { l3: { endpoint: v } },
+    )
+    // 服务端保存后会后台自动重探该项，稍候读快照
+    await new Promise((r) => setTimeout(r, 1500))
+  } catch (e) {
+    depsMsg.value[d.id] = `保存失败：${errMsg(e)}`
+  } finally {
+    await refreshDeps()
+    depsBusy.value[d.id] = false
+  }
+}
 
 // ── L3 训练飞轮（三期闭环）：确认样本积累 → 重训练提醒 → 重训练 → 热切换 ──
 const flywheelLang = ref('zh')
@@ -809,6 +893,38 @@ function setProfileCefr(v: string | number) {
       <div class="actions actions--mt">
         <LButton :loading="testing.all" @click="runTest('all')">测试全部</LButton>
         <span class="hint">只读探测，不修改配置；逐项结果也可在各服务卡片内单独测试</span>
+      </div>
+    </LSection>
+
+    <!-- 依赖服务（启动自检 + 监督器）：拉不起来的不能静默——逐项展示原因，
+         补救两条路：本机可拉起的「拉起服务」；在其他机器部署的填新地址重测 -->
+    <LSection v-if="store.caps.ops && store.deps.length" id="set-deps" class="settings-card"
+      title="依赖服务" desc="服务启动后按资源自动拉起；未能就绪的服务逐项说明原因，等待处理（不会静默缺位）">
+      <template #actions>
+        <LButton variant="ghost" size="sm" :loading="depsRecheck" @click="recheckDeps">全部重新探测</LButton>
+      </template>
+      <div v-for="d in store.deps" :key="d.id" class="dep-row">
+        <div class="dep-row__main">
+          <LDot :tone="DEP_DOT_TONE[d.state]" />
+          <span class="dep-row__label">{{ d.label }}</span>
+          <LTag :tone="DEP_STATE_TONE[d.state]">{{ DEP_STATE_TEXT[d.state] }}</LTag>
+          <LTag v-if="d.auto" tone="accent">自动拉起</LTag>
+          <span class="sub">{{ d.endpoint || '未配置' }}</span>
+        </div>
+        <p v-if="d.state !== 'ok' && (d.reason || d.hint)" class="hint">{{ d.reason || d.hint }}</p>
+        <p v-if="depsMsg[d.id]" class="sub">{{ depsMsg[d.id] }}</p>
+        <div v-if="d.managed && (d.state === 'failed' || d.state === 'skipped')" class="actions actions--mt">
+          <LButton size="sm" :disabled="depsBusy[d.id]" @click="startDep(d)">拉起服务</LButton>
+          <span class="hint">本机资源不足或上次拉起失败；若这台机器实在放不下，可部署到其他机器后填地址</span>
+        </div>
+        <div v-if="(d.id === 'decision' || d.id === 'l3') && (d.state === 'failed' || d.state === 'skipped')" class="dep-alt">
+          <LInput v-model="depsAlt[d.id]" :placeholder="`该服务部署在其他机器？填地址（如 http://192.168.1.x:${d.id === 'decision' ? '4804' : '4806'}）`" />
+          <LButton size="sm" :disabled="!((depsAlt[d.id] || '').trim()) || depsBusy[d.id]" @click="saveDepEndpoint(d)">保存其他地址并重测</LButton>
+        </div>
+      </div>
+      <div class="hint">
+        状态来自服务端监督器快照；拉起失败或资源不足时会保留原因供排查（日志见服务端 log/supervisor/）。
+        如果某个服务你计划部署在其他机器上，请填写对应地址——不要让功能静默缺位。
       </div>
     </LSection>
 
@@ -1340,6 +1456,13 @@ function setProfileCefr(v: string | number) {
 .ops-unlock { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
 .ops-unlock .l-input { max-width: 320px; flex: 1; min-width: 0; }
 .confirm-inline { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--fs-sm); color: var(--text-2); }
+/* 依赖服务状态行（监督器快照） */
+.dep-row { padding: var(--space-2) 0; border-bottom: 1px dashed var(--border); }
+.dep-row:last-of-type { border-bottom: none; }
+.dep-row__main { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.dep-row__label { font-size: var(--fs-ui); font-weight: 600; }
+.dep-alt { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.dep-alt .l-input { max-width: 340px; flex: 1; min-width: 0; }
 .spin {
   width: var(--space-3); height: var(--space-3); flex: none; display: inline-block;
   border: 2px solid color-mix(in srgb, currentColor 30%, transparent);

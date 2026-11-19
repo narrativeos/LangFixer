@@ -39,6 +39,11 @@ async fn main() {
     }
     // 重启续跑：把上次进程遗留（created/running）的文档作业重新排队
     routes::doc_jobs::resume_interrupted_jobs(&state);
+    // 依赖监督（启动自检 + 资源允许时主动拉起本机层服务；拉不起来不静默，见 GET /gec/deps）
+    {
+        let st = state.clone();
+        tokio::spawn(async move { api_server::deps::supervise_init(st).await });
+    }
     // 网关形态（评测通道）：.env 提供开关与超管令牌，单机形态鉴权整体关闭（见 docs/GATEWAY_AUTH.md）
     let dotenv = api_server::auth::load_dotenv(std::path::Path::new(".env"));
     let gateway = Arc::new(api_server::auth::GatewayConfig::from_env(&dotenv));

@@ -6,6 +6,17 @@
 
 ### 新增
 
+- **依赖服务监督器（`api-server/src/deps.rs` + `routes/deps.rs`）**：api-server 启动即自检六项依赖
+  （decision:4804 / l3:4806 / char_gate:4811 / hanlp / LLM 网关 / 嵌入），本机可管服务在
+  loopback 地址 + 仓内 venv + 资源门槛（decision/l3 300MB、char_gate 2048MB，可用内存读
+  /proc/meminfo 或 vm_stat）满足时主动拉起（日志 `log/supervisor/`，子进程不随 api-server 退出被杀）；
+  拉不起来不静默放弃：`GET /gec/deps` 状态面逐项给出原因 + 「是否有其他机器可部署」提示，
+  运营台「设置 → 依赖服务」卡片提供「拉起服务」/「保存其他机器地址并重测」两条补救路径，
+  应用启动 toast 与检测服务状态条 chip 同步点名未就绪项；`POST /gec/deps/start|recheck`（ops 面，
+  token 防线）；PUT 设置改动相关端点后台自动重探。实机重启验证 6/6 全 ok（decision/l3/char_gate 均
+  auto 拉起）。途中修复两处 spawn 坑：posix_spawn 下相对程序路径在切 current_dir 后才解析致 ENOENT；
+  canonicalize 解析 venv python 符号链（→homebrew）破坏 pyvenv.cfg 探测致子进程丢 site-packages
+  （改绝对不解析符号链）。
 - **label-adjudicate 公网发布（token 分发模式）**：登录支持 `--token-db` 直连网关
   auth.db（sha256 校验 access_tokens，吊销即断，HMAC cookie `lf_adj` 12h），
   一人一枚评审令牌；公网实例跑在 47.94.172.217（systemd

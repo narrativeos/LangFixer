@@ -7,6 +7,7 @@ pub mod agent_tools;
 pub mod auth;
 pub mod cache;
 pub mod custom_words;
+pub mod deps;
 pub mod detect_history;
 pub mod knowledge_recall;
 // 载体（图片 / PDF / Word）链路的实现已抽到 `media-flow`（api-server 与桌面端共用同一条

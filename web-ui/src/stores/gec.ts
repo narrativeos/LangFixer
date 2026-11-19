@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import type {
   AnalyzedError,
   DecisionTableMeta,
+  DepStatus,
   DetectTimings,
   LayerReport,
   ErrorItem,
@@ -113,6 +114,9 @@ export const useGecStore = defineStore('gec', {
     llmEnabled: false,
     /** 嵌入引擎已配置（来自 GET /gec/settings 的 embedding.endpoint；未配置时 ②.5 知识向量召回静默跳过） */
     embeddingConfigured: false,
+    /** 依赖服务状态快照（GET /gec/deps；运营台「依赖服务」卡片与状态条 chip 用；
+     *  桌面端 / 网关受限形态为空数组） */
+    deps: [] as DepStatus[],
     /** L3 特征模型层已启用（来自 GET /gec/settings 的 l3.enabled；三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
      *  服务端默认开启，旧设置文件缺失该字段时按开启处理） */
     l3Enabled: true,
@@ -188,6 +192,14 @@ export const useGecStore = defineStore('gec', {
         this.languages = await api.listLanguages()
       } catch {
         // 拉取失败时保持空列表，Editor 会回退到默认文案
+      }
+    },
+    /** 拉取依赖服务状态快照（GET /gec/deps；失败静默，面板下次进入时重拉） */
+    async loadDeps() {
+      try {
+        this.deps = (await api.listDeps()).items
+      } catch {
+        // 后端不支持 /gec/deps（旧版）时保持空，面板与 chip 不渲染
       }
     },
     /** 拉取设置并同步检测管线各层启用状态（「检查模式」状态标签 + 检测管线提示用） */

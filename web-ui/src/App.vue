@@ -150,6 +150,17 @@ const psOk = computed(
 function boot() {
   store.loadLanguages()
   store.loadSettings()
+  if (store.caps.ops) {
+    // 依赖监督器快照：拉不起来的服务不能静默缺位——启动时点名提醒，去设置页处理
+    void store.loadDeps().then(() => {
+      const failed = store.deps.filter((d) => d.state === 'failed' || d.state === 'skipped')
+      if (failed.length)
+        toast(
+          `依赖服务未能就绪：${failed.map((d) => d.label).join('、')}，请到运营台「设置 → 依赖服务」处理`,
+          'warn',
+        )
+    })
+  }
   if (store.caps.learning && (!identity.value.gateway || identity.value.admin))
     void store.refreshReviewDue()
   try {

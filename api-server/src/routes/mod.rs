@@ -4,6 +4,7 @@ pub mod analyze;
 pub mod attribute;
 pub mod auth;
 pub mod custom_words;
+pub mod deps;
 pub mod detect;
 pub mod doc_jobs;
 pub mod eval;
@@ -144,6 +145,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/gec/eval/reports", axum::routing::get(eval::reports))
         .route("/gec/eval/report/:id", axum::routing::get(eval::report))
         .route("/gec/eval/layers", axum::routing::get(eval::layers))
+        .route("/gec/deps", axum::routing::get(deps::list))
+        .route("/gec/deps/start", axum::routing::post(deps::start))
+        .route("/gec/deps/recheck", axum::routing::post(deps::recheck))
         .route(
             "/gec/eval/contributions",
             axum::routing::post(optimization::contributions),

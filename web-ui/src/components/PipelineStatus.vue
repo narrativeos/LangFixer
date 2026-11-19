@@ -44,41 +44,60 @@ interface StatusItem {
   anchor: string | null
 }
 
-const items = computed<StatusItem[]>(() => [
-  {
-    key: 'rule',
-    label: plainLayerLabel('rule'),
-    state: 'ok',
-    hint: '内置规则与词表，即时运行，始终可用',
-    anchor: 'dirs',
-  },
-  // ② 决策模型待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：状态条不再列示
-  {
-    key: 'embedding',
-    label: plainLayerLabel('knowledge'),
-    state: store.embeddingConfigured ? 'ok' : 'missing',
-    hint: store.embeddingConfigured
-      ? '易错词对与错例的检索已就绪'
-      : '未配置：易错词对的智能检索不会生效（不影响其他检查）；可在设置中配置',
-    anchor: 'embedding',
-  },
-  {
-    key: 'l3',
-    label: plainLayerLabel('feature'),
-    state: store.l3Enabled ? 'ok' : 'off',
-    hint: store.l3Enabled
-      ? '确定的结果本地先行处理，AI 只复核拿不准的'
-      : '未启用：AI 复查范围更大、更慢；可在设置中开启',
-    anchor: 'l3',
-  },
-  {
-    key: 'llm',
-    label: plainLayerLabel('llm'),
-    state: store.llmEnabled ? 'ok' : 'missing',
-    hint: store.llmEnabled ? 'AI 复查已就绪' : '未配置：标准 / 深度检查与个性化讲解不可用；可在设置中配置',
-    anchor: 'llm',
-  },
-])
+const items = computed<StatusItem[]>(() => {
+  const base: StatusItem[] = [
+    {
+      key: 'rule',
+      label: plainLayerLabel('rule'),
+      state: 'ok',
+      hint: '内置规则与词表，即时运行，始终可用',
+      anchor: 'dirs',
+    },
+    // ② 决策模型待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：状态条不再列示
+    {
+      key: 'embedding',
+      label: plainLayerLabel('knowledge'),
+      state: store.embeddingConfigured ? 'ok' : 'missing',
+      hint: store.embeddingConfigured
+        ? '易错词对与错例的检索已就绪'
+        : '未配置：易错词对的智能检索不会生效（不影响其他检查）；可在设置中配置',
+      anchor: 'embedding',
+    },
+    {
+      key: 'l3',
+      label: plainLayerLabel('feature'),
+      state: store.l3Enabled ? 'ok' : 'off',
+      hint: store.l3Enabled
+        ? '确定的结果本地先行处理，AI 只复核拿不准的'
+        : '未启用：AI 复查范围更大、更慢；可在设置中开启',
+      anchor: 'l3',
+    },
+    {
+      key: 'llm',
+      label: plainLayerLabel('llm'),
+      state: store.llmEnabled ? 'ok' : 'missing',
+      hint: store.llmEnabled ? 'AI 复查已就绪' : '未配置：标准 / 深度检查与个性化讲解不可用；可在设置中配置',
+      anchor: 'llm',
+    },
+  ]
+  // 依赖服务（监督器快照）：未能就绪 / 资源不足跳过的不能静默缺位，状态条点名并直达处理卡片
+  if (store.caps.ops) {
+    const trouble = store.deps.filter((d) => d.state === 'failed' || d.state === 'skipped')
+    const starting = store.deps.some((d) => d.state === 'starting')
+    if (trouble.length || starting) {
+      base.push({
+        key: 'deps',
+        label: '依赖服务',
+        state: trouble.length ? 'missing' : 'off',
+        hint: trouble.length
+          ? `未能就绪：${trouble.map((d) => d.label).join('、')}；可在「设置 → 依赖服务」拉起或改填其他机器地址`
+          : '依赖服务拉起中，就绪后自动可用',
+        anchor: 'deps',
+      })
+    }
+  }
+  return base
+})
 
 const okCount = computed(() => items.value.filter((i) => i.state === 'ok').length)
 

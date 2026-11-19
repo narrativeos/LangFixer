@@ -99,6 +99,10 @@ pub struct AppState {
     /// 决策表目录（资源包导入/删除写回决策表与 aux 数据文件；
     /// `RwLock`：设置界面变更 `tables_dir` 时同步更新）
     pub tables_dir: RwLock<std::path::PathBuf>,
+    /// 依赖服务状态快照（监督器探测 + 主动拉起结果；`GET /gec/deps` 读取，见 `deps` 模块）
+    pub deps: RwLock<crate::deps::DepRegistry>,
+    /// 依赖拉起互斥锁（串行化拉起与重测，防并发重复 spawn）
+    pub deps_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -408,6 +412,8 @@ impl AppState {
             ingest_dir,
             knowledge_dir: kb_dir,
             tables_dir: RwLock::new(tables_dir.clone()),
+            deps: RwLock::new(crate::deps::DepRegistry::default()),
+            deps_lock: Arc::new(tokio::sync::Mutex::new(())),
             sessions,
             settings: RwLock::new(settings),
             media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),

@@ -894,6 +894,28 @@ export interface SettingsTestResult {
   results?: SettingsTestResult[]
 }
 
+/** 依赖服务单项状态（GET /gec/deps；监督器探测 + 主动拉起结果） */
+export interface DepStatus {
+  id: string
+  label: string
+  endpoint: string
+  /** pending 未探测 | ok 就绪 | starting 拉起中 | failed 不可用 | skipped 可选服务资源不足跳过 | off 设置关闭/未配置 */
+  state: 'pending' | 'ok' | 'starting' | 'failed' | 'skipped' | 'off'
+  /** 本机可拉起（loopback 地址 + 服务目录与 venv 存在） */
+  managed: boolean
+  /** 由监督器拉起（区别于外部已在跑） */
+  auto: boolean
+  reason?: string | null
+  /** 拉不起来时的补救指引（是否有其他机器/资源可部署） */
+  hint?: string | null
+  latency_ms: number
+}
+
+export interface DepsSnapshot {
+  updated_at: string
+  items: DepStatus[]
+}
+
 export const ATTRIBUTION_LABELS: Record<string, string> = {
   knowledge_gap: '知识缺口',
   habit_solidified: '习惯固化',

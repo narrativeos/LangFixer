@@ -530,13 +530,17 @@ pub async fn put(
     if let Some(doc_jobs) = &req.doc_jobs {
         if let Some(v) = doc_jobs.chunk_target {
             if !(50..=20000).contains(&v) {
-                return Err(ApiError::BadRequest("doc_jobs.chunk_target 应为 50-20000".into()));
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.chunk_target 应为 50-20000".into(),
+                ));
             }
             next.doc_jobs.chunk_target = v;
         }
         if let Some(v) = doc_jobs.concurrency {
             if !(1..=64).contains(&v) {
-                return Err(ApiError::BadRequest("doc_jobs.concurrency 应为 1-64".into()));
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.concurrency 应为 1-64".into(),
+                ));
             }
             next.doc_jobs.concurrency = v;
         }
@@ -547,13 +551,37 @@ pub async fn put(
             let v = v.trim().to_ascii_lowercase();
             if !matches!(v.as_str(), "full" | "economical") {
                 return Err(ApiError::BadRequest(
-                    "doc_jobs.budget 无效（应为 full = 全量深度复查 / economical = 低风险块跳过）".into(),
+                    "doc_jobs.budget 无效（应为 full = 全量深度复查 / economical = 低风险块跳过）"
+                        .into(),
                 ));
             }
             next.doc_jobs.budget = v;
         }
     }
     state.apply_settings(next.clone());
+    // 依赖监督联动：配置变更后后台重新探测对应服务（用户改完地址保存即见新状态，无需手动重测）
+    {
+        let touched: Vec<&'static str> = [
+            (req.decision.is_some(), "decision"),
+            (req.l3.is_some(), "l3"),
+            (req.hanlp_endpoint.is_some(), "hanlp"),
+            (req.llm.is_some(), "llm"),
+            (req.embedding.is_some(), "embedding"),
+            (req.offline_mode.is_some(), "hanlp"),
+        ]
+        .into_iter()
+        .filter(|(hit, _)| *hit)
+        .map(|(_, id)| id)
+        .collect();
+        if !touched.is_empty() {
+            let st = state.clone();
+            tokio::spawn(async move {
+                for id in touched {
+                    crate::deps::recheck(&st, id).await;
+                }
+            });
+        }
+    }
     let registry = state.model_registry.read().unwrap();
     Ok(Json(to_response(&next, &registry)))
 }
