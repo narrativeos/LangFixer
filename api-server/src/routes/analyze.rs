@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use axum::extract::{Extension, Json, State};
-use gec_core::{DetectOutcome, DetectorError};
 use shared_model::{AnalyzedError, AttributionContext, coarse_error_type};
 
 use crate::APP_VERSION;
 use crate::auth::Tenant;
 use crate::routes::ApiError;
-use crate::routes::detect;
+use crate::routes::detect::{PipelineResult, PipelineSpec, run_pipeline};
 use crate::state::AppState;
 
 #[derive(serde::Deserialize)]
@@ -82,62 +81,30 @@ pub async fn analyze(
     }
     // 网关形态：按字符数计配额（超限 429），语义与 detect 入口一致
     tenant.charge_chars(req.text.chars().count())?;
-    // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
-    let engine = state
-        .router
-        .read()
-        .unwrap()
-        .get(&req.lang)
-        .cloned()
-        .ok_or_else(|| DetectorError::UnsupportedLanguage(req.lang.clone()))?;
-    // 分阶段进度（与 run_detection 同模式：X-Progress-Id → 事件登记；历史命中直接标完成）
-    let progress_id = super::detect_progress::id_from_headers(&headers);
-    let sink = progress_id.map(|id| {
-        super::detect_progress::begin(&state.detect_progress, id);
-        super::detect_progress::sink(state.clone(), id)
-    });
-    // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发，不缓存）
-    // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
-    let (mut outcome, from_history): (DetectOutcome, bool) = if level <= 1 && !req.force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）；
-        // 网关形态跳过（每账号实时跑并自写历史，归属完整）；refresh 同样跳过（强制实检）
-        let reused = if crate::auth::gateway_mode() || req.refresh {
-            None
-        } else {
-            let params = state
-                .current_detect_params(&req.lang, 1, false, &None)
-                .await;
-            detect::try_reuse_history(state.as_ref(), &req.lang, &req.text, &params).await
-        };
-        if let Some(reused) = reused {
-            if let Some(id) = progress_id {
-                super::detect_progress::finish(&state.detect_progress, id);
-            }
-            (reused, true)
-        } else {
-            (
-                engine
-                    .detect_level_traced(&req.text, 1, false, None, sink)
-                    .await?,
-                false,
-            )
-        }
-    } else {
-        let llm = state.llm_detect_engine(&req.lang);
-        (
-            engine
-                .detect_level_traced(&req.text, level, req.force_llm, llm.as_deref(), sink)
-                .await?,
-            false,
-        )
-    };
-    // 与 detect 路由一致的后处理：过滤已禁用规则 + 自定义词白名单
-    // （「放弃」反馈 / 「停用规则」建议在重检测时同样生效）
-    detect::apply_suppression_filters(state.as_ref(), &req.lang, &mut outcome);
-    // 无事件引擎的进度兜底（支持事件的引擎已 End / 历史已 finish，均 no-op）
-    if let Some(id) = progress_id {
-        super::detect_progress::fallback(&state.detect_progress, id, &outcome.timings);
-    }
+
+    // 执行统一由 run_pipeline 驱动（入口收敛：LRU / 历史复用 / 规则开关与
+    // 白名单过滤 / category / issue_type 填充 / anomaly 采纳与 L3 后台任务
+    // 全部与 detect 入口同源；persist_history=false——本路由自写带归因结果的历史）
+    let PipelineResult {
+        outcome,
+        from_history,
+        version,
+        params,
+    } = run_pipeline(
+        state.clone(),
+        PipelineSpec {
+            lang: &req.lang,
+            text: &req.text,
+            category: &None,
+            level: Some(level),
+            force_llm: req.force_llm,
+            refresh: req.refresh,
+            progress_id: super::detect_progress::id_from_headers(&headers),
+            history_tag: None,
+            persist_history: false,
+        },
+    )
+    .await?;
     let engine = state.tables.get(&req.lang);
 
     // 会话 ID：请求提供则用，否则自动生成
@@ -210,9 +177,9 @@ pub async fn analyze(
 
     // 自动持久化（含归因结果 + 各阶段计时 + 参数快照 + 文本哈希；后台写入，不阻塞检测响应）
     // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
-    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
-    // 正常结果）
-    let mut version: Option<serde_json::Value> = None;
+    // quality=full 可写历史（partial/degraded 只回传不落库；参数快照 / 版本向量
+    // 直接复用 run_pipeline 执行时产出，与 LRU / 历史复用键同一口径；
+    // LRU 命中回放 quality=None → 照常落库，出自既往 full 运行）
     if !from_history {
         let state = state.clone();
         let lang = req.lang.clone();
@@ -223,10 +190,7 @@ pub async fn analyze(
         let analyzed_json = serde_json::to_string(&analyzed).ok();
         let timings_json = (!outcome.timings.is_empty())
             .then(|| serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string()));
-        let params = state
-            .current_detect_params(&lang, level, req.force_llm, &None)
-            .await;
-        let params_json = serde_json::to_string(&params).ok();
+        let params_json = params.as_ref().and_then(|p| serde_json::to_string(p).ok());
         let text_hash = shared_model::text_hash(&text);
         let corrected_text = shared_model::apply_corrections(
             &text,
@@ -234,16 +198,8 @@ pub async fn analyze(
         );
         let layers_json = (!outcome.layers.is_empty())
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        // 版本向量：实际检测时的参数快照（历史复用回放 quality=None → 不返回）
-        version = outcome.quality.as_ref().map(|_| {
-            serde_json::json!({
-                "rules_fingerprint": params.rules_fingerprint,
-                "model_version": params.model_version,
-                "splitter": params.splitter,
-            })
-        });
-        let session_id = session_id.clone();
         if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+            let session_id = session_id.clone();
             tokio::spawn(async move {
                 if let Err(e) = state.detect_history.insert(
                     Some(&session_id),

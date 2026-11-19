@@ -77,8 +77,8 @@ pub struct DetectQuery {
     pub category: Option<String>,
 }
 
-/// 过滤已禁用规则 + 自定义词白名单（**全部检测入口共用**：
-/// `run_detection`（detect / detect_lang）与 analyze 路由——
+/// 过滤已禁用规则 + 自定义词白名单（**全部检测入口共用**：经由
+/// `run_detection`（detect / detect_lang / analyze 唯一执行路径）生效——
 /// 使「放弃」反馈（白名单止血）与「停用规则」建议在重检测时一致生效）
 pub(crate) fn apply_suppression_filters(state: &AppState, lang: &str, outcome: &mut DetectOutcome) {
     // 过滤已禁用的规则（开关状态存于 SQLite 词表存储；
@@ -332,6 +332,125 @@ pub(crate) async fn run_detection(
     Ok((outcome, from_history))
 }
 
+/// 统一管线入参（[`run_pipeline`]）：执行参数 + 历史落库策略
+pub(crate) struct PipelineSpec<'a> {
+    pub lang: &'a str,
+    pub text: &'a str,
+    pub category: &'a Option<String>,
+    pub level: Option<u8>,
+    pub force_llm: bool,
+    pub refresh: bool,
+    pub progress_id: Option<&'a str>,
+    /// 历史归属标记（detect = 网关伪会话 tag；None = 无会话归属）
+    pub history_tag: Option<&'a str>,
+    /// 是否由本函数回写纯检测结果历史（false = 调用方自带 persist，
+    /// 如 analyze 需写入含归因结果的 `analyzed_json`）
+    pub persist_history: bool,
+}
+
+/// 统一管线产出：检测结果 + 复用标记 + 版本向量 + 参数快照
+pub(crate) struct PipelineResult {
+    pub outcome: DetectOutcome,
+    pub from_history: bool,
+    /// 检测时版本向量（仅实际检测且 quality 非空时）
+    pub version: Option<serde_json::Value>,
+    /// 本次执行的参数快照（仅实际检测时）
+    pub params: Option<shared_model::DetectParams>,
+}
+
+/// 唯一执行入口（Detect Pipeline v2 P4 入口收敛）：detect / detect_lang / analyze
+/// 全部经本函数驱动，消除路由层的第二份执行实现。
+///
+/// = `run_detection`（引擎 / 缓存 / 历史复用 / 过滤 / 三级响应 / 后台任务）
+/// + 参数快照 / 版本向量 / 历史回写：
+/// - `from_history = true`（历史复用回放）：不产快照、不写历史；
+/// - 实际检测即产快照（LRU 命中回放 quality=None → version 为 None，但历史
+///   按 `map_or(true)` 照常落库——回放结果出自既往 full 运行）；
+/// - `persist_history = false`（analyze）：只产快照供调用方组历史行。
+pub(crate) async fn run_pipeline(
+    state: Arc<AppState>,
+    spec: PipelineSpec<'_>,
+) -> Result<PipelineResult, ApiError> {
+    let (outcome, from_history) = run_detection(
+        state.clone(),
+        spec.lang,
+        spec.text,
+        spec.category,
+        spec.level,
+        spec.force_llm,
+        spec.refresh,
+        spec.progress_id,
+    )
+    .await?;
+
+    let mut version: Option<serde_json::Value> = None;
+    let mut params: Option<shared_model::DetectParams> = None;
+    // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
+    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
+    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
+    // 正常结果；LRU 命中回放结果出自 full 运行，照常落库）
+    if !from_history {
+        let snapshot = state
+            .current_detect_params(
+                spec.lang,
+                spec.level.unwrap_or(1),
+                spec.force_llm,
+                spec.category,
+            )
+            .await;
+        // 版本向量：实际检测时的参数快照（LRU 命中回放 quality=None → 不返回）
+        version = outcome.quality.as_ref().map(|_| {
+            serde_json::json!({
+                "rules_fingerprint": snapshot.rules_fingerprint,
+                "model_version": snapshot.model_version,
+                "splitter": snapshot.splitter,
+            })
+        });
+        if spec.persist_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+            let state = state.clone();
+            let lang = spec.lang.to_string();
+            let text = spec.text.to_string();
+            let history_tag = spec.history_tag.map(|s| s.to_string());
+            let errors_json =
+                serde_json::to_string(&outcome.errors).unwrap_or_else(|_| "[]".to_string());
+            let timings_json = (!outcome.timings.is_empty()).then(|| {
+                serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string())
+            });
+            let params_json = serde_json::to_string(&snapshot).ok();
+            let text_hash = shared_model::text_hash(&text);
+            let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
+            let layers_json = (!outcome.layers.is_empty()).then(|| {
+                serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string())
+            });
+            tokio::spawn(async move {
+                if let Err(e) = state.detect_history.insert(
+                    history_tag.as_deref(),
+                    &lang,
+                    &text,
+                    &errors_json,
+                    None,
+                    timings_json.as_deref(),
+                    Some(APP_VERSION),
+                    params_json.as_deref(),
+                    Some(&text_hash),
+                    Some(corrected_text.as_str()),
+                    layers_json.as_deref(),
+                ) {
+                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
+                }
+            });
+        }
+        params = Some(snapshot);
+    }
+
+    Ok(PipelineResult {
+        outcome,
+        from_history,
+        version,
+        params,
+    })
+}
+
 /// L3 飞轮：干净句自动采集为负样本
 ///
 /// 检测未产出错误（含 LLM 兜底复查后确认干净）时，把原文句子采集为负样本
@@ -499,67 +618,26 @@ pub async fn detect(
     if let Some(tag) = &gw_tag {
         tenant.guard_session(tag)?;
     }
-    let (outcome, from_history) = run_detection(
-        state.clone(),
-        &req.lang,
-        &req.text,
-        &q.category,
-        req.level,
-        req.force_llm,
-        req.refresh,
-        super::detect_progress::id_from_headers(&headers),
+    let PipelineResult {
+        outcome,
+        from_history,
+        version,
+        ..
+    } = run_pipeline(
+        state,
+        PipelineSpec {
+            lang: &req.lang,
+            text: &req.text,
+            category: &q.category,
+            level: req.level,
+            force_llm: req.force_llm,
+            refresh: req.refresh,
+            progress_id: super::detect_progress::id_from_headers(&headers),
+            history_tag: gw_tag.as_deref(),
+            persist_history: true,
+        },
     )
     .await?;
-
-    // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
-    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
-    // 正常结果；LRU 命中回放结果出自 full 运行，照常落库）
-    let mut version: Option<serde_json::Value> = None;
-    if !from_history {
-        let state = state.clone();
-        let lang = req.lang.clone();
-        let text = req.text.clone();
-        let errors_json =
-            serde_json::to_string(&outcome.errors).unwrap_or_else(|_| "[]".to_string());
-        let timings_json = (!outcome.timings.is_empty())
-            .then(|| serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string()));
-        let params = state
-            .current_detect_params(&lang, req.level.unwrap_or(1), req.force_llm, &q.category)
-            .await;
-        let params_json = serde_json::to_string(&params).ok();
-        let text_hash = shared_model::text_hash(&text);
-        let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
-        let layers_json = (!outcome.layers.is_empty())
-            .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        // 版本向量：实际检测时的参数快照（LRU 命中回放 quality=None → 不返回）
-        version = outcome.quality.as_ref().map(|_| {
-            serde_json::json!({
-                "rules_fingerprint": params.rules_fingerprint,
-                "model_version": params.model_version,
-                "splitter": params.splitter,
-            })
-        });
-        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
-            tokio::spawn(async move {
-                if let Err(e) = state.detect_history.insert(
-                    gw_tag.as_deref(),
-                    &lang,
-                    &text,
-                    &errors_json,
-                    None,
-                    timings_json.as_deref(),
-                    Some(APP_VERSION),
-                    params_json.as_deref(),
-                    Some(&text_hash),
-                    Some(corrected_text.as_str()),
-                    layers_json.as_deref(),
-                ) {
-                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
-                }
-            });
-        }
-    }
 
     Ok(Json(DetectResponse {
         errors: outcome.errors,
@@ -608,66 +686,26 @@ pub async fn detect_lang(
     if let Some(tag) = &gw_tag {
         tenant.guard_session(tag)?;
     }
-    let (outcome, from_history) = run_detection(
-        state.clone(),
-        &lang,
-        &req.text,
-        &q.category,
-        req.level,
-        req.force_llm,
-        req.refresh,
-        super::detect_progress::id_from_headers(&headers),
+    let PipelineResult {
+        outcome,
+        from_history,
+        version,
+        ..
+    } = run_pipeline(
+        state,
+        PipelineSpec {
+            lang: &lang,
+            text: &req.text,
+            category: &q.category,
+            level: req.level,
+            force_llm: req.force_llm,
+            refresh: req.refresh,
+            progress_id: super::detect_progress::id_from_headers(&headers),
+            history_tag: gw_tag.as_deref(),
+            persist_history: true,
+        },
     )
     .await?;
-
-    // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
-    // 历史复用不写新记录；缓存资格：仅 quality=full 可写历史
-    //（同 detect handler；partial/degraded 只回传不落库）
-    let mut version: Option<serde_json::Value> = None;
-    if !from_history {
-        let state = state.clone();
-        let lang = lang.clone();
-        let text = req.text.clone();
-        let errors_json =
-            serde_json::to_string(&outcome.errors).unwrap_or_else(|_| "[]".to_string());
-        let timings_json = (!outcome.timings.is_empty())
-            .then(|| serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string()));
-        let params = state
-            .current_detect_params(&lang, req.level.unwrap_or(1), req.force_llm, &q.category)
-            .await;
-        let params_json = serde_json::to_string(&params).ok();
-        let text_hash = shared_model::text_hash(&text);
-        let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
-        let layers_json = (!outcome.layers.is_empty())
-            .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        // 版本向量：实际检测时的参数快照（LRU 命中回放 quality=None → 不返回）
-        version = outcome.quality.as_ref().map(|_| {
-            serde_json::json!({
-                "rules_fingerprint": params.rules_fingerprint,
-                "model_version": params.model_version,
-                "splitter": params.splitter,
-            })
-        });
-        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
-            tokio::spawn(async move {
-                if let Err(e) = state.detect_history.insert(
-                    gw_tag.as_deref(),
-                    &lang,
-                    &text,
-                    &errors_json,
-                    None,
-                    timings_json.as_deref(),
-                    Some(APP_VERSION),
-                    params_json.as_deref(),
-                    Some(&text_hash),
-                    Some(corrected_text.as_str()),
-                    layers_json.as_deref(),
-                ) {
-                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
-                }
-            });
-        }
-    }
 
     Ok(Json(DetectResponse {
         errors: outcome.errors,

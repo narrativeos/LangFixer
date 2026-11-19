@@ -1,7 +1,7 @@
 # 检测处理流程设计（Detect Pipeline v2）
 
 > 状态：**P1–P3 已实现**（2026-11-19，本文同时是实现契约，§2 流程图与代码同步）；
-> P4 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，见 §7）；桌面并轨（桌面端 `commands.rs` 仍是第二实现路径）与入口收敛未启动。
+> P4 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，见 §7）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口，detect×2 / analyze 降为驱动，见 §8）；桌面并轨（桌面端 `commands.rs` 仍是第二实现路径）未启动。
 > 动因：2026-11 缓存/切块排查（旧结果命中、忽略缓存同结果、CSC 臂静默截断、归因兜底桶误导排查）暴露的设计成因见 `docs/UX_REVIEW.md` 后续与 EVOLUTION 记录；本文的设计与 §8 分期进度即现状。
 
 ## 1. 设计原则（不可协商项）
@@ -138,6 +138,6 @@ flowchart TD
 1. **P1（小）** ✅：Outcome v2 的 `quality/chunks/sentences/version` 字段（向后兼容可选字段）+ 前端降级徽标 + 归因兜底桶改样式；金集评测（media_gold_eval）在 CI。
 2. **P2（中）** ✅：切块统一到所有权不变式原语（docchunk）；stat/CSC 滑窗修复 + 字节 span 重映射钳制；引擎合并测试按钳制语义重写。
 3. **P3（中）** ✅：版本向量含 `splitter`（缓存键 `:s…` 段）+ 缓存资格规则（仅 full 可写 LRU/历史，detect/analyze/桌面三门同构）；切块预算进设置面板——**未做**，遗余。
-4. **P4（大）** 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，LLM 分块 + stat 滑窗两条预算路径）；桌面并轨（`commands.rs` 仍是第二实现，本轮靠同构门控补丁维持语义）、入口收敛未启动。
+4. **P4（大）** 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，LLM 分块 + stat 滑窗两条预算路径）；**入口收敛** ✅（api-server 内 `run_pipeline` 唯一执行入口：detect×2 的重复 persist 块与 analyze 的内联执行实现全部消除，analyze 降为 detect+归因组合驱动并从此获得 LRU / anomaly 采纳 / L3 后台任务；mcp / media 直驱 `run_detection`）；桌面并轨（`commands.rs` 仍是第二实现，本轮靠同构门控补丁维持语义）未启动。
 
 **验收**（每期）：现有 api-server/gec-core 全套 + 新增契约测试（所有权铺满全文、预算不超限、span 重映射往返、版本漂移）+ 黄金集 F1 不退化 + 两告警零命中。

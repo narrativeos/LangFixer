@@ -473,6 +473,15 @@ level 1 无 LLM，即 web-ui 生产默认配置）：
   stage=rule）；短文本单块不推，块间并发交错按 chunk 序号配对聚合；前端
   StageView 加 `chunks` 聚合，进行中节点副行显示「段 已检/总」；桌面 detect:stage
   透传天然兼容（枚举直序列化）
+- **1.1c 入口收敛（2026-11-19，P4 第二子项）**：api-server 内新增唯一执行入口
+  `detect::run_pipeline(spec)`（= `run_detection` + 参数快照 / 版本向量 / 历史回写），
+  detect / detect_lang 两 handler 与 analyze 降为其驱动，消除路由层第二份执行实现
+  （analyze 原内联的 sink / 历史复用 / 引擎取用段删除，自带 persist 保留并改用
+  管线产出的 params 快照 / version）。**analyze 行为收敛**（设计意图即单一实现）：
+  自此获得 LRU 缓存命中（level 1 非强制）、issue_type 填充、anomaly 自动采纳与
+  L3 干净句后台任务（原内联版没有）；历史写入语义不变（带 analyzed_json，
+  quality 门控 map_or(true)）；mcp / media 继续直驱 run_detection，doc-jobs 为
+  gec_core 后台 executor 不在本层。api lib 45 + api 58 全绿，无断言修改
 - **1.3 重训无效标记**：`reflection_center` 新增 `L3RetrainStateIn`
   （最近 completed `l3_retrain` 作业的 gate_f1/report_id + 当前报告复测 F1）；
   复测 F1 未超过重训前值 +0.05 → 不再提议 `l3_sample`，改出 findings
