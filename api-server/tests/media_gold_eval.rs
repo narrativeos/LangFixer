@@ -274,13 +274,14 @@ async fn gold_upper_bound_with_perfect_extraction() {
     }
     next_id += 1;
     let control_unit_id = next_id;
-    // 正对照用 `ZH_PUNCTUATION`（出厂词表里 enabled = true，必命中）：
-    // 它不在金集里，用来证明「评测管线本身能计分」。
-    // `ZH_CONFUSABLE` / `ZH_MISSING_SUBJECT` 现已出厂开启（金集重演驱动的词表工厂改动），
-    // 所以「报道/报到」这类同音误用能直接命中——金集闭卷召回不再为 0。
+    // 正对照用 `ZH_NUMERAL`（出厂词表里 enabled = true，必命中）：它不在金集里，
+    // 用来证明「评测管线本身能计分」。
+    // 旧正对照用的 `ZH_PUNCTUATION` 已出厂停用（`EVOLUTION.md` Phase 1：规则层
+    // 1137 句全量评估 P=0，四条 zh 规则（含 `ZH_CONFUSABLE` / `ZH_MISSING_SUBJECT` /
+    // `ZH_DE_DA_DE`）一律停用），不能再作为「必命中」的依据。
     units.push(TextUnit {
         id: control_unit_id,
-        text: "住院患者请携带病历,到窗口办理。".to_string(),
+        text: "收益达3万万。".to_string(),
         source: ExtractSource::Structure,
         region: Region::Unlocated,
         confidence: 1.0,
@@ -494,6 +495,7 @@ async fn gold_upper_bound_with_perfect_extraction() {
         "正对照句（半角逗号）未被检出 → 评测管线或 zh 标点规则坏了，而不是覆盖问题"
     );
     // 正对照不在金集里：它必须落在 unmatched_ours，不能被「包含」巧合白送一条 gold
+    // （金集原文中不含「万万」字样，短片段对照不会被任何 gold 整句包含）
     let control_ids: Vec<u32> = anns
         .iter()
         .filter(|a| a.unit_id == control_unit_id)
@@ -503,7 +505,7 @@ async fn gold_upper_bound_with_perfect_extraction() {
         control_ids
             .iter()
             .all(|id| score.unmatched_ours.contains(id)),
-        "单字符标点错误不得按包含匹配到 gold 整句：{:?}",
+        "正对照短片段不得按包含匹配到 gold 整句：{:?}",
         score.per_gold
     );
     // 数据集完整性（条目数 / 计差错数变了，说明金集被改动，评测口径要重新对齐）
@@ -511,9 +513,10 @@ async fn gold_upper_bound_with_perfect_extraction() {
     assert_eq!(score.gold_counted, 7, "金集计差错数");
 
     // 实测结论（离线：本地规则 + 决策模型，无 LLM）：金集 15 条里
-    // 文本口径命中 2 条（#9「下午15点」= `ZH_TIME_MIX`、#14 微信小程序冒号 = `ZH_COLON_AFTER_NAME`），
-    // 位置口径再加 1 条（#13「报道/报到」= `ZH_CONFUSABLE` 的词级片段落在专家整句引用内）
-    // → 计错项 3/7。剩下的集中在搭配 / 语义判断（#3 并列缺分隔、#8/#11/#12 主谓宾残缺、
+    // 文本口径命中 2 条（#9「下午15点」= `ZH_TIME_MIX`、#14 微信小程序冒号 = `ZH_COLON_AFTER_NAME`，
+    // 两条规则均出厂 enabled=true）。旧口径里位置口径靠 `ZH_CONFUSABLE` 补的 #13
+    // 「报道/报到」已随该规则出厂停用而不再命中（`EVOLUTION.md` Phase 1）。
+    // 剩下的集中在搭配 / 语义判断（#3 并列缺分隔、#8/#11/#12 主谓宾残缺、
     // #15 表述不清），那些是 LLM 层与反思中心的靶子，不是再加几条词典能解决的。
     // 因此多模态载体的召回瓶颈**不在抽取，而在中文判定覆盖 + 语义层**：
     // 真实召回要靠 LLM 层（level 2/3）+ 视觉抽取，见本文件末尾的真实评测。
@@ -623,13 +626,18 @@ async fn gold_upper_bound_with_perfect_extraction() {
         .iter()
         .filter(|r| r.gold_match.as_deref() == Some("positional"))
         .count();
-    assert!(
-        pos_rows >= 1,
-        "至少 #13「报道/报到」应通过位置口径回填到导出表"
+    // 位置口径回填的行数 = 位置口径命中数对文本口径的增量（第二次 attach 只补
+    // 第一次的漏并留痕口径）。出厂停用 `ZH_CONFUSABLE` 后，离线配置里旧靶子
+    // #13「报道/报到」不再有词级 ann，增量可为 0；回填机制本身由 media_core
+    // gold.rs 的 Positional 单测与真实载体重演（--ignored）覆盖。
+    assert_eq!(
+        pos_rows,
+        span_replay.matched - replay_score.matched,
+        "导出表中被位置口径回填的行数必须等于两套口径的命中增量"
     );
     // 四维复现率：命中只是第一层，位置 / 计错数 / 建议三个维度必须分开看。
     // 用**位置口径**对齐命中（与导出表同一套坐标）：位置口径命中的行也进四维，
-    // 于是 #13「报道」计入「计错数一致」，但「原文对齐」仍不达标（词级片段 ≠ 专家整句）——
+    // 于是补进来的词级片段计入「计错数一致」，但「原文对齐」仍不达标（词级片段 ≠ 专家整句）——
     // 计入同一处判定，不等于假装原文一致
     let repro = reproduction_spanned(&rows, &gold.items, &gold_spans, &row_spans, 0.5);
     assert_eq!(

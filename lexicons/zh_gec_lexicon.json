@@ -26,8 +26,8 @@
       "id": "ZH_CONFUSABLE",
       "category": "spelling",
       "priority": 10,
-      "enabled": true,
-      "description": "同音/形近错别字与繁简混用；条目可附 condition（邻接 POS/文本白名单、周边窗口正则），条件满足才触发（出厂启用：误报由 condition / 排除词 / 人工勾选收敛）",
+      "enabled": false,
+      "description": "同音/形近错别字与繁简混用；条目可附 condition（邻接 POS/文本白名单、周边窗口正则），条件满足才触发",
       "examples": [
         {
           "wrong": "他時常迟到",
@@ -47,8 +47,8 @@
       "id": "ZH_DE_DA_DE",
       "category": "grammar",
       "priority": 10,
-      "enabled": true,
-      "description": "「的/地/得」误用（需 POS；无 NLP 服务时该规则不产出）",
+      "enabled": false,
+      "description": "「的/地/得」误用",
       "examples": [
         {
           "wrong": "他的高兴笑",
@@ -60,7 +60,7 @@
       "id": "ZH_PUNCTUATION",
       "category": "typography",
       "priority": 5,
-      "enabled": true,
+      "enabled": false,
       "description": "中英文标点混用",
       "examples": [
         {
@@ -77,8 +77,8 @@
       "id": "ZH_MISSING_SUBJECT",
       "category": "grammar",
       "priority": 8,
-      "enabled": true,
-      "description": "句子成分残缺（缺主语；需 POS，句首动词触发；误报进 excludes 名单）",
+      "enabled": false,
+      "description": "句子成分残缺（缺主语）",
       "examples": [
         {
           "wrong": "学习。",
@@ -234,6 +234,61 @@
         {
           "wrong": "第三章\n第五章",
           "right": "第三章\n第四章"
+        }
+      ]
+    },
+    {
+      "id": "LLM_PUNCTUATION",
+      "category": "other",
+      "priority": 10,
+      "enabled": true,
+      "description": "",
+      "examples": [
+        {
+          "wrong": "学位论文23万册;2025年",
+          "right": "学位论文23万册；2025年"
+        },
+        {
+          "wrong": "收入 《中国古籍善本书目》",
+          "right": "收入《中国古籍善本书目》"
+        },
+        {
+          "wrong": "华中地区中心和湖北省文献信息中心、",
+          "right": "华中地区中心、湖北省文献信息中心、"
+        },
+        {
+          "wrong": "系统(CALIS)",
+          "right": "系统（CALIS）"
+        }
+      ]
+    },
+    {
+      "id": "LLM_MISSING_COMPONENT",
+      "category": "other",
+      "priority": 10,
+      "enabled": true,
+      "description": "",
+      "examples": [
+        {
+          "wrong": "可读者提供",
+          "right": "可为读者提供"
+        },
+        {
+          "wrong": "总馆新馆扩建工程完成启用",
+          "right": "总馆新馆扩建工程完成并启用"
+        }
+      ]
+    },
+    {
+      "id": "LLM_SPELLING",
+      "category": "other",
+      "priority": 10,
+      "enabled": true,
+      "description": "",
+      "examples": [
+        {
+          "wrong": "大报复",
+          "right": "大抱负"
         }
       ]
     }
