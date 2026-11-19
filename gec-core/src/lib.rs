@@ -28,6 +28,7 @@ pub mod reflection;
 pub mod reflection_center;
 pub mod settings_test;
 pub mod statistical;
+pub mod terminology;
 pub mod timings;
 pub mod triage;
 pub mod training_center;

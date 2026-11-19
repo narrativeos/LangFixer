@@ -1,0 +1,5 @@
+{
+  "_doc": "术语库（领域术语保护 + 强制更正词）。protected：受保护术语，错误与其出现位置重叠即过滤（ASCII 术语大小写不敏感）；forced：出现即产出强制更正（wrong→right）。同格式适用 terminology_en.json / terminology_ja.json；缺失即空库。",
+  "protected": [],
+  "forced": []
+}

@@ -10,7 +10,7 @@
 | `GEC_TABLES_DIR` | `decision-tables` | 决策表目录 |
 | `GEC_KNOWLEDGE_DIR` | `knowledge-base` | 知识库目录（`sources.json` + `points/{lang}.json`）；目录缺失时归因结果降级为纯表级（不含知识源引用）；发布 / 热更新成功后原子写回此目录 |
 | `GEC_KNOWLEDGE_ENABLED` | `1` | 知识层总开关（`0` 关闭知识向量召回 + 知识库富化 + 数据驱动归点；测评消融臂 `knowledge: false` 即切此开关，等价设置项 `knowledge_enabled`） |
-| `GEC_LEXICONS_DIR` | `lexicons` | 规则词表目录（`{zh,en,ja}_gec_lexicon.json`） |
+| `GEC_LEXICONS_DIR` | `lexicons` | 规则词表目录（`{zh,en,ja}_gec_lexicon.json` + 领域术语库 `terminology_{lang}.json`：`protected` 受保护术语（错误 span 与其出现位置重叠即丢弃）+ `forced` 强制更正（`{wrong,right,note}`，出现即注入）；缺失/损坏 = 空库 no-op） |
 | `GEC_SETTINGS_FILE` | `langfixer-settings.json` | 运行时设置文件（`GET/PUT /gec/settings` 读写）；**优先级高于下方环境变量**，存在且可解析时整体覆盖 |
 | `HANLP_ENDPOINT` | `http://127.0.0.1:8000` | NLP 服务（NarrativeOS narrative-operator-nlp，中文+英文共用） |
 | `SUDACHI_ENDPOINT` | `http://localhost:4802` | 日文 Sudachi 分词服务 |

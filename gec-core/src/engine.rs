@@ -600,6 +600,9 @@ pub struct CascadeDetector {
     /// 开闸，回退无条件 LLM（[`crate::l3::L3FeatureConfig`] enabled 字段的文档口径）；
     /// 从未配置 L3 的部署保持旧语义（决策模型弃权门控）
     pub l3_disabled: bool,
+    /// 术语库（可选；`lexicons/terminology_{lang}.json` 非空时挂载：
+    /// 受保护术语上的错误过滤 + 强制更正词注入，作用于全部来源层合并后）
+    pub terminology: Option<Arc<crate::terminology::Terminology>>,
     /// 对外报告的引擎类型（决策层挂载时报告 `decision`）
     kind_override: Option<GecEngineKind>,
 }
@@ -617,6 +620,7 @@ impl CascadeDetector {
             knowledge_recall: None,
             l3: None,
             l3_disabled: false,
+            terminology: None,
             kind_override: None,
         }
     }
@@ -930,6 +934,11 @@ impl GecEngine for CascadeDetector {
         {
             layers.push(LayerReport::new(sources::LLM, "skipped", 0));
         }
+        // ④ 术语库（最后一步，作用于全部来源层合并后的错误）：
+        // 受保护术语上的错误过滤 + 强制更正词注入
+        if let Some(term) = &self.terminology {
+            term.apply(&self.lang, text, &mut errors);
+        }
         let timings = DetectTimings {
             rule_ms,
             nlp_ms: nlp.map(|c| c.ms),
@@ -991,6 +1000,15 @@ pub fn compose_detector<D: GECDetector + 'static>(
     knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
     l3: Option<L3FeatureConfig>,
 ) -> Arc<dyn GecEngine> {
+    // 术语库（`lexicons/terminology_{lang}.json`，空/缺失 = 不挂载，零开销）：
+    // 级联形态持有字段（保留 decision_engine 转发）；其余形态经守卫包装
+    let terminology = {
+        let t = Arc::new(crate::terminology::Terminology::load(
+            crate::terminology::Terminology::dir_from_env(),
+            lang,
+        ));
+        if t.is_empty() { None } else { Some(t) }
+    };
     // L3 特征模型引擎（三期：level 3 先跑特征模型，LLM 收缩到纯长尾）
     let l3_engine: Option<Arc<L3FeatureEngine>> = l3
         .as_ref()
@@ -1007,7 +1025,10 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 model = primary.name(),
                 "统计 GEC 引擎已启用（规则引擎兜底）"
             );
-            Arc::new(CompositeDetector::new(lang, primary, Some(fallback)))
+            wrap_terminology(
+                Arc::new(CompositeDetector::new(lang, primary, Some(fallback))),
+                terminology.clone(),
+            )
         }
         GecEngineKind::Decision => {
             let cfg = decision.unwrap_or_else(DecisionConfig::from_env);
@@ -1021,6 +1042,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 .with_kind_override(GecEngineKind::Decision);
             det.knowledge_recall = knowledge_recall;
             det.l3_disabled = l3_disabled;
+            det.terminology = terminology.clone();
             if let Some(e) = l3_engine {
                 det.l3 = Some(e);
                 tracing::info!(
@@ -1032,7 +1054,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
         }
         GecEngineKind::Llm => {
             tracing::debug!(lang, "LLM 引擎为预留类型，当前使用规则引擎");
-            rule
+            wrap_terminology(rule, terminology)
         }
         GecEngineKind::Rule => match decision {
             Some(cfg) if cfg.enabled() => {
@@ -1046,6 +1068,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     .with_kind_override(GecEngineKind::Decision);
                 det.knowledge_recall = knowledge_recall;
                 det.l3_disabled = l3_disabled;
+                det.terminology = terminology.clone();
                 if let Some(e) = l3_engine {
                     det.l3 = Some(e);
                     tracing::info!(
@@ -1066,6 +1089,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     let mut det = CascadeDetector::new(lang, rule, None);
                     det.knowledge_recall = Some(kr);
                     det.l3_disabled = l3_disabled;
+                    det.terminology = terminology.clone();
                     if let Some(e) = l3_engine {
                         det.l3 = Some(e);
                         tracing::info!(
@@ -1075,9 +1099,21 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     }
                     Arc::new(det)
                 }
-                None => rule,
+                None => wrap_terminology(rule, terminology),
             },
         },
+    }
+}
+
+/// 术语库非空时把引擎包一层守卫（空则原样返回，零开销）；
+/// 级联形态不经此函数（持有字段以保留 `decision_engine()` 转发）
+fn wrap_terminology(
+    engine: Arc<dyn GecEngine>,
+    terminology: Option<Arc<crate::terminology::Terminology>>,
+) -> Arc<dyn GecEngine> {
+    match terminology {
+        Some(t) => Arc::new(crate::terminology::TerminologyEngine::new(engine, t)),
+        None => engine,
     }
 }
 
@@ -2778,5 +2814,92 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, DetectorError::LlmNotConfigured(_)), "{e:?}");
+    }
+
+    // ── 成熟架构补强：术语库（领域术语保护） ──
+
+    struct FakeZhSpan;
+
+    #[async_trait]
+    impl GECDetector for FakeZhSpan {
+        fn language(&self) -> &str {
+            "zh"
+        }
+        async fn detect(&self, _text: &str) -> Result<Vec<Error>, DetectorError> {
+            // 固定产出「测试」[0,6) 上的错误（字节偏移）
+            Ok(vec![Error::new(
+                "zh",
+                "spelling",
+                0.9,
+                [0, 6],
+                "测试",
+                None,
+                "fake",
+            )])
+        }
+    }
+
+    fn term_zh(protected: &[&str], forced_json: &str) -> crate::terminology::Terminology {
+        let dir = std::env::temp_dir().join(format!(
+            "lf_term_engine_{}_{:04x}",
+            std::process::id(),
+            rand_like_seed()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prot = protected
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            dir.join("terminology_zh.json"),
+            format!(r#"{{"protected":[{prot}],"forced":{forced_json}}}"#),
+        )
+        .unwrap();
+        let t = crate::terminology::Terminology::load(&dir, "zh");
+        std::fs::remove_dir_all(&dir).ok();
+        t
+    }
+
+    fn rand_like_seed() -> u32 {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn cascade_terminology_protects_and_forces() {
+        // 级联形态：受保护术语上的错误被过滤，强制词注入
+        let rule: Arc<dyn GecEngine> = Arc::new(FakeZhSpan);
+        let mut det = CascadeDetector::new("zh", rule, None);
+        det.terminology = Some(Arc::new(term_zh(
+            &["测试"],
+            r#"[{"wrong":"词","right":"词儿"}]"#,
+        )));
+        let outcome = det.detect_level("测试词", 1, false, None).await.unwrap();
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "受保护错误被过滤 + 强制词注入：{:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.errors[0].original, "词");
+        assert_eq!(outcome.errors[0].correction.as_deref(), Some("词儿"));
+    }
+
+    #[tokio::test]
+    async fn terminology_engine_wrapper_applies_on_default_level() {
+        // 非级联形态（纯规则默认路径）经守卫包装：detect_level 同样生效
+        let inner: Arc<dyn GecEngine> = Arc::new(FakeZhSpan);
+        let wrapped = wrap_terminology(inner, Some(Arc::new(term_zh(&["测试"], "[]"))));
+        let outcome = wrapped
+            .detect_level("测试词", 1, false, None)
+            .await
+            .unwrap();
+        assert!(
+            outcome.errors.is_empty(),
+            "受保护术语上的错误应被过滤：{:?}",
+            outcome.errors
+        );
     }
 }
