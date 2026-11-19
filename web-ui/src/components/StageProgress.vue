@@ -9,7 +9,7 @@
  * - running 阶段显示已用时（100ms ticker 重绘），落定阶段显示该阶段耗时；
  * - 进度条填充 = 已落定阶段数 / 计划阶段数（End / 完成 = 100%）；
  * - 缓存 / 历史命中无阶段事件 → 「瞬时返回」；未收到 End 即中断 → 「已中断」；
- * - 完成（或中断）后 8s 自动淡出（store.dismissProgress），新检测立即重建。
+ * - 完成（或中断）后常驻展示各阶段耗时，直到下一次检测开始重建。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useGecStore } from '../stores/gec'
@@ -37,22 +37,8 @@ function setTicker(on: boolean) {
 }
 watch(running, setTicker, { immediate: true })
 
-/** 收尾后 8s 淡出；期间开始新检测（finished 翻回 false）则撤销淡出定时器 */
-let fade: number | undefined
-watch(
-  () => p.value.finished,
-  (f) => {
-    if (fade !== undefined) {
-      clearTimeout(fade)
-      fade = undefined
-    }
-    if (f) fade = window.setTimeout(() => store.dismissProgress(), 8000)
-  },
-)
-
 onBeforeUnmount(() => {
   setTicker(false)
-  if (fade !== undefined) clearTimeout(fade)
 })
 
 const settledCount = computed(

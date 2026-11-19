@@ -316,7 +316,7 @@ export const useGecStore = defineStore('gec', {
         if (p.stages.length === 0 && timings && !fromHistory) p.stages = stageViewsFromTimings(timings)
       }
     },
-    /** 进度摘要展示完毕（组件 8s 自动淡出 / 新检测会直接重建条目） */
+    /** 主动收起进度摘要（组件不再自动淡出；保留给后续手动入口，新检测也会直接重建条目） */
     dismissProgress() {
       this.progress.active = false
       this.progress.finished = false
