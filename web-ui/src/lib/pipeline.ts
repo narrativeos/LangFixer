@@ -169,6 +169,8 @@ export interface StageView {
   label: string
   status: 'pending' | 'running' | 'done' | 'unavailable' | 'skipped' | 'canceled'
   ms: number | null
+  /** 段级预算块进度（chunk_begin/end 事件聚合；无段级事件的层 = null） */
+  chunks: { done: number; total: number } | null
 }
 
 export interface StageProgressView {
@@ -197,6 +199,8 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
   let finished = false
   let totalMs: number | null = null
   const settled = new Map<string, { status: StageView['status']; ms: number | null }>()
+  // 段级事件聚合：同层块并发交错，begin 定 total，end 计 done
+  const chunked = new Map<string, { done: number; total: number }>()
   for (const ev of events) {
     if (ev.kind === 'start') plan = ev.stages
     else if (ev.kind === 'stage') {
@@ -204,6 +208,14 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
         status: ev.status === 'skipped' ? 'skipped' : ev.status === 'unavailable' ? 'unavailable' : 'done',
         ms: ev.ms,
       })
+    } else if (ev.kind === 'chunk_begin') {
+      const c = chunked.get(ev.stage) ?? { done: 0, total: 0 }
+      c.total = ev.total
+      chunked.set(ev.stage, c)
+    } else if (ev.kind === 'chunk_end') {
+      const c = chunked.get(ev.stage) ?? { done: 0, total: ev.total }
+      c.done += 1
+      chunked.set(ev.stage, c)
     } else {
       finished = true
       totalMs = ev.total_ms
@@ -225,7 +237,8 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
       ms = done.ms
     } else if (PARALLEL_STAGES.has(key)) status = 'running'
     else status = 'pending'
-    return { key, no: meta.no, label: meta.label, status, ms }
+    const chunks = chunked.get(key) ?? null
+    return { key, no: meta.no, label: meta.label, status, ms, chunks }
   })
   // 串行推进位：并行组全部落定 → 召回转 running；召回落定（或不在计划）→ LLM 转 running
   const seq = stages.filter((s) => !PARALLEL_STAGES.has(s.key))
@@ -249,7 +262,7 @@ export function stageViewsFromTimings(t: DetectTimings): StageView[] {
   const mk = (key: string, ms: number | null | undefined): StageView | null => {
     if (ms == null) return null
     const meta = STAGE_META[key]
-    return { key, no: meta.no, label: meta.label, status: 'done', ms }
+    return { key, no: meta.no, label: meta.label, status: 'done', ms, chunks: null }
   }
   const out: StageView[] = []
   const rule = mk('rule', t.rule_ms)

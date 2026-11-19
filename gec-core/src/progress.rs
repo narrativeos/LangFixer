@@ -24,6 +24,24 @@ pub enum StageEvent {
         status: &'static str,
         ms: Option<u64>,
     },
+    /// 段级事件（预算层执行循环）：有预算块切块的层（③ LLM 整文档分块 /
+    /// stat 滑窗）每块复查**开始**推一条。块间**并发**执行，同层事件互相
+    /// 交错，按 `chunk` 序号（1 起）配对聚合，不依赖先后顺序。
+    /// 短文本单块路径不推段级事件——整层一条 `Stage` 已足够表达。
+    ChunkBegin {
+        stage: &'static str,
+        chunk: u32,
+        total: u32,
+    },
+    /// 段级事件：该块复查**结束**。`ok=false` = 该块本轮未复查
+    /// （网络/服务失败或解析失败），与 `quality` 的 failed/parse_failed 账本同义。
+    ChunkEnd {
+        stage: &'static str,
+        chunk: u32,
+        total: u32,
+        ok: bool,
+        ms: u64,
+    },
     /// 管线结束（全程 wall time，与 `DetectTimings::total_ms` 一致）
     End { total_ms: u64 },
 }
@@ -52,12 +70,24 @@ mod tests {
                 status: "skipped",
                 ms: None,
             },
+            StageEvent::ChunkBegin {
+                stage: "llm",
+                chunk: 1,
+                total: 2,
+            },
+            StageEvent::ChunkEnd {
+                stage: "llm",
+                chunk: 1,
+                total: 2,
+                ok: true,
+                ms: 30,
+            },
             StageEvent::End { total_ms: 42 },
         ];
         let json = serde_json::to_string(&evs).unwrap();
         assert_eq!(
             json,
-            r#"[{"kind":"start","stages":["rule","knowledge","llm"]},{"kind":"stage","stage":"rule","status":"ran","ms":12},{"kind":"stage","stage":"llm","status":"skipped","ms":null},{"kind":"end","total_ms":42}]"#
+            r#"[{"kind":"start","stages":["rule","knowledge","llm"]},{"kind":"stage","stage":"rule","status":"ran","ms":12},{"kind":"stage","stage":"llm","status":"skipped","ms":null},{"kind":"chunk_begin","stage":"llm","chunk":1,"total":2},{"kind":"chunk_end","stage":"llm","chunk":1,"total":2,"ok":true,"ms":30},{"kind":"end","total_ms":42}]"#
         );
     }
 }

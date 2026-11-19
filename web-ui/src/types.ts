@@ -65,6 +65,15 @@ export interface DetectTimings {
 export type StageEvent =
   | { kind: 'start'; stages: string[] }
   | { kind: 'stage'; stage: string; status: 'ran' | 'partial' | 'unavailable' | 'skipped'; ms: number | null }
+  | { kind: 'chunk_begin'; stage: string; chunk: number; total: number }
+  | {
+      kind: 'chunk_end'
+      stage: string
+      chunk: number
+      total: number
+      ok: boolean
+      ms: number
+    }
   | { kind: 'end'; total_ms: number }
 
 /** GET /gec/detect/progress 响应：事件快照；found=false = 后端尚未登记 / 条目已回收 */

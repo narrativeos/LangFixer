@@ -466,6 +466,13 @@ level 1 无 LLM，即 web-ui 生产默认配置）：
   确定性命中）；导出表位置口径回填断言由「≥1 行（#13 报道/报到 =
   `ZH_CONFUSABLE`）」改为口径增量恒等式（位置命中数 − 文本命中数），回填
   机制本身由 media_core gold.rs 的 Positional 单测与真实载体重演（--ignored）覆盖
+- **1.1b 段级进度事件（2026-11-19，P4 首子项）**：`StageEvent` 新增
+  `ChunkBegin/ChunkEnd`（wire kind `chunk_begin`/`chunk_end`）；两条预算块路径推出——
+  ③ LLM 整文档分块（`detect_document` 经 `llm_layer_detect` 透传 sink）与 stat 滑窗
+  （新 trait 默认方法 `detect_traced`，级联 rule 分支注入，stat 臂覆写逐窗推
+  stage=rule）；短文本单块不推，块间并发交错按 chunk 序号配对聚合；前端
+  StageView 加 `chunks` 聚合，进行中节点副行显示「段 已检/总」；桌面 detect:stage
+  透传天然兼容（枚举直序列化）
 - **1.3 重训无效标记**：`reflection_center` 新增 `L3RetrainStateIn`
   （最近 completed `l3_retrain` 作业的 gate_f1/report_id + 当前报告复测 F1）；
   复测 F1 未超过重训前值 +0.05 → 不再提议 `l3_sample`，改出 findings

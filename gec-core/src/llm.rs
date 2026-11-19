@@ -281,11 +281,15 @@ impl LlmGecEngine {
     ///   message 已带「未能定位」标注）；
     /// - 单块失败**不中断整体**：计入 `failed_chunks` / `parse_failed_chunks`；
     ///   全部块失败才返回 [`Err`]。
+    /// `progress` 为可选段级事件接收器：多块路径下每块复查前后各推
+    /// 一条 [`crate::progress::StageEvent::ChunkBegin`] / ChunkEnd（短文本单块路径不推，
+    /// 整层 Stage 事件已足够）；未注入时零开销。
     pub async fn detect_document(
         &self,
         text: &str,
         chunk_chars: usize,
         concurrency: usize,
+        progress: Option<crate::progress::StageSink>,
     ) -> Result<DocLlmOutcome, DetectorError> {
         let chunks = crate::docchunk::split_document(text, chunk_chars);
         if chunks.len() <= 1 {
@@ -300,13 +304,38 @@ impl LlmGecEngine {
         }
         use futures_util::StreamExt;
         let n_chunks = chunks.len();
+        let total = n_chunks as u32;
         // 每块所有权移入 future（async_trait 装箱要求跨生命周期 Send，
-        // 借用切块数组会触发 HRTB 推断失败）
-        let mut stream = futures_util::stream::iter(chunks.into_iter().map(|c| async move {
-            let r = self.detect_anchored(&c.send).await;
-            (c, r)
-        }))
-        .buffer_unordered(concurrency.max(1));
+        // 借用切块数组会触发 HRTB 推断失败）；段级事件随块推（并发交错，
+        // 消费侧按 chunk 序号配对聚合）
+        let mut stream =
+            futures_util::stream::iter(chunks.into_iter().enumerate().map(|(i, c)| {
+                let sink = progress.clone();
+                let chunk_no = i as u32 + 1;
+                async move {
+                    if let Some(s) = &sink {
+                        s(crate::progress::StageEvent::ChunkBegin {
+                            stage: sources::LLM,
+                            chunk: chunk_no,
+                            total,
+                        });
+                    }
+                    let t = std::time::Instant::now();
+                    let r = self.detect_anchored(&c.send).await;
+                    if let Some(s) = &sink {
+                        let ok = matches!(&r, Ok((_, pf)) if !*pf);
+                        s(crate::progress::StageEvent::ChunkEnd {
+                            stage: sources::LLM,
+                            chunk: chunk_no,
+                            total,
+                            ok,
+                            ms: t.elapsed().as_millis() as u64,
+                        });
+                    }
+                    (c, r)
+                }
+            }))
+            .buffer_unordered(concurrency.max(1));
         let mut out: Vec<Error> = Vec::new();
         let mut failed = 0usize;
         let mut parse_failed = 0usize;
@@ -1927,6 +1956,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detect_document_emits_chunk_events() {
+        // 段级进度事件：多块路径每块恰好一对 ChunkBegin/ChunkEnd（并发交错，
+        // 按序号配对），total 全程一致；单块短文本不推段级事件。
+        let p1 = "第一段是干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p2 = "第二段同样是完全干净的叙述内容，也没有错误。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |_| "[]".to_string();
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        let o = engine
+            .detect_document(&text, 50, 4, Some(sink))
+            .await
+            .unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        let evs = events.lock().unwrap();
+        let total = o.chunks as u32;
+        let mut begins: Vec<u32> = Vec::new();
+        let mut ends: Vec<(u32, bool)> = Vec::new();
+        for e in evs.iter() {
+            match e {
+                crate::progress::StageEvent::ChunkBegin {
+                    stage,
+                    chunk,
+                    total: t,
+                } => {
+                    assert_eq!(*stage, sources::LLM);
+                    assert_eq!(*t, total, "total 字段必须全程一致");
+                    begins.push(*chunk);
+                }
+                crate::progress::StageEvent::ChunkEnd {
+                    stage,
+                    chunk,
+                    total: t,
+                    ok,
+                    ..
+                } => {
+                    assert_eq!(*stage, sources::LLM);
+                    assert_eq!(*t, total);
+                    ends.push((*chunk, *ok));
+                }
+                _ => {}
+            }
+        }
+        begins.sort_unstable();
+        assert_eq!(
+            begins,
+            (1..=total).collect::<Vec<_>>(),
+            "每块恰好一次 begin"
+        );
+        assert_eq!(ends.len(), o.chunks, "每块恰好一次 end");
+        assert!(ends.iter().all(|(_, ok)| *ok), "全部块成功");
+    }
+
+    #[tokio::test]
     async fn detect_document_remaps_spans_and_ownership() {
         // 所有权契约：错误只由归属块上报——上下文前缀区的重复上报被丢弃。
         // 两段文本，错误「甲错」在第一段；mock 对**任何**含第一段的请求都报它，
@@ -1943,7 +2030,7 @@ mod tests {
         };
         let endpoint = mock_dynamic_llm_server(respond).await;
         let engine = LlmGecEngine::new("zh", config(&endpoint));
-        let o = engine.detect_document(&text, 50, 4).await.unwrap();
+        let o = engine.detect_document(&text, 50, 4, None).await.unwrap();
         assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
         assert_eq!(o.failed_chunks, 0);
         assert_eq!(o.parse_failed_chunks, 0);
@@ -1978,7 +2065,7 @@ mod tests {
         };
         let endpoint = mock_dynamic_llm_server(respond).await;
         let engine = LlmGecEngine::new("zh", config(&endpoint));
-        let o = engine.detect_document(&text, 50, 4).await.unwrap();
+        let o = engine.detect_document(&text, 50, 4, None).await.unwrap();
         assert!(o.chunks >= 2);
         assert!(o.parse_failed_chunks >= 1, "解析失败块必须记账");
         assert!(o.coverage() < 1.0);

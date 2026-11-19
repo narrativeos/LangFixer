@@ -1,7 +1,7 @@
 # 检测处理流程设计（Detect Pipeline v2）
 
 > 状态：**P1–P3 已实现**（2026-11-19，本文同时是实现契约，§2 流程图与代码同步）；
-> P4（桌面并轨 / 入口收敛 / 段级进度事件）未启动，桌面端 `commands.rs` 仍是第二实现路径。
+> P4 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，见 §7）；桌面并轨（桌面端 `commands.rs` 仍是第二实现路径）与入口收敛未启动。
 > 动因：2026-11 缓存/切块排查（旧结果命中、忽略缓存同结果、CSC 臂静默截断、归因兜底桶误导排查）暴露的设计成因见 `docs/UX_REVIEW.md` 后续与 EVOLUTION 记录；本文的设计与 §8 分期进度即现状。
 
 ## 1. 设计原则（不可协商项）
@@ -123,7 +123,7 @@ flowchart TD
 
 ## 7. 可观测性与告警
 
-- 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`；
+- 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`——**已实现**（`StageEvent::ChunkBegin/ChunkEnd`，wire kind `chunk_begin`/`chunk_end`；③ LLM 整文档分块与 stat 滑窗两条预算路径；短文本单块不推）；
 - 每请求一行结构化 summary（含版本向量 + quality + chunks + dropped），按天 × 版本聚合；
 - **两个必设告警**：
   1. `unowned_chars ≠ 0` 或发生任何静默截断 → 完整性回归（本类事故的探测器）；
@@ -138,6 +138,6 @@ flowchart TD
 1. **P1（小）** ✅：Outcome v2 的 `quality/chunks/sentences/version` 字段（向后兼容可选字段）+ 前端降级徽标 + 归因兜底桶改样式；金集评测（media_gold_eval）在 CI。
 2. **P2（中）** ✅：切块统一到所有权不变式原语（docchunk）；stat/CSC 滑窗修复 + 字节 span 重映射钳制；引擎合并测试按钳制语义重写。
 3. **P3（中）** ✅：版本向量含 `splitter`（缓存键 `:s…` 段）+ 缓存资格规则（仅 full 可写 LRU/历史，detect/analyze/桌面三门同构）；切块预算进设置面板——**未做**，遗余。
-4. **P4（大）** 未启动：桌面并轨（`commands.rs` 仍是第二实现，本轮靠同构门控补丁维持语义）、入口收敛、段级进度事件。
+4. **P4（大）** 部分落地：**段级进度事件** ✅（chunk_begin/chunk_end，LLM 分块 + stat 滑窗两条预算路径）；桌面并轨（`commands.rs` 仍是第二实现，本轮靠同构门控补丁维持语义）、入口收敛未启动。
 
 **验收**（每期）：现有 api-server/gec-core 全套 + 新增契约测试（所有权铺满全文、预算不超限、span 重映射往返、版本漂移）+ 黄金集 F1 不退化 + 两告警零命中。

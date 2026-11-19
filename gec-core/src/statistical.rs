@@ -149,7 +149,14 @@ impl GecEngine for StatisticalGecEngine {
         self.last_run.lock().unwrap().clone()
     }
 
-    async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
+    /// 滑窗逐块带段级事件版本：每窗复查前后各推一条 ChunkBegin/End
+    /// （stage 用 rule——stat 臂挂载在级联的 rule 位，进度板同一节点 ①）；
+    /// 单窗短文本不推（整层 Stage 已足够）。
+    async fn detect_traced(
+        &self,
+        text: &str,
+        sink: Option<crate::progress::StageSink>,
+    ) -> Result<Vec<Error>, DetectorError> {
         let url = format!("{}/gec", self.config.endpoint.trim_end_matches('/'));
         let windows = self.windows(text);
         // 所有权铺满校验（截断探测器）：窗切块必须无空洞
@@ -161,11 +168,30 @@ impl GecEngine for StatisticalGecEngine {
             tracing::error!(unowned, "stat 臂窗切块存在所有权空洞（切块器回归）");
         }
         let total = windows.len();
+        let trace = sink.is_some() && total > 1;
         let mut out: Vec<Error> = Vec::new();
         let mut failed = 0usize;
         let mut first_err: Option<DetectorError> = None;
-        for w in &windows {
-            match self.post_window(&url, &w.send).await {
+        for (i, w) in windows.iter().enumerate() {
+            if trace {
+                sink.as_ref().unwrap()(crate::progress::StageEvent::ChunkBegin {
+                    stage: shared_model::sources::RULE,
+                    chunk: i as u32 + 1,
+                    total: total as u32,
+                });
+            }
+            let t = std::time::Instant::now();
+            let r = self.post_window(&url, &w.send).await;
+            if trace {
+                sink.as_ref().unwrap()(crate::progress::StageEvent::ChunkEnd {
+                    stage: shared_model::sources::RULE,
+                    chunk: i as u32 + 1,
+                    total: total as u32,
+                    ok: r.is_ok(),
+                    ms: t.elapsed().as_millis() as u64,
+                });
+            }
+            match r {
                 Ok(errors) => {
                     for e in errors {
                         out.push(self.remap_window_error(e, &w.send, w.owner[0]));
@@ -205,6 +231,10 @@ impl GecEngine for StatisticalGecEngine {
         });
         out.sort_by_key(|e| e.span[0]);
         Ok(out)
+    }
+
+    async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
+        self.detect_traced(text, None).await
     }
 }
 
@@ -389,6 +419,73 @@ mod tests {
         let stats = engine.last_chunk_run().unwrap();
         assert_eq!(stats.mode, "single");
         assert_eq!(stats.coverage(), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn statistical_multiwindow_emits_chunk_events() {
+        // 段级进度事件：多窗逐块 begin/end 各恰好一次，序号 1..=total 齐全，
+        // stage = rule（stat 臂挂级联 rule 位，进度板 ① 节点）；单窗不推。
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(None, counter).await;
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let text = window_test_text(9);
+        let events: Arc<Mutex<Vec<crate::progress::StageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        engine.detect_traced(&text, Some(sink)).await.unwrap();
+        let total = engine.windows(&text).len() as u32;
+        assert!(total > 1, "构造应切多窗: {total}");
+        let evs = events.lock().unwrap();
+        let mut begins: Vec<u32> = Vec::new();
+        let mut ends: Vec<(u32, bool)> = Vec::new();
+        for e in evs.iter() {
+            match e {
+                crate::progress::StageEvent::ChunkBegin {
+                    stage,
+                    chunk,
+                    total: t,
+                } => {
+                    assert_eq!(*stage, shared_model::sources::RULE);
+                    assert_eq!(*t, total);
+                    begins.push(*chunk);
+                }
+                crate::progress::StageEvent::ChunkEnd {
+                    stage,
+                    chunk,
+                    total: t,
+                    ok,
+                    ..
+                } => {
+                    assert_eq!(*stage, shared_model::sources::RULE);
+                    assert_eq!(*t, total);
+                    ends.push((*chunk, *ok));
+                }
+                _ => {}
+            }
+        }
+        begins.sort_unstable();
+        assert_eq!(
+            begins,
+            (1..=total).collect::<Vec<_>>(),
+            "每窗恰好一次 begin"
+        );
+        assert_eq!(ends.len(), total as usize, "每窗恰好一次 end");
+        assert!(ends.iter().all(|(_, ok)| *ok), "全窗成功");
+    }
+
+    #[tokio::test]
+    async fn statistical_single_window_no_chunk_events() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(None, counter).await;
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let events: Arc<Mutex<Vec<crate::progress::StageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        engine
+            .detect_traced("他昨天报复很大。", Some(sink))
+            .await
+            .unwrap();
+        assert!(events.lock().unwrap().is_empty(), "单窗短文本不推段级事件");
     }
 
     /// 本地 mock 统计 GEC 服务

@@ -111,6 +111,18 @@ pub trait GecEngine: Send + Sync {
     fn decision_engine(&self) -> Option<&crate::decision::DecisionGecEngine> {
         None
     }
+    /// 带可选段级事件接收器的底层检测：默认实现委托 [`detect`](Self::detect)
+    /// （无预算块循环的引擎零事件）；执行循环内有切块的引擎（stat 滑窗）覆写
+    /// 本方法逐块推 [`crate::progress::StageEvent::ChunkBegin`] /
+    /// [`crate::progress::StageEvent::ChunkEnd`]。级联的 rule 分支经本方法注入 sink，
+    /// 使 stat 臂的窗进度同样上屏。
+    async fn detect_traced(
+        &self,
+        text: &str,
+        _sink: Option<crate::progress::StageSink>,
+    ) -> Result<Vec<Error>, DetectorError> {
+        self.detect(text).await
+    }
     /// 三级响应检测：
     /// - `level = 1`：规则（+ 决策模型，若引擎组合中挂载）；
     /// - `level = 2`：1 级 + 决策模型**明确弃权**时对全文跑 LLM 兜底；
@@ -171,7 +183,7 @@ pub trait GecEngine: Send + Sync {
             // 保留规则层结果，层记 `unavailable`（与定向复查、L3 失败同一先例），
             // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
             // 那是要人改设置，不是运行时故障。
-            match llm_layer_detect(llm, text).await {
+            match llm_layer_detect(llm, text, None).await {
                 Ok((extra, llm_status, clean, chunk)) => {
                     llm_ms = Some(t_llm.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
@@ -546,6 +558,7 @@ pub async fn targeted_llm_review(
 pub async fn llm_layer_detect(
     llm: &LlmGecEngine,
     text: &str,
+    progress: Option<crate::progress::StageSink>,
 ) -> Result<(Vec<Error>, &'static str, bool, crate::quality::ChunkStats), DetectorError> {
     // 隐私防线：送 LLM（可能为外部端点）前掩码 PII（手机号 / 身份证 / 固话 /
     // 长数字串 / 邮箱本地部分；等长替换，span 字节偏移空间不变）；
@@ -576,7 +589,9 @@ pub async fn llm_layer_detect(
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
         let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
-        let mut o = llm.detect_document(text, target, concurrency).await?;
+        let mut o = llm
+            .detect_document(text, target, concurrency, progress)
+            .await?;
         if let Some(m) = &mask {
             crate::mask::filter_masked_errors(&mut o.errors, m);
         }
@@ -815,7 +830,9 @@ impl GecEngine for CascadeDetector {
         let ((rule_res, rule_ms), (dec_res, dec_ms), (l3_res, l3_ms)) = tokio::join!(
             async {
                 let t = std::time::Instant::now();
-                let r = self.rule.detect(text).await;
+                // sink 透传到 rule 成员执行循环（stat 臂滑窗逐块推段级事件；
+                // 其余引擎经 trait 默认实现零事件）
+                let r = self.rule.detect_traced(text, p_rule.clone()).await;
                 let ms = t.elapsed().as_millis() as u64;
                 if let Some(sink) = &p_rule {
                     sink(crate::progress::StageEvent::Stage {
@@ -1062,7 +1079,8 @@ impl GecEngine for CascadeDetector {
             // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
             // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
             // 层记 `unavailable`，不把整次 detect 打回 502。
-            match llm_layer_detect(llm, text).await {
+            // 长文本分块路径的段级事件经同一 sink 透传（chunk_begin/chunk_end）
+            match llm_layer_detect(llm, text, progress.clone()).await {
                 Ok((extra, llm_status, clean, chunk)) => {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
@@ -2019,6 +2037,63 @@ mod tests {
             },
         ));
         CascadeDetector::new("zh", rule, Some(secondary))
+    }
+
+    #[tokio::test]
+    async fn cascade_stat_rule_emits_chunk_events() {
+        // 级联 rule 位挂 stat 臂：sink 经 detect_traced 透传到滑窗循环，
+        // 段级事件（stage=rule）随窗推进上屏；stage 事件（rule）仍照常。
+        let app = axum::Router::new().route(
+            "/gec",
+            axum::routing::post(|body: axum::body::Bytes| async move {
+                let _ = body;
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({ "errors": [] })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let stat = Arc::new(
+            StatisticalGecEngine::new(
+                "zh",
+                StatisticalConfig {
+                    endpoint: format!("http://{addr}"),
+                    timeout: Duration::from_secs(5),
+                    model: "mock".into(),
+                },
+            )
+            .with_window_chars(120),
+        );
+        let cascade = CascadeDetector::new("zh", stat, None);
+        let text = "这句话用来构造统计臂的滑窗测试。".repeat(9);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        cascade
+            .detect_level_traced(&text, 1, false, None, Some(sink))
+            .await
+            .unwrap();
+        let evs = events.lock().unwrap();
+        let begins = evs
+            .iter()
+            .filter(|e| matches!(e, crate::progress::StageEvent::ChunkBegin { stage, .. } if *stage == shared_model::sources::RULE))
+            .count();
+        let ends = evs
+            .iter()
+            .filter(|e| matches!(e, crate::progress::StageEvent::ChunkEnd { .. }))
+            .count();
+        assert!(begins > 1, "stat 臂多窗应逐窗推段级事件: {begins}");
+        assert_eq!(begins, ends, "begin/end 配对");
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, crate::progress::StageEvent::Stage { stage, .. } if *stage == shared_model::sources::RULE)));
     }
 
     #[tokio::test]
@@ -2996,7 +3071,7 @@ mod tests {
         let endpoint = mock_llm_content("抱歉，我无法完成该任务。").await;
         let llm = llm_engine(&endpoint);
         let (errors, status, confirmed_clean, chunk) =
-            llm_layer_detect(&llm, "正确句子").await.unwrap();
+            llm_layer_detect(&llm, "正确句子", None).await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "partial");
         assert!(!confirmed_clean, "解析失败不得当作确认干净");
@@ -3009,7 +3084,7 @@ mod tests {
         let endpoint = mock_llm_content("[]").await;
         let llm = llm_engine(&endpoint);
         let (errors, status, confirmed_clean, chunk) =
-            llm_layer_detect(&llm, "正确句子").await.unwrap();
+            llm_layer_detect(&llm, "正确句子", None).await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "ran");
         assert!(confirmed_clean);
@@ -3024,10 +3099,10 @@ mod tests {
         let endpoint = mock_llm_content("[]").await;
         let llm = llm_engine(&endpoint);
         let text = "第一段是干净的中文叙述，没有任何错误需要检出。\n这是第二段内容，同样干净。\n这是第三段收尾文字，也干净。";
-        let o = llm.detect_document(text, 50, 4).await.unwrap();
+        let o = llm.detect_document(text, 50, 4, None).await.unwrap();
         assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
         assert_eq!(o.coverage(), 1.0);
-        let (errors, _status, _clean, _chunk) = llm_layer_detect(&llm, text).await.unwrap();
+        let (errors, _status, _clean, _chunk) = llm_layer_detect(&llm, text, None).await.unwrap();
         assert!(errors.is_empty());
     }
 
@@ -3178,8 +3253,9 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _clean, _chunk) =
-            llm_layer_detect(&llm, "电话13800138000有误").await.unwrap();
+        let (errors, status, _clean, _chunk) = llm_layer_detect(&llm, "电话13800138000有误", None)
+            .await
+            .unwrap();
         assert!(
             errors.is_empty(),
             "被掩区域（`*`）的检出应被过滤：{errors:?}"
@@ -3195,7 +3271,7 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _, _chunk) = llm_layer_detect(&llm, "他13800138000说报负很大")
+        let (errors, status, _, _chunk) = llm_layer_detect(&llm, "他13800138000说报负很大", None)
             .await
             .unwrap();
         assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");

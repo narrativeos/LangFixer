@@ -110,7 +110,12 @@ function icon(s: StageView): string {
 }
 
 function subText(s: StageView): string {
-  if (s.status === 'running') return '进行中…'
+  if (s.status === 'running') {
+    // 段级预算块进度（长文本 LLM 分块 / stat 滑窗）：已复查块数 / 总块数
+    if (s.chunks && s.chunks.total > 1)
+      return `段 ${s.chunks.done}/${s.chunks.total}`
+    return '进行中…'
+  }
   if (s.status === 'pending') return '等待'
   const parts: string[] = []
   if (s.key === 'feature' && s.status === 'done' && featureDecided.value) parts.push('定案')

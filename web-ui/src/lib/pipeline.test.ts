@@ -166,6 +166,19 @@ const stage = (s: string, status: 'ran' | 'partial' | 'unavailable' | 'skipped',
   ms,
 })
 const end = (total_ms: number): StageEvent => ({ kind: 'end', total_ms })
+const chunkBegin = (stage: string, chunk: number, total: number): StageEvent => ({
+  kind: 'chunk_begin',
+  stage,
+  chunk,
+  total,
+})
+const chunkEnd = (
+  stage: string,
+  chunk: number,
+  total: number,
+  ok = true,
+  ms = 30,
+): StageEvent => ({ kind: 'chunk_end', stage, chunk, total, ok, ms })
 
 const byKey = (evs: StageEvent[]) => {
   const v = applyStageEvents(evs)
@@ -230,6 +243,36 @@ describe('applyStageEvents（分阶段进度条视图）', () => {
     const v = applyStageEvents([start(['rule', 'mystery'])])
     const m = v.stages.find((s) => s.key === 'mystery')
     expect(m).toMatchObject({ no: '', label: 'mystery' })
+  })
+
+  it('段级事件聚合：begin 定 total，end 计 done；并发交错不依赖到达顺序', () => {
+    const m = byKey([
+      start(['rule', 'llm']),
+      chunkBegin('llm', 1, 3),
+      chunkBegin('llm', 2, 3),
+      chunkEnd('llm', 2, 3),
+      chunkBegin('llm', 3, 3),
+    ])
+    expect(m.llm.chunks).toEqual({ done: 1, total: 3 })
+    // 失败块同样计 done（本轮已尝试，未复查由 quality 账本另行表达）
+    const m2 = byKey([start(['rule', 'llm']), chunkBegin('llm', 1, 2), chunkEnd('llm', 1, 2, false)])
+    expect(m2.llm.chunks).toEqual({ done: 1, total: 2 })
+  })
+
+  it('无段级事件的层 chunks 为 null；落定后聚合保留', () => {
+    const v = applyStageEvents([start(['rule', 'knowledge'])])
+    expect(v.stages.every((s) => s.chunks === null)).toBe(true)
+    const m = byKey([
+      start(['llm']),
+      chunkBegin('llm', 1, 2),
+      chunkEnd('llm', 1, 2),
+      chunkBegin('llm', 2, 2),
+      chunkEnd('llm', 2, 2),
+      stage('llm', 'ran', 90),
+      end(120),
+    ])
+    expect(m.llm.chunks).toEqual({ done: 2, total: 2 })
+    expect(m.llm.status).toBe('done')
   })
 })
 
