@@ -51,3 +51,12 @@
 > 开断 30s，冷却到期自动探测恢复），卡死网关下第 2 次请求起毫秒级失败而不是每
 > 个用户都交一份超时税；演练数字见 CHANGELOG 同日条目。
 > 说明：上表 `HANLP_ENDPOINT` / `GEC_OFFLINE` / `GEC_TABLES_DIR` / `GEC_LEXICONS_DIR` / `LLM_*` 等值也可在 Web 端「设置」界面（`GET/PUT /gec/settings`）或桌面端「设置」界面（Tauri `get_settings` / `update_settings` 命令，与 Web 端同构）直接修改——即时生效（热重建检测器 / 重载模板库与决策表）并持久化到 `GEC_SETTINGS_FILE`，无需依赖环境变量。桌面端离线开关默认开启（`GEC_OFFLINE` 未设置 = 离线），与 api-server 的默认在线相反。
+
+## 检测阶段进度（分阶段进度条）
+
+工作台 header 下方的分阶段进度条展示每次检测（detect / detectLlm / analyze）各层推进与耗时：
+
+- **Web / HTTP 形态**：客户端自行生成 `progress_id`，经请求头 `X-Progress-Id` 随 `POST /gec/detect`（`/gec/:lang/detect`、`/gec/:lang/analyze`）传入；引擎推进时阶段事件写入请求级登记表，前端轮询 `GET /gec/detect/progress?id=` 取事件快照 `{found, finished, events[]}`。事件 wire 格式：`{"kind":"start","stages":[...]}` / `{"kind":"stage","stage":"rule","status":"ran|partial|unavailable|skipped","ms":12}` / `{"kind":"end","total_ms":42}`（stages 用 sources 层名 rule / decision / feature / knowledge / llm）。
+- **无事件路径**：缓存 / 历史命中无阶段事件，直接 `finished=true`（前端显示「瞬时返回」）；纯规则默认配置等不支持事件推送的引擎，fresh 路径结束后由路由用本次 timings 兜底合成事件序列（前端同样能出每阶段耗时）。
+- **桌面形态**：不经 HTTP，Tauri 命令内把事件转成应用事件 `detect:stage`（payload `{progress_id, event}`）直达前端。
+- **回收**：进度条目最后更新闲置超 600s（客户端中断 / 页面关闭）由下一次登记顺带回收；不传 header 的调用（curl / 批量作业 / 其他客户端）零开销。

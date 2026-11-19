@@ -16,7 +16,7 @@
 - **检测**：中文、英文（HanLP 服务 + Rust 侧规则）、日文（Sudachi + 本地规则），每种语言均带**离线兜底**（外部 NLP 服务不可达时自动降级为本地词典/规则检测）；**三级响应**（API `level` 参数）在规则层之上按需触发 LLM 兜底：L3 特征模型（`feature-model/`，**默认开启**）门控——level 2 高置信时直接定案、弃权 / 服务不可用时对全文跑 LLM 复查（level 2）；level 3 无条件强制 LLM——特征模型高置信时直接定案（含模式化 span 定位 + 机械修正），**LLM 层收缩到纯长尾**（前端「深度重查」按钮 = force_llm，仍无条件 LLM）。~~vegaml 决策模型层~~**已退役出产品路径**（评测证实其被 L3 严格覆盖，见 [EVOLUTION.md](EVOLUTION.md) §13 #10）：代码保留为实验路径，仅 `GEC_DEC_ENABLED=1` 显式开启，默认路径 = 规则 → L3 → LLM。级联与三级响应的完整机制见下文「三级响应」。
 - **词表**：各语言的规则词表（混淆词、过去式表、助词组合等）外置于 `lexicons/*.json`，不重新编译即可扩充；文件缺失/损坏时回退到内置默认词表。另有**领域术语库** `lexicons/terminology_{lang}.json`（`protected` 受保护术语 / `forced` 强制更正）在引擎层对所有检测臂生效：错误与被保护术语重叠即丢弃，防止把正确专业词误纠。
 - **归因**：ZEN Engine（GoRules JDM 标准）决策表，输出归因标签（知识缺口 / 习惯固化 / 规则缺失 / 规则遗忘 / 搭配薄弱）+ 韦纳三维度（内外源 × 稳定性 × 可控性）+ **CEFR 难度分级（A1-C2）** + 补救措施 + 决策追踪。
-- **交付**：Axum API 服务（Docker 化）+ Vue 3 Web UI + Tauri 2 桌面端（离线模式）。
+- **交付**：Axum API 服务（Docker 化）+ Vue 3 Web UI + Tauri 2 桌面端（离线模式）；工作台 header 下方**分阶段检测进度条**实时展示本次检测各层推进与耗时（规则/决策/特征/知识召回/LLM 复核；Web 端经 `X-Progress-Id` + 轮询、桌面端经 `detect:stage` 事件，见 docs/OPERATIONS.md「检测阶段进度」）。
 
 ## 目录结构
 
@@ -258,7 +258,8 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/gec/detect` | `{lang, text, level?}` → 错误列表（`level` 三级响应：1 缺省 / 2 弃权 LLM 兜底 / 3 强制 LLM；详见「三级响应」） |
+| POST | `/gec/detect` | `{lang, text, level?}` → 错误列表（`level` 三级响应：1 缺省 / 2 弃权 LLM 兜底 / 3 强制 LLM；详见「三级响应」；可选请求头 `X-Progress-Id` 启用分阶段进度，见下） |
+| GET | `/gec/detect/progress?id=` | 检测阶段事件快照 `{found, finished, events[]}`（配合 `X-Progress-Id`：引擎各层推进事件经此轮询；缓存 / 历史命中无事件直接 `finished=true`；机制见 docs/OPERATIONS.md「检测阶段进度」） |
 | POST | `/gec/attribute` | 归因上下文 → 归因结果（含 CEFR 分级；提供 `grammar_point` 时知识库富化点级补救/实例 + 知识源引用 `sources[]`） |
 | POST | `/gec/analyze` | `{lang, text, student_id?, level?}` → 检测 + 归因一站式（英文按错误推断知识点，知识库富化；`level` 同 `/gec/detect`） |
 | POST | `/gec/explain` | LLM 个性化讲解（按 CEFR 选模板 + 用户画像；可选 `target_language` 指定讲解语言，缺省跟随检测语言）；未配置 LLM 返回 503，客户端回退静态建议 |
