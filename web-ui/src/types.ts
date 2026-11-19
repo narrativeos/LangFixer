@@ -75,6 +75,44 @@ export interface DetectProgress {
 }
 
 /** 检测响应（API / Tauri 返回；含决策模型弃权信号 + 各阶段计时） */
+/** 检测结果质量自描述（与 gec-core `QualityReport` 对齐；回放结果不返回） */
+export interface QualityReport {
+  /** "full" | "partial" | "degraded" */
+  status: string
+  /** 已复查块 / 总块（全文路径恒 1；缺省 = 未核算） */
+  coverage?: number
+  /** 所有权图空洞字节（必须恒 0；异常即完整性回归告警） */
+  unowned_chars: number
+  /** 降级原因（如 "decision_unavailable" / "llm_partial" / "coverage:0.85"） */
+  degraded_reasons?: string[]
+}
+
+/** 段级（预算块）执行摘要（与 gec-core `ChunkStats` 对齐；回放不返回） */
+export interface ChunkStats {
+  /** "single"（全文单发）| "chunked"（预算块） */
+  mode: string
+  total: number
+  done: number
+  /** 网络/服务失败的块数（未复查） */
+  failed: number
+  /** 响应成功但解析失败的块数（同样未复查） */
+  parse_failed: number
+}
+
+/** 句级执行摘要（与 gec-core `SentenceStats` 对齐；回放不返回） */
+export interface SentenceStats {
+  total: number
+  /** 已被某复查层覆盖的句数 */
+  reviewed: number
+}
+
+/** 检测时版本向量（仅实际检测返回；与后端 version JSON 对齐） */
+export interface DetectVersion {
+  rules_fingerprint: string
+  model_version?: string | null
+  splitter: string
+}
+
 export interface DetectResponse {
   errors: ErrorItem[]
   /** 决策模型是否弃权（仅决策层启用时有意义） */
@@ -87,6 +125,14 @@ export interface DetectResponse {
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */
   layers?: LayerReport[]
+  /** 结果质量自描述（回放 / 旧服务端无；quality ≠ full 时前端展示徽标） */
+  quality?: QualityReport
+  /** 切块账本（回放不返回） */
+  chunks?: ChunkStats
+  /** 句级账本（回放不返回） */
+  sentences?: SentenceStats
+  /** 检测时版本向量（规则指纹 / 决策模型 / 切块器；仅实际检测返回） */
+  version?: DetectVersion
 }
 
 /** 检测 + 归因一站式响应（含决策模型弃权信号 + 各阶段计时） */
@@ -104,6 +150,14 @@ export interface AnalyzeResult {
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */
   layers?: LayerReport[]
+  /** 结果质量自描述（回放 / 旧服务端无） */
+  quality?: QualityReport
+  /** 切块账本（回放不返回） */
+  chunks?: ChunkStats
+  /** 句级账本（回放不返回） */
+  sentences?: SentenceStats
+  /** 检测时版本向量（仅实际检测返回） */
+  version?: DetectVersion
 }
 
 export interface RuleInfo {

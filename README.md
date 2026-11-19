@@ -258,10 +258,10 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/gec/detect` | `{lang, text, level?}` → 错误列表（`level` 三级响应：1 缺省 / 2 弃权 LLM 兜底 / 3 强制 LLM；详见「三级响应」；可选请求头 `X-Progress-Id` 启用分阶段进度，见下） |
+| POST | `/gec/detect` | `{lang, text, level?, refresh?}` → 错误列表（`level` 三级响应：1 缺省 / 2 弃权 LLM 兜底 / 3 强制 LLM；详见「三级响应」；`refresh: true` 忽略缓存强制实检，见 docs/OPERATIONS.md「检测缓存与纠正」；可选请求头 `X-Progress-Id` 启用分阶段进度，见下） |
 | GET | `/gec/detect/progress?id=` | 检测阶段事件快照 `{found, finished, events[]}`（配合 `X-Progress-Id`：引擎各层推进事件经此轮询；缓存 / 历史命中无事件直接 `finished=true`；机制见 docs/OPERATIONS.md「检测阶段进度」） |
 | POST | `/gec/attribute` | 归因上下文 → 归因结果（含 CEFR 分级；提供 `grammar_point` 时知识库富化点级补救/实例 + 知识源引用 `sources[]`） |
-| POST | `/gec/analyze` | `{lang, text, student_id?, level?}` → 检测 + 归因一站式（英文按错误推断知识点，知识库富化；`level` 同 `/gec/detect`） |
+| POST | `/gec/analyze` | `{lang, text, student_id?, level?, refresh?}` → 检测 + 归因一站式（英文按错误推断知识点，知识库富化；`level` / `refresh` 同 `/gec/detect`） |
 | POST | `/gec/explain` | LLM 个性化讲解（按 CEFR 选模板 + 用户画像；可选 `target_language` 指定讲解语言，缺省跟随检测语言）；未配置 LLM 返回 503，客户端回退静态建议 |
 | POST | `/gec/explain/stream` | 同上，SSE 流式（`meta` → `token`* → `done`） |
 | GET | `/gec/tables` | 决策表元数据列表（真实规则数 + 加载/更新时间） |
@@ -293,6 +293,7 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 | GET | `/gec/rules?lang=` | 规则列表（`enabled` 为运行时状态：持久化文件 > 词表默认 > 启用） |
 | PUT | `/gec/rules/:id/toggle?lang=&enabled=` | 单条规则开关（持久化） |
 | PUT | `/gec/rules/:lang/toggles` | 批量规则开关 `{toggles: {id: bool}}`（持久化，重启不丢） |
+| POST | `/gec/cache/clear` | 清空检测缓存 `{history?}`（LRU 必清；`history: true` 连检测历史一并清除；用于规则/模型变更后旧结果无法自动失效时的手动纠正，见 docs/OPERATIONS.md「检测缓存与纠正」） |
 | GET | `/student/:id/profile` | 用户画像 |
 | POST | `/student/:id/record` | 记录用户犯错历史 |
 | GET | `/gec/settings` | 运行时设置（HanLP 地址 + 离线开关 + 决策表 / 词表目录 + LLM 参数 + LLM 请求模式 + vegaml 决策层参数；模式固定：前端流式 / 外部 API 非流式） |
@@ -310,7 +311,7 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 
 - LLM 兜底引擎按请求从运行时 LLM 参数 + 检测模板（`prompts/{lang}_detect_prompt.json`）现构建，支持设置热更新；
 - LLM 产出的错误标记 `source: "llm"`（前端错误列表展示「LLM 兜底」标签）；特征模型产出的错误标记 `source: "feature"`（前端展示「特征模型」标签，含模式化定位 + 机械修正）；
-- LLM 结果**不进 LRU 缓存**（非确定性 + 成本高）；level 1 结果照常缓存；
+- LLM 结果**不进 LRU 缓存**（非确定性 + 成本高）；level 1 结果照常缓存；缓存键包含规则指纹 + 模型版本（规则开关 / 决策表热更新 / 模型变更后旧结果自动失效，无需手动清理；极端情况可用 `refresh: true` 或 `POST /gec/cache/clear` 纠正，见 docs/OPERATIONS.md「检测缓存与纠正」）；
 - 触发条件命中但 LLM 未配置（无 API Key / 缺检测模板）→ **503**（提示去设置界面配置）；LLM 服务调用失败 → **502**；
 - 前端：编辑器提供「检查模式」选择器（快速检查 / 标准检查 / 深度扫描，对应 API `level` 1/2/3）与「深度重查」按钮（= level 3）。
 - **训练飞轮（闭环）**：确认采纳的 LLM 检测结果（正样本）与 LLM 复查确认干净的句子（负样本）

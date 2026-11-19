@@ -460,6 +460,12 @@ level 1 无 LLM，即 web-ui 生产默认配置）：
   200 句 capability 复测（同种子）：**Fβ 0.7894 → 0.8074（+0.018）、
   P 0.9126 → 0.9431、FP(重叠) 46 → 27（−19）**，TP/召回不变（规则本就 0 TP）。
   用户 6 次拒绝全部来自该层 → 摩擦源已除
+- **1.1a 金集评测口径对齐（2026-11-19）**：停用出厂规则后 `media_gold_eval`
+  两处隐含前提失效——离线正对照原用 `ZH_PUNCTUATION` 半角逗号（旧出厂
+  enabled=true 必命中），改为主用 `ZH_NUMERAL`「万万」词表错（出厂开启、
+  确定性命中）；导出表位置口径回填断言由「≥1 行（#13 报道/报到 =
+  `ZH_CONFUSABLE`）」改为口径增量恒等式（位置命中数 − 文本命中数），回填
+  机制本身由 media_core gold.rs 的 Positional 单测与真实载体重演（--ignored）覆盖
 - **1.3 重训无效标记**：`reflection_center` 新增 `L3RetrainStateIn`
   （最近 completed `l3_retrain` 作业的 gate_f1/report_id + 当前报告复测 F1）；
   复测 F1 未超过重训前值 +0.05 → 不再提议 `l3_sample`，改出 findings
@@ -1226,7 +1232,7 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 时间/数字/人称轨迹，consistency·cohesion·事实一致在此层；流程按事实通道
 定案——先按上下文检查（规则档+ZEN 要点表），上下文自身判不了才检索知识
 源（K/S 不进路由空间不变）。其触发精确率单独过 ≤2% 闸门，不入句子级三臂
-曲线；L3 兑底是句子级的，兑不住跨句错，二者互补不互替。cycle2-matrix 按编
+曲线；L3 兜底是句子级的，兜不住跨句错，二者互补不互替。cycle2-matrix 按编
 辑记账天然兼容一句多错，只需保证日志行带句内编辑序不缺位。
 
 **补二：空白三量化与方案定案（同日，「先研究清楚再定方案」，三实验先于形态
@@ -1377,6 +1383,83 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
   p_attribution_v3.txt}`；复现 `feature-model/eval_router_arms.py`（docstring 尾部
   命令）+ `tools/type-layer-experiments/attribute_p.py`。
 
+### 11.15 模型定位终版：一决策、一改错（2026-11-18 定案）
+
+由用户提问「jev 类决策模型是否应重定位为直接判错/改错的兜底模型（等价于把
+Qwen3.8-27b 微调成专门找错改错模型）」触发，本轮以外部文献交叉核对后定版：
+**两个角色分开，一决策、一改错**。
+
+- **决策模型（jev/kev 线）= 闸，不是手**。外部定义一致：决策模型
+  "return a probability for each predefined answer option rather than generate
+  text"（arXiv 2610.34626）、"lightweight non-generative classifiers that
+  return typed, calibrated verdicts"（arXiv 2609.28940，JEV/Laya System One）；
+  文献最佳实践即级联——决策模型先判、低置信路由给生成式 LLM，F1 反升
+  1.9–4.0pp（同上），"routing low-confidence items to an LLM matches or
+  exceeds the LLM alone at a quarter to half of its cost"（arXiv 2610.18610）
+  ——与 §11.10 路由化转向及 router_ev 非 oracle PASS（补三/补七）同构。
+  职责 = 谁零成本定案、谁值得花 LLM 预算（EV 路由 + 多标签计数头，§11.14）；
+  决策模型不持触发权——level-3 全文 LLM 兜底无条件（§13 / 11-13 教训不变；
+  arXiv 2610.29961 的 abstain 实验同证：此类模型适合管**采纳策略**，不适合
+  终结深度扫描）。
+- **改错模型（Qwen3.8-27b 微调线）= 手，新线**。找错+改错模型会生成文本，
+  按定义是**生成式 GEC 模型**，占兜底 / llm_review 臂的**执行者**位——这不是
+  决策模型的重定位，而是一条新线。依据：CEC_ADOPTION §5（generic 提示在纠正
+  侧 F0.5≈0.005 vs cec3 0.805）说明兜底臂需要专用模型；验收口径 = 测评中心
+  对标 cec3 0.805。新线两个方向都不继承：§11 决策模型线的退役/待发布判决
+  不适用它，kev 微调线的背书也不转给它。
+- **命名纪律**：勿把微调 Qwen 叫「决策模型」（混名会把 §13 #10/#11 的否定
+  结论错误套到它头上）；勿指望 jev 头做修正（正是 §11.10 转向避免的事）。
+
+定案一句话：**决策模型管谁值得花钱，改错模型管怎么改；一闸一手，不互换。**
+
+### 11.16 Qwen3.8-27b 改错模型微调：数据配方与评测计划（2026-11-18 起草，待执行）
+
+**定位**（§11.15 改错模型线）：生成式专用 GEC 模型，占兜底 / llm_review 臂
+执行者位。主验收门 = 测评中心 mucgec dev `force_llm` 严格 **F0.5 ≥ 0.805**
+（cec3 基线，报告 `20261016T155142Z_mucgec_cec3_capability`）；generic 臂
+（zh_detect JSON 契约）保留为对照，其句级定位价值不丢。
+
+**数据配方（四源分桶，provenance 全程随行）**：
+
+| 源 | 入训 | 不入训 | 依据 |
+|---|---|---|---|
+| 人标 gold 系 | mucgec / nacgec / cscd / yacsc / midu gold（人工修正 1,010 句）的句级 src→dst 平行对 | — | 唯一可审计的「人怎么改」监督信号 |
+| dataset_v23 | 共识 9,202 + 新增抽检通过项（每桶 ≥58 纪律，`review_queue_new_errors.jsonl` 6,733 先行） | **模型漏标 22,313 与单源 model_errors 桶**、解析失败 131 行 | v23 标注器 = Qwen3.8 本身（README 规则①）：漏标桶入训 = 自蒸馏复现自家盲区；污染隔离同时约束训练侧 |
+| 产品飞轮 | 资产 C `adopted.jsonl` 句对（`prepare_adopted.py` 治理：去 weak、基准块表，上限 2 万） | 资产 B `rejected.jsonl`（DPO 料，SFT 不入） | 真实用户确认分布，生产最近；§9 |
+| 领域增强 | `augment_domain.py` 14 种在用户域干净文本（小说稿/行业文档）上定向增强，固定种子 | 注入式合成源：midu2022 初赛、CTC2021 train_large_v2 | §13 #2/#6：注入分布（S/D/I=45/32/23、OCR 形近）与真实流量非同源，会教错误修正习惯；增强后注入比例先过 `gold_error_dist.py` 对照（真实同音 ~99% 口径） |
+
+混合比上限：人标 gold + 飞轮为主干；v23 共识桶 ≤40%、增强 ≤30%。训练句对与各
+评测基准 dev gold 做 md5 句级去重（测评中心 fresh 口径），防泄漏。
+
+**输出形态**：plain「纠正后句子」（cec3 同口径，字级 diff 由适配层承担，
+`score_f05.py` 打分与基线表直接可比）；zh_detect JSON 契约作对照臂非主训目标。
+
+**两阶段**：先 SFT（LoRA，对齐 kev 线现有 LoRA 工具链）；偏好对齐二期再定——
+料已就位：`rejected.jsonl` + 被拒 LLM 导出（§11.12 负蒸馏料）作 DPO 对，GRPO
+按 CEC_ADOPTION D4 Efficiency-Aware Reward（F0.5 式得分 − λ·不必要编辑数）。
+ce4 教训前置：对齐阶段在 SFT 过 F0.5 门后才上，不反序。**算力已定：外租**——
+句级短序列（≤512）把激活钳死，27B bf16 LoRA 训练 = 8×H100 或 4×A100-80G
+单次任务 1–2 天（~10 万对×3 ep ≈ 50M token），低频按轮次租；不碰 3090
+Track-A（小模型蒸馏专用）与 vLLM 服务机 tp4——checkpoint 不顶替 4000 端点
+的 qwen3.8-27b 服务位（dataset_v23 README 规则①：评测基准臂须是原版；
+评测时 base/finetuned 双模型名同挂 A/B）。真正的持续成本在回归评测端点：
+force_llm 全集单轮已 19h+（61.5s/句），评测复用 tp4 夜间窗口按夜跑纪律办
+（断点续跑是底线，§11.14 实踩）或届时加一份 tp4 级端点。
+
+**评测门（按序，均在测评中心）**：
+
+1. **契约门**：dev 1,137 句输出 100% 解析，适配层字级 diff 正常；
+2. **主门**：mucgec dev F0.5 ≥ 0.805，误报编辑量级不劣于 cec3（=90），P/R 并报；
+3. **泛化门**：capability 全集（cscd·sig15·med·law / nacgec / jfleg / midu gold）
+   无单基准崩塌（11-12 量具修复口径）；**v23 不得作 Qwen3.8 系评测集**
+   （README 规则①），生产真实文本另 fresh 抽样；
+4. **接线**：`prompts/models.json` 注册新臂（plain 适配复用），设置页可切；
+   仅作 llm_review/兜底执行者替换——只换执行体，§11.15 触发权与兜底立场不变。
+
+**失败归因预案**：F0.5 不过但句级定位强 → 该臂退回 generic 定位（定位有价值、
+纠正弱），配方侧重做；误报集中某型 → 先查标签桶（漏标桶入训是头号嫌疑，
+provenance 字段就是为这一步留的）。
+
 ## 13. 已测否定项清单（决策锁定，勿重复讨论）
 
 以下结论均已实测定案，**再次提出同一方案时先复核本表并给出新证据**（新数据/新口径/
@@ -1397,6 +1480,7 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 | 11 | 零样本换决策模型救活门控（laya/chdec/largha/AnyJev 等生态臂） | **否**（路径关闭；微调主线 kev 不变） | 四个家族零样本 zh AUC 均 0.50±0.02（kev 唯一 0.75+）；校准救不了判别；同底座（Qwen3.5）不保证信号——症结在决策训练分布无语言质量信号 | §11.5、§11.8；**后续**：自建 `jev-gec` P0–P3c 已完成——response-based KD 判死（三教师对照 ≤0.60，见 §11.9），转 3090 Track-A LoRA |
 | 12 | word_order 在标签侧全量降级 rule_decide（--wo-exempt × gold 侧型标签，补四处方的完整形态） | **否** | 降级 12→106 行后 45.7/65.6 → 44.6/64.1（cache/oracle 锚点，均 FAIL）；word_order 分层自身 26.9→25.0；WO 每句期望为正（41.7%×80.6%），63.1% 预算处腾预算≈边际 1:1 抵不过跳过可检句 | §11.12 补五；降级收益的正确出口 = Cycle 2 收益矩阵按型条件化/型头，非标签开关 |
 | 13 | ZEN v2 冲突谓词（straddle_pair/num_same_unit_diff/year_pair/conj_pair_break）作独立路由/定案通道 | **否**（通道不养；present 证据口径保留） | must 召回 0–3.1%；gold 锚定 vs clean 基线无 lift（pron 0.1%<1.87%、conj 4.3%<7.57% 反信号；仅 year_pair 1.8%>0.18% 但召回 0.4%）；打扰任一命中行 9.64%（强配对 4.75%）超 ≤2% 闸门 | §11.14 补六；复现 `python3 tools/zen-trajectory/trajectory.py` |
+| 14 | jev 类决策模型重定位为「直接判错/改错的兜底模型」（含「微调 Qwen 找错改错模型 = 决策模型」的叫法） | **否**（角色拆分：微调 Qwen = 生成式 GEC，占兜底/llm_review 臂执行者位；决策模型维持路由闸，不持兜底触发权） | 外部定义锁死决策模型 = 非生成、题型问题→校准概率；兜底触发权已定 level-3 全 LLM（11-13 教训）；微调 Qwen 属兜底执行位新线（generic 提示 F0.5≈0.005 vs cec3 0.805） | §11.15；外部核对 arXiv 2610.34626、2609.28940、2610.29961、2610.18610；CEC_ADOPTION §5 |
 
 > #1 是最容易复发的一条：**「灰区率下降」不等于收益**。任何扩表/换语料的提案，
 > 验收口径必须是「**等漏检下的放行率**」——先跑 `eval_ngram_table_ab.py`（AUC 不升或
@@ -1410,3 +1494,22 @@ PASS 入档，FAIL 归因入 §13，账目不靠手感）：
 
 
 
+
+### 11.17 P8：Track B 生产产物首次上机验收（2026-11-19）
+
+**训练**（3090，jiulu-GPU，/mnt/data/github/jev-gec）：P7 定案配方——池 zh_v5a1、
+bert-base-chinese、lr 2e-5、batch 32、maxlen 256、last-epoch 固定 2 ep。
+seed 20261105 → dev AUC 0.836（自检盘上 0.829≈内存 0.828 ✓）；seed 20261106
+（副产品，供后续集成实验）→ dev AUC 0.826。日志 /tmp/jev_prod_2026110{5,6}.log。
+
+**回传与验收**（Mac，冻结集 zh_gate_1k，n=996，有错率 0.500）：
+- 产物 models/zh v1（track B-encoder，encoder/ 微调底座 + head.pt + 温度 T=1.3）；
+  旧 v7 挪至 models/zh_v7_old。
+- 冻结 AUC **0.821**，ECE(raw) 0.069；分项 cctc .854 / cscd .891 / cscdns .752 /
+  nlpcc23 .772。操作点：漏检≤2% 跳过率 0.8%，漏检≤5% 跳过率 2.0%。
+  延迟 p50=11ms p95=20ms（MPS）。对比坏产物时代 v7 的 .57–.60，产物链路修复闭环。
+- 与服务器研究数对照：单模型 .821 vs P7 两 seed 集成冻结 .828——差值在预期内；
+  集成要成为可部署产物需 serve 侧支持多 head 融合（ensemble_fuse.py 目前只是
+  研究出数口径，非落盘格式），列入后续项。
+- 本侧 serve/server.py 已同步「encoder/ 优先于 meta.base」修复（服务器 commit
+  17acdd1 同款），否则会把微调头接回原底座、数字假低。

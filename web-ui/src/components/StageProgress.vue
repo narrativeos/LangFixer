@@ -1,15 +1,16 @@
 <script setup lang="ts">
 /**
- * 分阶段检测进度条（header 与工作台 main 之间）。
+ * 分阶段检测进度（header 与工作台 main 之间）：动态流程图。
  *
- * 数据面 = store.progress：beginDetect 起新 id，Web 端按 180ms 轮询
- * GET /gec/detect/progress、桌面端经 detect:stage 事件累加（均收敛到
- * pipeline.applyStageEvents 纯函数），这里只做渲染与计时展示：
- * - 并行组（①规则 / ②决策 / ③-F特征）开局即 running，串行位按推进位点亮；
- * - running 阶段显示已用时（100ms ticker 重绘），落定阶段显示该阶段耗时；
- * - 进度条填充 = 已落定阶段数 / 计划阶段数（End / 完成 = 100%）；
- * - 缓存 / 历史命中无阶段事件 → 「瞬时返回」；未收到 End 即中断 → 「已中断」；
- * - 完成（或中断）后常驻展示各阶段耗时，直到下一次检测开始重建。
+ * 拓扑与引擎真实执行一致（gec-core detect_level_traced 的 tokio::join!）：
+ * ①规则 / ②决策 / ③-F特征 三路并行 → ②.5知识召回（串行）→ ③LLM复核；
+ * L3 特征模型对 LLM 另有一条「定案门」虚线边（高置信定案 → LLM 跳过）。
+ * 步骤条式的线性顺序无法表达并行组，故弃用。
+ *
+ * 数据面 = store.progress（与线性版相同的事件收敛逻辑，见 lib/pipeline）；
+ * 节点副行 = 贡献度：检出条数（layers[].found）· 共识（also_found_by）· 耗时；
+ * 边：上游落定即点亮，上游落定且下游进行中 → 流动动画；
+ * 缓存 / 历史命中无阶段事件 → 「瞬时返回」；未收到 End 即中断 → 节点转灰 ✕。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useGecStore } from '../stores/gec'
@@ -21,7 +22,7 @@ const p = computed(() => store.progress)
 const running = computed(() => p.value.active)
 const visible = computed(() => p.value.active || p.value.finished)
 
-/** 100ms 心跳仅在检测进行中运行：驱动 running 阶段的「已用时」重绘 */
+/** 100ms 心跳仅在检测进行中运行：驱动「已用」重绘 */
 const now = ref(Date.now())
 let ticker: number | undefined
 function setTicker(on: boolean) {
@@ -41,19 +42,191 @@ onBeforeUnmount(() => {
   setTicker(false)
 })
 
-const settledCount = computed(
-  () =>
-    p.value.stages.filter((s) => s.status === 'done' || s.status === 'unavailable' || s.status === 'skipped')
-      .length,
+const isSettled = (s: StageView) =>
+  s.status === 'done' ||
+  s.status === 'skipped' ||
+  s.status === 'unavailable' ||
+  s.status === 'canceled'
+
+/** 各层检出条数（LayerReport.found）；随 detect 响应一次性到达 */
+const foundMap = computed(() => {
+  const m: Record<string, number> = {}
+  for (const l of store.layers ?? []) m[l.layer] = l.found ?? 0
+  return m
+})
+
+/** 该层的共识命中：最终错误中本层参与共识的条数——无论是产出方
+ * （source = 本层且 also_found_by 非空）还是被合并后记名方 */
+const alsoMap = computed(() => {
+  const m: Record<string, number> = {}
+  for (const e of store.errors) {
+    const also = e.also_found_by ?? []
+    if (!also.length) continue
+    const layers = new Set(also)
+    if (e.source) layers.add(e.source)
+    for (const l of layers) m[l] = (m[l] ?? 0) + 1
+  }
+  return m
+})
+
+/** 特征模型高置信定案标记（layers 报告 status=decided） */
+const featureDecided = computed(() =>
+  (store.layers ?? []).some((l) => l.layer === 'feature' && l.status === 'decided'),
 )
 
-const percent = computed(() => {
-  if (p.value.instant || p.value.finished) return 100
-  const n = p.value.stages.length
-  // 刚发出请求、Start 事件尚未到达：细条示「进行中」，避免空条像卡死
-  if (!n) return 6
-  return Math.round((settledCount.value / n) * 100)
+/** 步骤贡献度：已落定且该层检出 >0 才显示（弃权 / 不可用 / 0 条不占位） */
+function foundOf(s: StageView): number | null {
+  if (!isSettled(s)) return null
+  const n = foundMap.value[s.key]
+  return n != null && n > 0 ? n : null
+}
+
+/** 共识命中数（仅落定步骤） */
+function alsoOf(s: StageView): number {
+  return isSettled(s) ? (alsoMap.value[s.key] ?? 0) : 0
+}
+
+const stateWord: Record<StageView['status'], string> = {
+  pending: '等待',
+  running: '进行中',
+  done: '完成',
+  unavailable: '不可用',
+  skipped: '已跳过',
+  canceled: '已中断',
+}
+
+function icon(s: StageView): string {
+  switch (s.status) {
+    case 'done':
+      return '✓'
+    case 'unavailable':
+    case 'canceled':
+      return '✕'
+    case 'skipped':
+      return '–'
+    default:
+      return ''
+  }
+}
+
+function subText(s: StageView): string {
+  if (s.status === 'running') return '进行中…'
+  if (s.status === 'pending') return '等待'
+  const parts: string[] = []
+  if (s.key === 'feature' && s.status === 'done' && featureDecided.value) parts.push('定案')
+  const n = foundOf(s)
+  if (n != null) parts.push(`${n}条`)
+  const also = alsoOf(s)
+  if (also) parts.push(`共识 ${also}`)
+  if (s.status === 'skipped' || s.status === 'unavailable' || s.status === 'canceled')
+    return stateWord[s.status]
+  if (s.ms != null) parts.push(`${s.ms}ms`)
+  return parts.join(' · ') || stateWord[s.status]
+}
+
+function tooltip(s: StageView): string {
+  let extra = ''
+  const n = foundOf(s)
+  const also = alsoOf(s)
+  if (n != null) extra = `，本次命中 ${n} 条`
+  if (also) extra += `（其中 ${also} 条与其他层共识）`
+  return `${s.no} ${s.label}：${stateWord[s.status]}${extra}`
+}
+
+/* ---------- 布局：并行组竖排 → 串行链横排 ---------- */
+
+const PARALLEL_KEYS = ['rule', 'decision', 'feature']
+const NODE_W = 142
+const NODE_H = 42
+const LANE_GAP = 16
+const TOP = 12
+const LEFT = 10
+const CGAP = 52
+
+interface FlowNode {
+  s: StageView
+  x: number
+  y: number
+  cx: number
+  cy: number
+}
+interface FlowEdge {
+  key: string
+  d: string
+  dashed: boolean
+  lit: boolean
+  flow: boolean
+}
+
+const layout = computed(() => {
+  const stages = p.value.stages
+  if (!stages.length) return null
+  const parallel = stages.filter((s) => PARALLEL_KEYS.includes(s.key))
+  const serial = stages.filter((s) => !PARALLEL_KEYS.includes(s.key))
+  const lanes = Math.max(parallel.length, 1)
+  const stackH = lanes * (NODE_H + LANE_GAP) - LANE_GAP
+  const nodes: FlowNode[] = []
+  parallel.forEach((s, i) => {
+    const y = TOP + i * (NODE_H + LANE_GAP)
+    nodes.push({ s, x: LEFT, y, cx: LEFT + NODE_W / 2, cy: y + NODE_H / 2 })
+  })
+  const serialY = TOP + (stackH - NODE_H) / 2
+  serial.forEach((s, i) => {
+    const x = LEFT + NODE_W + CGAP + i * (NODE_W + CGAP)
+    nodes.push({ s, x, y: serialY, cx: x + NODE_W / 2, cy: serialY + NODE_H / 2 })
+  })
+  const w = LEFT + NODE_W + (serial.length ? serial.length * (NODE_W + CGAP) : 0) + LEFT
+  const h = TOP + Math.max(stackH, serial.length ? NODE_H : 0) + TOP
+  const byKey: Record<string, FlowNode> = {}
+  for (const n of nodes) byKey[n.s.key] = n
+  const edges: FlowEdge[] = []
+  const first = serial[0] ? byKey[serial[0].key] : null
+  for (const n of nodes.filter((n) => PARALLEL_KEYS.includes(n.s.key))) {
+    if (!first) break
+    edges.push({
+      key: `p-${n.s.key}`,
+      d: `M ${n.x + NODE_W} ${n.cy} C ${n.x + NODE_W + 24} ${n.cy}, ${first.x - 16} ${first.cy}, ${first.x} ${first.cy}`,
+      dashed: false,
+      lit: isSettled(n.s),
+      flow: isSettled(n.s) && first.s.status === 'running',
+    })
+  }
+  for (let i = 0; i + 1 < serial.length; i++) {
+    const a = byKey[serial[i].key]
+    const b = byKey[serial[i + 1].key]
+    edges.push({
+      key: `s-${serial[i].key}`,
+      d: `M ${a.x + NODE_W} ${a.cy} L ${b.x} ${b.cy}`,
+      dashed: false,
+      lit: isSettled(a.s),
+      flow: isSettled(a.s) && b.s.status === 'running',
+    })
+  }
+  // L3 定案门：特征模型 → LLM（虚线；高置信定案时 LLM 跳过）
+  if (byKey['feature'] && byKey['llm']) {
+    const f = byKey['feature']
+    const l = byKey['llm']
+    edges.push({
+      key: 'gate',
+      d: `M ${f.x + NODE_W} ${f.cy} C ${f.x + NODE_W + 40} ${f.cy}, ${l.cx} ${f.cy + 8}, ${l.cx} ${l.y + NODE_H}`,
+      dashed: true,
+      lit: isSettled(f.s),
+      flow: false,
+    })
+  }
+  return { w, h, nodes, edges, byKey }
 })
+
+/** 定案门标签位置 */
+const gateLabel = computed(() => {
+  const L = layout.value
+  const f = L?.byKey['feature']
+  const l = L?.byKey['llm']
+  if (!f || !l) return null
+  return { x: (f.x + NODE_W + l.cx) / 2 + 10, y: (f.cy + l.y + NODE_H) / 2 + 8 }
+})
+
+const settledCount = computed(() => p.value.stages.filter(isSettled).length)
 
 /** 右侧耗时读数：进行中实时已用；结束后总量（中断按已用时收尾） */
 const totalText = computed(() => {
@@ -62,23 +235,6 @@ const totalText = computed(() => {
   if (!q.active) return `${q.canceled ? '已中断' : '共'} ${q.totalMs ?? 0}ms`
   return `已用 ${Math.max(0, now.value - q.startedAt)}ms`
 })
-
-function chipSuffix(s: StageView): string {
-  switch (s.status) {
-    case 'running':
-      return '…'
-    case 'done':
-      return s.ms != null ? `${s.ms}ms` : '✓'
-    case 'skipped':
-      return '已跳过'
-    case 'unavailable':
-      return '✕ 不可用'
-    case 'canceled':
-      return '已中断'
-    default:
-      return '等待'
-  }
-}
 
 const stateText = computed(() => {
   const q = p.value
@@ -93,109 +249,165 @@ const stateText = computed(() => {
 <template>
   <div
     v-if="visible"
-    class="sp"
-    :class="{ 'sp-running': running, 'sp-finished': !running && !p.canceled, 'sp-canceled': p.canceled }"
+    class="flw"
+    :class="{ 'flw-running': running, 'flw-finished': !running && !p.canceled, 'flw-canceled': p.canceled }"
     role="status"
-    aria-label="检测进度"
+    :aria-label="`检测进度：${settledCount}/${p.stages.length}`"
   >
-    <div class="sp-track" :aria-valuenow="percent" aria-valuemin="0" aria-valuemax="100" role="progressbar">
-      <div class="sp-fill" :style="{ width: percent + '%' }"></div>
-    </div>
-    <div class="sp-chips">
-      <span
-        v-for="s in p.stages"
-        :key="s.key"
-        class="sp-chip"
-        :class="'sp-' + s.status"
-        :title="`${s.no} ${s.label}：${chipSuffix(s)}`"
-      >
-        <b class="sp-no">{{ s.no }}</b>
-        <span class="sp-label">{{ s.label }}</span>
-        <span class="sp-ms">{{ chipSuffix(s) }}</span>
-      </span>
-      <span v-if="stateText" class="sp-note">{{ stateText }}</span>
-      <span class="sp-total">{{ totalText }}</span>
+    <svg v-if="layout" class="flw-svg" :viewBox="`0 0 ${layout.w} ${layout.h}`" aria-hidden="true">
+      <g>
+        <path
+          v-for="e in layout.edges"
+          :key="e.key"
+          :d="e.d"
+          fill="none"
+          class="flw-edge"
+          :class="{ on: e.lit, flow: e.flow, dashed: e.dashed }"
+        />
+      </g>
+      <g v-for="n in layout.nodes" :key="n.s.key" class="flw-node" :class="'st-' + n.s.status" :transform="`translate(${n.x} ${n.y})`">
+        <title>{{ tooltip(n.s) }}</title>
+        <rect :width="142" :height="42" rx="9" />
+        <text class="l1" x="11" y="17">{{ n.s.no }} {{ n.s.label }}</text>
+        <text class="l2" x="11" y="33">{{ subText(n.s) }}</text>
+        <text v-if="icon(n.s)" class="lchk" x="131" y="18" text-anchor="end">{{ icon(n.s) }}</text>
+        <circle v-else-if="n.s.status === 'running'" class="lspin" cx="128" cy="13" r="5.5" />
+      </g>
+      <text v-if="gateLabel" class="flw-gate-label" :x="gateLabel.x" :y="gateLabel.y" text-anchor="middle">定案门</text>
+    </svg>
+    <div class="flw-foot">
+      <span v-if="stateText" class="flw-note">{{ stateText }}</span>
+      <span class="flw-total">{{ totalText }}</span>
     </div>
   </div>
 </template>
 
 <style scoped>
-.sp {
+.flw {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 3px var(--space-3) 5px;
+  padding: 7px var(--space-3) 5px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
+  color: var(--text-2);
+}
+.flw-svg {
+  width: min(100%, 660px);
+  height: auto;
+}
+.flw-edge {
+  stroke: var(--muted);
+  stroke-width: 1.6;
+  opacity: 0.55;
+  fill: none;
+}
+.flw-edge.on {
+  stroke: var(--ok);
+  opacity: 1;
+}
+.flw-edge.dashed {
+  stroke-dasharray: 4 4;
+}
+.flw-edge.flow {
+  stroke: var(--primary);
+  stroke-dasharray: 5 5;
+  opacity: 1;
+  animation: flw-dash 0.9s linear infinite;
+}
+@keyframes flw-dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+.flw-node rect {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.flw-node .l1 {
+  font-size: 12.5px;
+  font-weight: 600;
+  fill: var(--text);
+}
+.flw-node .l2 {
+  font-size: 10.5px;
+  fill: var(--muted);
+}
+.flw-node .lchk {
+  font-size: 12px;
+  font-weight: 700;
+}
+.flw-node.st-done rect {
+  stroke: var(--ok);
+}
+.flw-node.st-done .lchk {
+  fill: var(--ok);
+}
+.flw-node.st-running rect {
+  stroke: var(--primary);
+  animation: flw-pulse 1.4s ease-in-out infinite alternate;
+}
+.flw-node.st-running .lchk,
+.flw-node.st-running .l2 {
+  fill: var(--primary);
+}
+@keyframes flw-pulse {
+  from {
+    stroke-opacity: 1;
+  }
+  to {
+    stroke-opacity: 0.45;
+  }
+}
+.flw-node .lspin {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 2;
+  stroke-dasharray: 10 25;
+  stroke-linecap: round;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: flw-rot 0.9s linear infinite;
+}
+@keyframes flw-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.flw-node.st-pending {
+  opacity: 0.55;
+}
+.flw-node.st-unavailable rect,
+.flw-node.st-canceled rect {
+  stroke: var(--danger, #c0392b);
+}
+.flw-node.st-unavailable .lchk,
+.flw-node.st-canceled .lchk {
+  fill: var(--danger, #c0392b);
+}
+.flw-node.st-canceled {
+  opacity: 0.6;
+}
+.flw-node.st-skipped rect {
+  stroke-dasharray: 3 3;
+}
+.flw-node.st-skipped .lchk {
+  fill: var(--muted);
+}
+.flw-gate-label {
+  font-size: 9.5px;
+  fill: var(--muted);
+}
+.flw-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
   font-size: var(--fs-sm);
   color: var(--text-2);
 }
-.sp-track {
-  height: 3px;
-  border-radius: 2px;
-  background: var(--border);
-  overflow: hidden;
-}
-.sp-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--primary, #4d6bfe);
-  transition: width 0.2s ease;
-}
-.sp-finished .sp-fill {
-  background: var(--ok);
-}
-.sp-canceled .sp-fill {
-  background: var(--muted);
-}
-.sp-chips {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  min-height: 18px;
-}
-.sp-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 6px;
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  white-space: nowrap;
-  line-height: 16px;
-}
-.sp-no {
-  font-weight: 600;
+.flw-total {
   color: var(--muted);
-}
-.sp-chip.sp-running {
-  border-color: var(--primary, #4d6bfe);
-}
-.sp-chip.sp-done .sp-ms {
-  color: var(--ok);
-}
-.sp-chip.sp-running .sp-ms,
-.sp-chip.sp-pending .sp-ms {
-  color: var(--muted);
-}
-.sp-chip.sp-skipped,
-.sp-chip.sp-unavailable,
-.sp-chip.sp-canceled {
-  opacity: 0.75;
-}
-.sp-chip.sp-skipped .sp-ms,
-.sp-chip.sp-unavailable .sp-ms,
-.sp-chip.sp-canceled .sp-ms {
-  color: var(--muted);
-}
-.sp-note {
-  color: var(--muted);
-}
-.sp-total {
-  margin-left: auto;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 </style>

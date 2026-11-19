@@ -15,6 +15,7 @@ import type {
   DepStatus,
   DetectTimings,
   LayerReport,
+  QualityReport,
   ErrorItem,
   ExplainResponse,
   LanguageInfo,
@@ -24,6 +25,8 @@ import type {
 /** 分阶段进度条：Web 端轮询定时器 + 在飞标记（模块级，不响应式） */
 let progressTimer: number | undefined
 let progressPolling = false
+/** 轮询发起序号：后发结果覆盖先发（响应乱序时陈旧快照不得落库） */
+let pollSeq = 0
 
 export interface LlmExplainState {
   loading: boolean
@@ -96,6 +99,9 @@ export const useGecStore = defineStore('gec', {
     llmConfirmedClean: false,
     /** 本次检测的层级贡献摘要（ResultsPanel「检测路径」；未实际检测时为 null） */
     layers: null as LayerReport[] | null,
+    /** 本次检测结果质量自描述（partial/degraded 时 ResultsPanel 展示徽标；
+     *  缓存/历史回放与旧服务端为 null；仅 full 的结果会进后端缓存/历史） */
+    quality: null as QualityReport | null,
     tables: [] as DecisionTableMeta[],
     activeLang: 'zh',
     tableDraft: '',
@@ -277,6 +283,7 @@ export const useGecStore = defineStore('gec', {
       this.analyzed = []
       this.timings = null
       this.layers = null
+      this.quality = null
       this.detectCompleted = false
       this.fromHistory = false
       this.decisionAbstained = false
@@ -352,13 +359,16 @@ export const useGecStore = defineStore('gec', {
         progressTimer = undefined
       }
     },
-    async pollProgress() {
+    async pollProgress(force = false) {
       const p = this.progress
-      if (progressPolling || !p.id) return
+      if (!p.id) return
+      if (!force && progressPolling) return
+      const seq = ++pollSeq
       progressPolling = true
       try {
         const r = await api.detectProgress(p.id)
-        if (this.progress.id !== p.id) return // 新一轮检测已接管
+        // 更新一轮已发起 / 新一轮检测已接管：陈旧响应不得落库
+        if (seq !== pollSeq || this.progress.id !== p.id) return
         const v = applyStageEvents(r.events)
         if (v.stages.length || !this.progress.finished) this.progress.stages = v.stages
         if (r.finished || v.finished) {
@@ -389,13 +399,14 @@ export const useGecStore = defineStore('gec', {
       this.resultText = this.text
       this.resultLang = this.lang
     },
-    async detect() {
+    async detect(opts?: { refresh?: boolean }) {
       this.beginDetect('detect')
       try {
         // 分类过滤为前端展示层行为（ErrorList 即时过滤），不再下发 category 参数
         const res = await api.detect(this.lang, this.text, undefined, this.level, false, {
           signal: detectController?.signal,
           progressId: this.progress.id,
+          refresh: opts?.refresh,
         })
         if (detectController?.signal.aborted) return // 已取消：结果到达也直接丢弃
         this.errors = res.errors
@@ -403,8 +414,11 @@ export const useGecStore = defineStore('gec', {
         this.fromHistory = !!res.from_history
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
         this.settleProgress(res.timings, res.from_history)
+        // 最后一批阶段事件（知识召回→End）可能晚于响应前的最后一次轮询：补拉一次
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -429,8 +443,10 @@ export const useGecStore = defineStore('gec', {
         this.decisionAbstained = !!res.decision_abstained
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
         this.settleProgress(res.timings)
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -463,8 +479,10 @@ export const useGecStore = defineStore('gec', {
         this.fromHistory = !!res.from_history
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
         this.settleProgress(res.timings, res.from_history)
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1

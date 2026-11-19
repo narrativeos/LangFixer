@@ -9,6 +9,12 @@ const store = useGecStore()
 function label(key: string, table: Record<string, string>): string {
   return table[key] ?? key
 }
+
+/** 新手兜底桶：grammar_novice 是「未命中细粒度桶」的占位归因（决策表兜底行），
+ *  补救/教材内容是泛化引导文案而非有效教学内容，展示反而误导 → 告警样式 + 隐藏两卡 */
+function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
+  return item.attribution?.trace?.matched_rule === 'grammar_novice'
+}
 </script>
 
 <template>
@@ -22,7 +28,7 @@ function label(key: string, table: Record<string, string>): string {
     "
   />
   <div v-else class="attr-list">
-    <div v-for="(item, i) in store.analyzed" :key="i" class="attr-card">
+    <div v-for="(item, i) in store.analyzed" :key="i" class="attr-card" :class="{ novice: isNoviceBucket(item) }">
       <div class="attr-head">
         <LTag>{{ errorTypeLabel(item.error.error_type) }}</LTag>
         <div class="fix">
@@ -64,14 +70,18 @@ function label(key: string, table: Record<string, string>): string {
             <dd><LTag>{{ label(item.attribution.weiner.controllability, WEINER_LABELS) }}</LTag></dd>
           </div>
         </dl>
-        <div v-if="item.attribution.remedial.length > 0" class="remedial">
+        <div v-if="isNoviceBucket(item)" class="novice-note" role="note">
+          命中新手兜底桶（grammar_novice）：只能判定为新手知识缺口，未命中具体规则点；
+          补救措施与教材示例为占位引导，已隐藏，等待规则覆盖细化
+        </div>
+        <div v-else-if="item.attribution.remedial.length > 0" class="remedial">
           <div class="remedial-title">补救措施</div>
           <ul>
             <li v-for="(r, j) in item.attribution.remedial" :key="j">{{ r }}</li>
           </ul>
         </div>
         <div
-          v-if="item.attribution.examples && item.attribution.examples.length > 0"
+          v-if="!isNoviceBucket(item) && item.attribution.examples && item.attribution.examples.length > 0"
           class="remedial"
         >
           <div class="remedial-title">教材示例</div>
@@ -100,6 +110,18 @@ function label(key: string, table: Record<string, string>): string {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
+}
+.attr-card.novice {
+  border-color: var(--warn-line);
+}
+.novice-note {
+  font-size: var(--fs-sm);
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--lh-body);
 }
 .attr-head {
   display: flex;

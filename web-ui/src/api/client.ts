@@ -422,7 +422,8 @@ export const api = {
     return http.get<LanguageInfo[]>('/gec/languages').then((r) => r.data)
   },
 
-  /** POST /gec/detect（桌面端：invoke detect）；支持可选 category 过滤 + 漏报强制兜底（forceLlm）；
+  /** POST /gec/detect（桌面端：invoke detect）；支持可选 category 过滤 + 漏报强制兜底（forceLlm）
+   *  + 忽略缓存重检（refresh：跳过服务端 LRU / 历史复用，强制实检）；
    *  Web 端支持 signal 取消；level>=2 或 forceLlm 时超时放宽到 180s（LLM 兜底常超 60s） */
   detect(
     lang: string,
@@ -430,7 +431,7 @@ export const api = {
     category?: string,
     level?: number,
     forceLlm?: boolean,
-    opts?: { signal?: AbortSignal; progressId?: string },
+    opts?: { signal?: AbortSignal; progressId?: string; refresh?: boolean },
   ): Promise<DetectResponse> {
     if (inTauri)
       return tauri!
@@ -440,6 +441,7 @@ export const api = {
           category: category ?? null,
           level: level ?? null,
           forceLlm: forceLlm ?? false,
+          refresh: opts?.refresh ?? false,
           progressId: opts?.progressId ?? null,
         })
         .then((r) => r as DetectResponse)
@@ -447,7 +449,13 @@ export const api = {
     return http
       .post<DetectResponse>(
         url,
-        { lang, text, level: level ?? 1, force_llm: forceLlm ?? false },
+        {
+          lang,
+          text,
+          level: level ?? 1,
+          force_llm: forceLlm ?? false,
+          ...(opts?.refresh ? { refresh: true } : {}),
+        },
         {
           signal: opts?.signal,
           timeout: forceLlm || (level ?? 1) >= 2 ? 180_000 : 60_000,

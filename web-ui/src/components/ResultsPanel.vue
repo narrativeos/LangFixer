@@ -35,6 +35,32 @@ function layerText(l: LayerReport): string {
 }
 const runPath = computed(() => store.layers ?? [])
 
+/** 降级原因人话化：后端编码（"{layer}_unavailable" 等）→ 中文文案 */
+function qualityReasonText(r: string): string {
+  if (r.endsWith('_unavailable')) return `${plainLayerLabel(r.slice(0, -'_unavailable'.length))}不可用`
+  if (r.endsWith('_partial')) return `${plainLayerLabel(r.slice(0, -'_partial'.length))}部分执行`
+  if (r.startsWith('coverage:')) return `复查覆盖 ${r.slice(9)}`
+  if (r.startsWith('unowned_chars:')) return `所有权空洞 ${r.slice(14)} 字节`
+  return r
+}
+
+/** 质量徽标：quality ≠ full 时展示（降级不得伪装成正常结果）；
+ *  full / 回放（quality=null）/ 旧服务端不显示；悬浮提示降级原因与缓存资格 */
+const qualityBadge = computed(() => {
+  const q = store.quality
+  if (!q || q.status === 'full') return null
+  const label = q.status === 'degraded' ? '降级运行' : '部分完成'
+  const reasons = (q.degraded_reasons ?? []).map(qualityReasonText)
+  const parts: string[] = []
+  if (reasons.length) parts.push(`原因：${reasons.join('；')}`)
+  if (q.coverage !== undefined && q.coverage < 1) {
+    parts.push(`已复查 ${Math.round(q.coverage * 100)}%`)
+  }
+  if (q.unowned_chars > 0) parts.push(`所有权空洞 ${q.unowned_chars} 字节（完整性异常）`)
+  parts.push('本次结果不会写入缓存 / 历史复用')
+  return { label, degraded: q.status === 'degraded', title: parts.join('。') }
+})
+
 // 新结果到达时自动切到对应视图：仅在「检测完成」（resultsVersion 变化）时触发，
 // 用户手动切换页签后不会被中途打断（旧实现 watch length，任何长度变化都会抢 tab）
 watch(
@@ -112,8 +138,24 @@ function applyCorrected() {
       <LButton size="sm" @click="applyCorrected">替换为修正文本</LButton>
       <span class="fix-hint">应用全部「建议修正」后的完整文本</span>
     </div>
-    <p v-if="store.detectCompleted && store.fromHistory" class="from-history-hint" role="status">
+    <p
+      v-if="store.detectCompleted && store.fromHistory"
+      class="from-history-hint"
+      role="status"
+    >
       本次结果来自历史复用（同文本 + 参数一致 + 无 LLM），未重新执行检测
+      <LButton size="sm" :disabled="store.loading" @click="store.detect({ refresh: true })">
+        忽略缓存重检
+      </LButton>
+    </p>
+    <p
+      v-if="store.detectCompleted && qualityBadge"
+      class="quality-hint"
+      :class="{ degraded: qualityBadge.degraded }"
+      role="status"
+      :title="qualityBadge.title"
+    >
+      本次检测结果为{{ qualityBadge.label }}，结论可能不完整
     </p>
     <div v-if="runPath.length" class="l-trace" aria-label="本次检测层级贡献摘要">
       <span class="rp-label">检测路径</span>
@@ -141,7 +183,11 @@ function applyCorrected() {
     </div>
 
     <LSegmented v-model="view" :options="viewOptions" />
-    <ErrorList v-show="view === 'errors'" />
+    <!-- 包一层 div：ErrorList 多根节点（首节点可能是 v-if 的注释节点），
+         v-show 直挂组件会触发「non-element root」警告且指令失效 -->
+    <div v-show="view === 'errors'">
+      <ErrorList />
+    </div>
     <Attribution v-show="view === 'attribution'" />
     <LlmExplain v-show="view === 'llm'" />
   </div>
@@ -168,6 +214,19 @@ function applyCorrected() {
   font-size: var(--fs-sm);
   color: var(--muted);
   line-height: var(--lh-body);
+}
+.quality-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--lh-body);
+}
+.quality-hint.degraded {
+  color: var(--danger);
 }
 .rp-label {
   font-size: var(--fs-sm);
