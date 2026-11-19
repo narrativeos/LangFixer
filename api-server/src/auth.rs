@@ -1,7 +1,9 @@
 //! 网关形态身份层（评测通道设计，见 `docs/GATEWAY_AUTH.md`）
 //!
 //! 原则：
-//! - **单机形态零变化**：`LANGFIXER_GATEWAY` 未开启时全部端点保持原有免鉴权行为；
+//! - **单机形态默认登录门**：`LANGFIXER_GATEWAY` 未开启时，业务端点默认要求登录态
+//!   （内建 admin 账号密码，默认密码 `LangFixer@2026`）；`LANGFIXER_LOGIN=0` 回到
+//!   原有免鉴权「零变化」直通，库嵌入装配（`standalone()`）恒直通；
 //! - **一张令牌表 = 唯一身份原语**：web 会话与未来 MCP 面共用同一 Bearer 校验与配额；
 //! - **超级管理员密钥**：env 给了 `LANGFIXER_ADMIN_TOKEN` 就以 env 为准（内存里只留
 //!   SHA-256 摘要）；env 没给则安装时生成一枚落 `gw_meta.admin_token` 并复用。
@@ -30,6 +32,15 @@ pub const META_OWNER_CLAIMED: &str = "owner_claimed";
 
 /// 安装时自动生成的超管密钥存储键。
 pub const META_ADMIN_TOKEN: &str = "admin_token";
+
+/// 管理员登录密码在 `gw_meta` 里的存储键：只存 SHA-256 hex 摘要，不存明文。
+pub const META_ADMIN_PASSWORD: &str = "admin_password_hash";
+
+/// 默认管理员密码：首次启动落库（摘要）；登录后应尽快改（`POST /auth/password`）。
+pub const DEFAULT_ADMIN_PASSWORD: &str = "LangFixer@2026";
+
+/// 内建登录用户名：本产品无注册、无多用户，密码登录只认这一个账号。
+pub const ADMIN_USERNAME: &str = "admin";
 
 /// 解析 `.env`（KEY=VALUE，支持注释与引号；不覆盖进程环境已有的变量）。
 ///
@@ -95,7 +106,7 @@ fn digest_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 /// 摘要（`Arc`），因此已注入各路由扩展的 `GatewayConfig` 会一起认新钥匙。
 #[derive(Clone)]
 pub struct AdminCred {
-    digest: Arc<RwLock<Option<[u8; 32]>>>,
+    pub digest: Arc<RwLock<Option<[u8; 32]>>>,
 }
 
 impl AdminCred {
@@ -105,6 +116,21 @@ impl AdminCred {
                 token.filter(|t| !t.is_empty()).map(|t| sha256(&t)),
             )),
         }
+    }
+
+    /// 从已落库的 SHA-256 摘要直接构造（密码存的就是摘要，不回明文）。
+    pub fn from_digest(digest: [u8; 32]) -> Self {
+        Self {
+            digest: Arc::new(RwLock::new(Some(digest))),
+        }
+    }
+
+    /// 这把凭证是否活着（有可比的摘要）。
+    pub fn is_set(&self) -> bool {
+        self.digest
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     pub fn matches(&self, presented: &str) -> bool {
@@ -605,6 +631,13 @@ pub struct GatewayConfig {
     pub cookie_secure: bool,
     /// 当前超管密钥来自 env 还是安装生成的 `gw_meta`（决定轮换是否可用）。
     pub admin_source: AdminTokenSource,
+    /// 单机形态登录门：开启时业务端点要求登录态（会话 cookie / 超管 Bearer），
+    /// 未登录一律 401 + `login_required`；默认开启，`LANGFIXER_LOGIN=0` 回到
+    /// 「零变化」直通。网关形态恒 false（已有全量鉴权门，本开关不参与）。
+    pub login_gate: bool,
+    /// 管理员登录密码（内存只留 SHA-256 摘要）：来源语义与超管密钥同款——
+    /// env 给了以 env 为准（不进库），否则用库里的摘要，都没有时以默认密码初始化落库。
+    pub password: AdminCred,
 }
 
 #[derive(Debug)]
@@ -633,7 +666,10 @@ impl GatewayConfig {
     pub fn standalone() -> Self {
         let store = TokenStore::in_memory().expect("内存令牌库不可用");
         // 内存库没有 admin_token：build_with_store 会生成一枚（单机形态用不到它）
-        Self::build_with_store(&HashMap::new(), store).expect("单机形态配置不应失败")
+        let mut cfg = Self::build_with_store(&HashMap::new(), store).expect("单机形态配置不应失败");
+        // 库嵌入 / 集成测试装配用：登录门保持关闭，业务端点不拒任何请求。
+        cfg.login_gate = false;
+        cfg
     }
 
     fn build_with_store(
@@ -689,13 +725,61 @@ impl GatewayConfig {
         let cookie_secure = lookup(dotenv, "LANGFIXER_COOKIE_SECURE")
             .map(|v| v != "0")
             .unwrap_or(enabled); // 网关形态默认 Secure（本机明文联调设 0）
+        // 管理员登录密码：env 给了以 env 为准（不进库，与超管密钥同款）；否则用
+        // 库里摘要；两者都没有时以默认密码初始化并落摘要，WARN 一次提醒改密。
+        let env_pw = lookup(dotenv, "LANGFIXER_ADMIN_PASSWORD").filter(|v| !v.is_empty());
+        let stored_pw = store
+            .meta_get(META_ADMIN_PASSWORD)
+            .map_err(GatewayConfigError::Store)?;
+        if env_pw.is_some() && stored_pw.is_some() {
+            tracing::warn!(
+                "LANGFIXER_ADMIN_PASSWORD 与 gw_meta.{META_ADMIN_PASSWORD} 同时有值：以 env 为准，库里那份不会被使用"
+            );
+        }
+        let password = match env_pw {
+            Some(p) => AdminCred::from_token(Some(p)),
+            None => match stored_pw.as_deref().and_then(decode_digest_hex) {
+                Some(d) => AdminCred::from_digest(d),
+                None => {
+                    store
+                        .meta_set(META_ADMIN_PASSWORD, &hex(&sha256(DEFAULT_ADMIN_PASSWORD)))
+                        .map_err(GatewayConfigError::Store)?;
+                    tracing::warn!(
+                        "已用默认管理员密码初始化（用户名 {ADMIN_USERNAME} / 密码 {DEFAULT_ADMIN_PASSWORD}）：请尽快在设置面改密，或 POST /auth/password"
+                    );
+                    AdminCred::from_token(Some(DEFAULT_ADMIN_PASSWORD.to_string()))
+                }
+            },
+        };
+        // 登录门：单机形态默认开启（用户要求产品级登录）；显式 0 回到直通；
+        // 网关形态已有鉴权门，本开关不参与。
+        let login_gate = !enabled
+            && lookup(dotenv, "LANGFIXER_LOGIN")
+                .map(|v| v != "0")
+                .unwrap_or(true);
         Ok(Self {
             enabled,
             admin: AdminCred::from_token(admin_token),
             store,
             cookie_secure,
             admin_source,
+            login_gate,
+            password,
         })
+    }
+
+    /// 密码登录核验：用户名必须为内建的 admin，密码比内存摘要。
+    pub fn verify_password(&self, username: &str, password: &str) -> bool {
+        username == ADMIN_USERNAME && self.password.matches(password)
+    }
+
+    /// 改管理员密码：**先落库再换内存摘要**（与密钥轮换同序，避免分裂）。
+    pub fn rotate_password(&self, new: &str) -> Result<(), String> {
+        self.store
+            .meta_set(META_ADMIN_PASSWORD, &hex(&sha256(new)))?;
+        self.password.swap(new);
+        tracing::warn!(password_fingerprint = %self.password.fingerprint().unwrap_or_default(), "管理员密码已变更");
+        Ok(())
     }
 
     /// **显式**轮换超级管理员密钥：换钥匙是一个动作，不是重启 / 改文件的副作用。
@@ -771,6 +855,18 @@ impl RotateError {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 解码 64 位 hex 摘要；非法输入返回 None（落库摘要被手工改坏时按「没有」处理）。
+fn decode_digest_hex(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 /// 每个请求的作用域（owner 隔离与用量归户都读它）。

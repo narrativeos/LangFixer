@@ -48,9 +48,42 @@ export function mergeIdentity(
     token_id: login ? login.token_id : (me?.token_id ?? prev.token_id),
     authenticated: login ? true : (me?.authenticated ?? prev.authenticated),
     locked: me?.locked ?? prev.locked,
+    password_login: me?.password_login ?? prev.password_login,
     admin_token_source: me?.admin_token_source,
     admin_token_fp: me?.admin_token_fp ?? null,
   }
+}
+
+/** 会话在途失效（TTL / 重启）时 client.ts 的 401 拦截器广播此事件，把界面拉回门禁页 */
+const LOCKED_EVENT = 'langfixer:locked'
+let lockedArmed = false
+
+/** 挂 401→回门禁 的监听（幂等；initGate 与登录路径都调） */
+function armLockedListener(): void {
+  if (lockedArmed || typeof window === 'undefined') return
+  lockedArmed = true
+  window.addEventListener(LOCKED_EVENT, () => {
+    identity.value = { ...identity.value, authenticated: false }
+    gateReady.value = true
+  })
+}
+
+/** 用户名密码登录（单机形态登录门的内建 admin 账号）：会话走 httpOnly cookie，本地不留凭证 */
+export async function loginWithPassword(username: string, password: string): Promise<void> {
+  const r = await api.loginPassword(username, password)
+  armLockedListener()
+  identityLabel.value = r.label
+  // 与 loginWithKey 同理：登录改变 locked 语义，补一次 whoami 取权威快照
+  let me: Whoami | null = null
+  try {
+    me = await api.whoami()
+  } catch {
+    /* 老服务端：按已登录保守处理 */
+  }
+  identity.value = mergeIdentity(identity.value, me, {
+    admin: r.admin,
+    token_id: r.token_id,
+  })
 }
 
 export function accessKey(): string | null {
@@ -156,6 +189,7 @@ export async function initGate(): Promise<void> {
     /* 老版本服务端 whoami 需鉴权：按「已锁定未登录」处理，门禁页照常出现 */
   }
   identity.value = me
+  armLockedListener()
   const key = urlKey ?? (me.authenticated ? null : accessKey())
   if (key) {
     try {

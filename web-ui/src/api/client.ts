@@ -96,6 +96,24 @@ import type {
 
 const http = axios.create({ baseURL: '/', timeout: 60000 })
 
+/** 业务端点回 401 + login_required（登录门 / 会话失效）：广播回门禁事件。
+ *  whoami 设计上匿名也回 200，不经过这里。 */
+http.interceptors.response.use(
+  (r) => r,
+  (e: unknown) => {
+    const resp = (e as { response?: { status?: number; data?: { login_required?: boolean } } })
+      ?.response
+    if (
+      resp?.status === 401 &&
+      resp.data?.login_required &&
+      typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new Event('langfixer:locked'))
+    }
+    return Promise.reject(e)
+  },
+)
+
 /** responseType: 'blob' 时错误响应体也是 Blob → 读回文本还原为常规 Error（保留服务端错误消息） */
 async function normalizeBlobError(e: unknown): Promise<unknown> {
   const data = (e as { response?: { data?: unknown } })?.response?.data
@@ -267,8 +285,10 @@ export interface Whoami {
   token_id: string | null
   /** 凭证已验证：false 时产品界面不展示（先过门禁页） */
   authenticated: boolean
-  /** 产品界面是否需要验证：网关形态恒真；单机形态看 owner 是否已激活（未激活 = 零变化） */
+  /** 产品界面是否需要验证：网关形态恒真；单机形态看登录门是否开启（默认开启） */
   locked: boolean
+  /** 服务端接受用户名密码登录（内建 admin 账号）；门禁页据此展示账号表单 */
+  password_login?: boolean
   /** 超管密钥来源：`env` = `LANGFIXER_ADMIN_TOKEN` 持有；`generated` = 安装时生成落 gw_meta。
    *  仅对已验证的超管回（匿名探测不带此字段），桌面端 invoke 亦不带 */
   admin_token_source?: 'env' | 'generated'
@@ -296,6 +316,21 @@ export const api = {
   login(token: string): Promise<{ token_id: string | null; label: string; admin: boolean }> {
     if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
     return http.post('/auth/session', { token }).then((r) => r.data)
+  },
+
+  /** POST /auth/session — 用户名密码登录（单机形态登录门的内建 admin 账号） */
+  loginPassword(
+    username: string,
+    password: string,
+  ): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
+    return http.post('/auth/session', { username, password }).then((r) => r.data)
+  },
+
+  /** POST /auth/password — 改管理员密码（需已验证的管理员登录态） */
+  changePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无密码体系'))
+    return http.post('/auth/password', { old_password: oldPassword, new_password: newPassword }).then((r) => r.data)
   },
 
   /** POST /auth/logout — 结束当前会话（服务端即刻失效） */

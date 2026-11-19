@@ -9,7 +9,7 @@
 
 | 形态 | 触发 | 行为 |
 |---|---|---|
-| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 鉴权整体关闭，与接入前完全一致；仅「设置写入」在 owner 认领后要求登录态（见下节） |
+| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 默认开启登录门：内建 `admin` 账号密码登录（默认密码 `LangFixer@2026`，首次启动落库并 WARN），未登录的业务请求一律 401 + `login_required`；`LANGFIXER_LOGIN=0` 回到「零变化」直通（与接入前完全一致，仅「设置写入」在 owner 认领后要求登录态，见下节）；已验证超管可在「接入」页（或 `POST /auth/password`）改密，旧密码即时作废 |
 | 网关 | `LANGFIXER_GATEWAY=1` | 全部业务端点要求评审令牌；`/admin/*` 只认超管令牌 |
 
 配置见 `.env.example`。进程环境优先于 `.env`；`.env` 不入库（已在 `.gitignore`）。
@@ -149,13 +149,15 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
    `gw_meta` 来源可用，env 来源回 409；`whoami` 对已验证超管回 `admin_token_source` /
    `admin_token_fp` 指明这把归谁、活的是哪把。详见「轮换超级管理员密钥」。
 2. **验证前不露界面**：`GET /auth/whoami` 匿名可用（不进 gate），回
-   `{gateway, admin, token_id, authenticated, locked}`（已验证超管额外带密钥来源与指纹）。
+   `{gateway, admin, token_id, authenticated, locked, password_login}`（已验证超管额外带密钥来源与指纹）。
    `locked` = 界面是否需要验证：
-   网关形态恒 `true`；单机形态看 `gw_meta.owner_claimed`。前端 `showGate` / `showApp` 二选一，
+   网关形态恒 `true`；单机形态登录门开启即 `true`，关闭时看 `gw_meta.owner_claimed`。前端 `showGate` / `showApp` 二选一，
    未验证时整个产品界面（header 与主区）不渲染；密钥只进 `sessionStorage`（关标签页即失效，
    不落 localStorage），`?token=` 直链登录后立即从地址栏剥掉。
-3. **单机「零变化」口径收窄**：业务端点仍全开放、桌面端 `invoke` 不走 HTTP 完全不受门禁影响；
-   **只有设置写入**（`PUT /gec/settings`、`/gec/settings/test`）在 owner 认领后要求已验证凭证。
+3. **单机默认登录门**：登录门开启时业务端点要求会话 cookie 或超管 Bearer，
+   `/auth/*` 探测与 `/gec/deps` 体检保持公开；`LANGFIXER_LOGIN=0` 时回到旧口径——
+   业务端点全开放、**只有设置写入**（`PUT /gec/settings`、`/gec/settings/test`）在 owner 认领后要求已验证凭证。
+   桌面端 `invoke` 不走 HTTP，两种情况下都完全不受门禁影响。
    认领动作 = 超管首次成功换会话时置 `owner_claimed`；单机形态未认领时「接入」页是唯一的
    「认领并锁定设置」入口（此时界面照常敞开，不增加任何安装摩擦）。
 4. **配置面收口**：网关形态配置写入与探测仅超管可达（其余 **403**）；非超管 `GET /gec/settings`

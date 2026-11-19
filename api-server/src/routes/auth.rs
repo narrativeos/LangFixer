@@ -21,28 +21,52 @@ pub fn router(cfg: Arc<GatewayConfig>) -> Router {
         .route("/auth/session", post(create_session))
         .route("/auth/logout", post(logout))
         .route("/auth/whoami", axum::routing::get(whoami))
+        .route("/auth/password", post(change_password))
         .with_state(cfg)
 }
 
 #[derive(Deserialize)]
 struct SessionReq {
-    token: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PasswordReq {
+    old_password: String,
+    new_password: String,
 }
 
 async fn create_session(
     State(cfg): State<Arc<GatewayConfig>>,
     Json(body): Json<SessionReq>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (tid, label, admin) = if cfg.admin.matches(&body.token) {
-        (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
-    } else if let Some(info) = cfg
-        .store
-        .verify_token(&body.token)
-        .map_err(ApiError::Internal)?
-    {
-        (info.id, info.label, false)
+    let (tid, label, admin) = if let Some(token) = body.token.as_deref() {
+        if cfg.admin.matches(token) {
+            (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
+        } else if let Some(info) = cfg.store.verify_token(token).map_err(ApiError::Internal)? {
+            (info.id, info.label, false)
+        } else {
+            return Err(ApiError::Unauthorized("令牌无效或已吊销".into()));
+        }
+    } else if body.password.is_some() {
+        // 用户名密码登录：只认内建的 admin 账号（无注册、无多用户）
+        if cfg.verify_password(
+            body.username.as_deref().unwrap_or(""),
+            body.password.as_deref().unwrap_or(""),
+        ) {
+            (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
+        } else {
+            return Err(ApiError::Unauthorized("用户名或密码错误".into()));
+        }
     } else {
-        return Err(ApiError::Unauthorized("令牌无效或已吊销".into()));
+        return Err(ApiError::BadRequest(
+            "需要提供 token 或 username/password".into(),
+        ));
     };
     // 单机形态没有评审令牌体系：只有超管密钥能建会话
     if !cfg.enabled && !admin {
@@ -101,16 +125,17 @@ async fn whoami(
     Extension(ctx): Extension<AuthContext>,
     Extension(scope): Extension<RequestScope>,
 ) -> impl IntoResponse {
-    // locked = 产品界面是否需要验证：网关形态恒真；单机形态看 owner 是否已激活
-    // （未激活 = 刚装完的本机用户，界面照常敞开，与设置写入零变化同口径）
+    // locked = 产品界面是否需要验证：网关形态恒真；单机形态看登录门是否开启
+    // （默认开启；LANGFIXER_LOGIN=0 时退回旧语义——owner 激活后才锁）
     let mut locked = cfg.enabled;
     if !locked {
-        locked = cfg
-            .store
-            .meta_get(crate::auth::META_OWNER_CLAIMED)
-            .ok()
-            .flatten()
-            .is_some();
+        locked = cfg.login_gate
+            || cfg
+                .store
+                .meta_get(crate::auth::META_OWNER_CLAIMED)
+                .ok()
+                .flatten()
+                .is_some();
     }
     let mut body = serde_json::json!({
         "gateway": ctx.gateway,
@@ -118,6 +143,7 @@ async fn whoami(
         "token_id": scope.token_id,
         "authenticated": ctx.authed,
         "locked": locked,
+        "password_login": cfg.password.is_set(),
     });
     // 密钥来源与指纹**只给已验证的超管**：whoami 未登录也回 200（门禁页要探测），
     // 匿名请求一律不回，避免把「这台实例活的是哪把」的信息白送出去。
@@ -127,4 +153,25 @@ async fn whoami(
         body["admin_token_fp"] = serde_json::json!(cfg.admin.fingerprint());
     }
     Json(body)
+}
+
+/// 改管理员密码：需已验证的管理员身份（会话或超管 Bearer）。
+/// 默认密码写在文档与启动日志里，不改密等于没有口令——所以这个端点与登录面同批落地。
+async fn change_password(
+    State(cfg): State<Arc<GatewayConfig>>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(body): Json<PasswordReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !(ctx.authed && ctx.admin) {
+        return Err(ApiError::Unauthorized("需要管理员登录态".into()));
+    }
+    if !cfg.password.matches(&body.old_password) {
+        return Err(ApiError::Unauthorized("原密码错误".into()));
+    }
+    if body.new_password.len() < 8 {
+        return Err(ApiError::BadRequest("新密码至少 8 位".into()));
+    }
+    cfg.rotate_password(&body.new_password)
+        .map_err(ApiError::Internal)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

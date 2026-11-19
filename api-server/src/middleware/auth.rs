@@ -28,9 +28,9 @@ pub async fn gate(State(cfg): State<Arc<GatewayConfig>>, mut req: Request, next:
         .map(str::to_string);
     let sid = session_cookie(req.headers());
 
-    // 单机形态：业务端点行为与接入鉴权前完全一致（Tenant 恒直通、不拒任何请求），
-    // 只标记「这个请求带了有效凭证」。调用级日志是网关侧的运维资料，
-    // 单机形态不落（零新增写盘，也避免把私人使用记成「调用」）。
+    // 单机形态：默认带登录门（login_gate）——业务端点要求有效凭证（超管 Bearer
+    // 或密码/密钥换来的会话 cookie），未登录一律 401 + login_required；
+    // LANGFIXER_LOGIN=0 或库嵌入装配（standalone 直通配置）时保持原有零变化直通。
     if !cfg.enabled {
         let mut authed = false;
         if let Some(token) = &bearer {
@@ -38,6 +38,15 @@ pub async fn gate(State(cfg): State<Arc<GatewayConfig>>, mut req: Request, next:
         }
         if let Some(sid) = &sid {
             authed |= matches!(cfg.store.resolve_session(sid), Ok(Some(_)));
+        }
+        let path = req.uri().path();
+        if !authed && cfg.login_gate && !is_public_path(path) {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                [(header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"unauthorized: 需要登录","login_required":true}"#,
+            )
+                .into_response();
         }
         admit(
             &mut req,
@@ -250,6 +259,12 @@ pub fn with_standalone_tenant(app: axum::Router) -> axum::Router {
 }
 
 /// 放行：注入身份双扩展与身份上下文（admin / 单机形态的 Tenant.token_id 恒 None = 不隔离不计量）。
+/// 单机登录门的公开路径：/auth/* 探测与登录本身必须永远可达；
+/// /gec/deps 是依赖监督/重启保活的体检面，不得被登录拦住。
+fn is_public_path(path: &str) -> bool {
+    path.starts_with("/auth/") || path == "/gec/deps" || path.starts_with("/gec/deps/")
+}
+
 fn admit(req: &mut Request, cfg: &Arc<GatewayConfig>, scope: RequestScope, authed: bool) {
     req.extensions_mut().insert(AuthContext {
         gateway: cfg.enabled,

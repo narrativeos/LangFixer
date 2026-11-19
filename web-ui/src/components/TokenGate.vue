@@ -1,17 +1,34 @@
 <script setup lang="ts">
 /**
- * Token 门禁页：验证通过前产品界面不渲染（App.vue 用它替换整个界面）。
- * 密钥来源两条：管理员分发的 `?token=` 直链（自动登录后地址栏即干净）与手输；
- * 无注册、无找回密码——服务端也只认这一张令牌表。
+ * 门禁页：验证通过前产品界面不渲染（App.vue 用它替换整个界面）。
+ * 两种凭证：单机登录门的内建 admin 账号密码（主），与管理员分发的
+ * `?token=` 直链 / 访问密钥（评审令牌与超管密钥）；无注册、无找回密码。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { LButton, LInput } from '../ui'
 import { errMsg } from '../lib/err'
-import { accessKey, clearAccessKey, identity, loginWithKey, mcpEndpoint } from '../lib/auth'
+import {
+  accessKey,
+  clearAccessKey,
+  identity,
+  loginWithKey,
+  loginWithPassword,
+  mcpEndpoint,
+} from '../lib/auth'
 
 const keyInput = ref('')
 const busy = ref(false)
 const error = ref('')
+
+/** 单机登录门默认走账号密码；网关形态维持令牌主路。两种凭证都能进，留切换入口 */
+const mode = ref<'password' | 'token'>(
+  identity.value.password_login && !identity.value.gateway ? 'password' : 'token',
+)
+const showPasswordForm = computed(
+  () => mode.value === 'password' && !!identity.value.password_login,
+)
+const usernameInput = ref('admin')
+const passwordInput = ref('')
 
 const emit = defineEmits<{ (e: 'entered'): void }>()
 
@@ -41,6 +58,24 @@ async function enter() {
   }
 }
 
+async function enterAccount() {
+  if (!passwordInput.value) {
+    error.value = '请输入密码'
+    return
+  }
+  busy.value = true
+  error.value = ''
+  try {
+    await loginWithPassword(usernameInput.value.trim(), passwordInput.value)
+    passwordInput.value = ''
+    emit('entered')
+  } catch (e) {
+    error.value = clean(e) || '用户名或密码错误'
+  } finally {
+    busy.value = false
+  }
+}
+
 /** 本标签页存过密钥却仍未通过（直链失效 / 被吊销）：给一个明确的清干净入口 */
 const hadKey = ref(!!accessKey())
 function reset() {
@@ -62,39 +97,76 @@ function reset() {
         </span>
         <div>
           <h1>LangFixer</h1>
-          <p>{{ identity.gateway ? '此实例已开启访问验证' : '本机设置已被超级管理员锁定' }}</p>
+          <p>
+            {{
+              identity.gateway
+                ? '此实例已开启访问验证'
+                : identity.password_login
+                  ? '请使用管理员账号登录'
+                  : '本机设置已被超级管理员锁定'
+            }}
+          </p>
         </div>
       </div>
 
       <template v-if="!identity.authenticated">
-        <label class="gate-label" for="gate-key">访问密钥</label>
-        <LInput
-          id="gate-key"
-          v-model="keyInput"
-          autofocus
-          placeholder="lf_…（管理员分发）"
-          :disabled="busy"
-          @keyup.enter="enter"
-        />
-        <LButton variant="primary" :loading="busy" class="gate-enter" @click="enter">
-          进入
-        </LButton>
-        <!-- 错误态：红色只用于这里；下一步指引就在文案里 -->
-        <p v-if="error" class="gate-error" role="alert">
-          {{ error }}——请确认密钥完整未过期，或直接使用管理员发来的 <code>?token=…</code> 直链。
-        </p>
-        <LButton v-if="hadKey" variant="ghost" size="sm" @click="reset">
-          清除本标签页记住的密钥
-        </LButton>
-        <ul class="gate-hint">
-          <li>无需注册：密钥由管理员签发，直接粘贴即可。</li>
-          <li>收到的是 <code>?token=…</code> 链接？打开就会自动进入，不用手输。</li>
-          <li>密钥只保存在本次标签页，关闭浏览器即失效。</li>
-        </ul>
+        <template v-if="showPasswordForm">
+          <label class="gate-label" for="gate-user">用户名</label>
+          <LInput id="gate-user" v-model="usernameInput" autofocus :disabled="busy" placeholder="admin" />
+          <label class="gate-label" for="gate-pass">密码</label>
+          <LInput
+            id="gate-pass"
+            v-model="passwordInput"
+            type="password"
+            placeholder="管理员密码"
+            :disabled="busy"
+            @keyup.enter="enterAccount"
+          />
+          <LButton variant="primary" :loading="busy" class="gate-enter" @click="enterAccount">
+            登录
+          </LButton>
+          <p v-if="error" class="gate-error" role="alert">{{ error }}</p>
+          <LButton variant="ghost" size="sm" @click="mode = 'token'; error = ''">
+            改用访问密钥
+          </LButton>
+          <ul class="gate-hint">
+            <li>首次使用见部署文档的默认密码；登录后请尽快修改。</li>
+            <li>收到的是 <code>?token=…</code> 链接？打开就会自动进入，不用手输。</li>
+          </ul>
+        </template>
+        <template v-else>
+          <label class="gate-label" for="gate-key">访问密钥</label>
+          <LInput
+            id="gate-key"
+            v-model="keyInput"
+            autofocus
+            placeholder="lf_…（管理员分发）"
+            :disabled="busy"
+            @keyup.enter="enter"
+          />
+          <LButton variant="primary" :loading="busy" class="gate-enter" @click="enter">
+            进入
+          </LButton>
+          <!-- 错误态：红色只用于这里；下一步指引就在文案里 -->
+          <p v-if="error" class="gate-error" role="alert">
+            {{ error }}——请确认密钥完整未过期，或直接使用管理员发来的 <code>?token=…</code> 直链。
+          </p>
+          <LButton v-if="hadKey" variant="ghost" size="sm" @click="reset">
+            清除本标签页记住的密钥
+          </LButton>
+          <LButton v-if="identity.password_login" variant="ghost" size="sm" @click="mode = 'password'; error = ''">
+            改用账号密码登录
+          </LButton>
+          <ul class="gate-hint">
+            <li>无需注册：密钥由管理员签发，直接粘贴即可。</li>
+            <li>收到的是 <code>?token=…</code> 链接？打开就会自动进入，不用手输。</li>
+            <li>密钥只保存在本次标签页，关闭浏览器即失效。</li>
+          </ul>
+        </template>
       </template>
 
       <p class="gate-foot">
-        <span>同一密钥可用于 MCP：{{ mcpEndpoint() }}</span>
+        <span>{{ showPasswordForm ? 'MCP 接入地址：' : '同一密钥可用于 MCP：' }}{{ mcpEndpoint() }}</span>
       </p>
     </div>
   </div>
