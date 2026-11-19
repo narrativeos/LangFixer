@@ -482,6 +482,17 @@ level 1 无 LLM，即 web-ui 生产默认配置）：
   L3 干净句后台任务（原内联版没有）；历史写入语义不变（带 analyzed_json，
   quality 门控 map_or(true)）；mcp / media 继续直驱 run_detection，doc-jobs 为
   gec_core 后台 executor 不在本层。api lib 45 + api 58 全绿，无断言修改
+- **1.1d 桌面并轨（2026-11-19，P4 第三子项）**：桌面 `commands.rs` 新增与
+  api-server 语义同构的唯一执行入口 `run_pipeline`（历史复用含 layers 回放 /
+  级联检测 / 抑制过滤 / issue_type / anomaly 采纳 / L3 干净句采集 / 参数快照），
+  detect / analyze 两命令降为驱动，消除桌面内联第二实现。**桌面 analyze
+  行为收敛**：自此获得 issue_type 填充、anomaly 自动采纳、L3 后台采集与
+  zh 归因粗族折叠（§11.11 兼容，en/ja 原样；改变桌面 zh 决策表归因行为，
+  对齐 api 为设计意图）；历史表补齐 corrected_text / layers_json 两列
+  （旧库轻量迁移），detect / analyze persist 均落两列，历史复用回放 layers。
+  **残余差异**：桌面仍为独立实现（非共享 crate）但语义同构；进程级 LRU
+  缓存桌面本就无，未补。cargo check --workspace 全绿，桌面 2 / api lib 45 /
+  api 58 全绿，无断言修改
 - **1.3 重训无效标记**：`reflection_center` 新增 `L3RetrainStateIn`
   （最近 completed `l3_retrain` 作业的 gate_f1/report_id + 当前报告复测 F1）；
   复测 F1 未超过重训前值 +0.05 → 不再提议 `l3_sample`，改出 findings

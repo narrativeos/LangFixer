@@ -21,7 +21,8 @@ use rusqlite::Connection;
 use crate::settings::AppSettings;
 use shared_model::{
     AnalyzedError, AttributionContext, DecisionTableMeta, Error, KnowledgePoint, KnowledgeSource,
-    SessionRecord, derive_issue_type, error_types, session_store::SqliteSessionStore,
+    SessionRecord, coarse_error_type, derive_issue_type, error_types,
+    session_store::SqliteSessionStore,
 };
 
 /// 程序版本号（crate 版本；写入检测历史，便于跨版本对比改进 / 按版本筛选训练数据）
@@ -230,6 +231,14 @@ pub struct DetectHistory {
     /// 文本稳定哈希（`shared_model::text_hash`；同文本历史快速查找键；旧记录为 null）
     #[serde(default)]
     pub text_hash: Option<String>,
+    /// 「应用全部建议修正后」的确定性纠正版（`shared_model::apply_corrections`；
+    /// 数据沉淀资产 A；旧记录为 null）
+    #[serde(default)]
+    pub corrected_text: Option<String>,
+    /// 层级贡献摘要 JSON（`gec_core::LayerReport` 数组；前端「检测路径」回放；
+    /// 旧记录为 null）
+    #[serde(default)]
+    pub layers_json: Option<String>,
     pub created_at: String,
 }
 
@@ -252,6 +261,8 @@ impl DetectHistoryStore {
                 version TEXT,
                 params_json TEXT,
                 text_hash TEXT,
+                corrected_text TEXT,
+                layers_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_detect_history_session ON detect_history(session_id);
@@ -303,6 +314,28 @@ impl DetectHistoryStore {
         if !has_text_hash {
             conn.execute_batch("ALTER TABLE detect_history ADD COLUMN text_hash TEXT")?;
         }
+        let has_corrected: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('detect_history') WHERE name = 'corrected_text'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_corrected {
+            conn.execute_batch("ALTER TABLE detect_history ADD COLUMN corrected_text TEXT")?;
+        }
+        let has_layers: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('detect_history') WHERE name = 'layers_json'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_layers {
+            conn.execute_batch("ALTER TABLE detect_history ADD COLUMN layers_json TEXT")?;
+        }
         // (lang, text_hash) 索引在迁移后创建（旧库该列由上面迁移补出，先建会失败）
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_detect_history_lang_hash ON detect_history(lang, text_hash);",
@@ -312,7 +345,8 @@ impl DetectHistoryStore {
         })
     }
 
-    // 参数与 feedback_log 表列一一对应（两端同构契约）
+    // 参数与 detect_history 表列一一对应（与 api-server `DetectHistoryStore::insert` 同构：
+    // 两端写入同一组列，消除历史行口径漂移）
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &self,
@@ -325,13 +359,15 @@ impl DetectHistoryStore {
         version: Option<&str>,
         params_json: Option<&str>,
         text_hash: Option<&str>,
+        corrected_text: Option<&str>,
+        layers_json: Option<&str>,
     ) -> Result<i64, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let created_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         conn.execute(
-            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, created_at],
+            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -380,7 +416,7 @@ impl DetectHistoryStore {
         args.push(offset.to_string());
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
              FROM detect_history{where_sql}
              ORDER BY id DESC LIMIT ? OFFSET ?"
         );
@@ -420,14 +456,16 @@ impl DetectHistoryStore {
             version: r.get(7)?,
             params_json: r.get(8)?,
             text_hash: r.get(9)?,
-            created_at: r.get(10)?,
+            corrected_text: r.get(10)?,
+            layers_json: r.get(11)?,
+            created_at: r.get(12)?,
         })
     }
 
     pub fn get(&self, id: i64) -> Result<Option<DetectHistory>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
              FROM detect_history WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], |r| self.map_row(r))?;
@@ -445,7 +483,7 @@ impl DetectHistoryStore {
         let limit = limit.clamp(1, 20);
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
              FROM detect_history WHERE lang = ?1 AND text_hash = ?2
              ORDER BY id DESC LIMIT ?3",
         )?;
@@ -1251,8 +1289,15 @@ async fn try_reuse_history(
         errors = errors.len(),
         "重复检测命中历史，复用结果（跳过引擎）"
     );
+    // 层级摘要回放（与 api-server try_reuse_history 同构：前端「检测路径」可回放）
+    let layers = h
+        .layers_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<Vec<gec_core::LayerReport>>(j).ok())
+        .unwrap_or_default();
     Some(gec_core::DetectOutcome {
         errors,
+        layers,
         ..Default::default()
     })
 }
@@ -1270,6 +1315,209 @@ fn stage_sink(app: &tauri::AppHandle, progress_id: Option<&str>) -> Option<gec_c
             serde_json::json!({ "progress_id": pid, "event": ev }),
         );
     }))
+}
+
+/// 过滤已禁用规则 + 自定义词白名单（与 api-server `apply_suppression_filters` 同构：
+/// 使「放弃」反馈（白名单止血）与「停用规则」建议在重检测时一致生效）
+fn apply_suppression_filters(core: &Arc<Core>, lang: &str, outcome: &mut gec_core::DetectOutcome) {
+    // 过滤已禁用的规则（开关状态存于 SQLite 词表存储；未入库的规则 id 视为启用；
+    // 批量查询：一次读规则表 + 内存匹配，而非逐条点查（N+1））
+    let rule_ids: Vec<&str> = outcome
+        .errors
+        .iter()
+        .filter_map(|e| e.rule_id.as_deref())
+        .collect();
+    let disabled: std::collections::HashSet<String> = core
+        .lexicon_store
+        .get_rules(lang, &rule_ids)
+        .ok()
+        .map(|defs| {
+            defs.into_iter()
+                .filter_map(|d| d.filter(|d| !d.enabled).map(|d| d.id))
+                .collect()
+        })
+        .unwrap_or_default();
+    outcome
+        .errors
+        .retain(|e| !e.rule_id.as_deref().is_some_and(|id| disabled.contains(id)));
+    // 过滤自定义词白名单
+    outcome
+        .errors
+        .retain(|e| !core.custom_words.is_whitelisted(lang, &e.original));
+}
+
+/// L3 飞轮：干净句自动采集为负样本（与 api-server `collect_clean_sentences` 同构：
+/// 原文句子汇入特征模型训练集 `l3_data/<lang>/confirmed.jsonl`，`source=llm_clean`，
+/// 按 文本+标签 去重；非阻断，失败仅告警）
+const MAX_CLEAN_PER_DETECT: usize = 50;
+
+fn collect_clean_sentences(core: &Core, lang: &str, text: &str) {
+    if !matches!(lang, "en" | "zh") {
+        return;
+    }
+    // 简易切句（。！？；.!? + 换行），与 api-server 端切句口径一致
+    let mut sentences: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        cur.push(c);
+        if matches!(c, '。' | '！' | '？' | '；' | '.' | '!' | '?' | '\n') {
+            let s = cur.trim().to_string();
+            if s.chars().count() >= 4 {
+                sentences.push(s);
+            }
+            cur.clear();
+        }
+    }
+    let mut count = 0usize;
+    for sentence in sentences {
+        let sample = serde_json::json!({
+            "text": sentence,
+            "label": 0,
+            "error_type": "",
+            "source": "llm_clean",
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        if l3_collect_sample(&core.l3_data, lang, &sample).is_some() {
+            count += 1;
+        }
+        if count >= MAX_CLEAN_PER_DETECT {
+            break;
+        }
+    }
+    if count > 0 {
+        tracing::info!(lang, count, "L3 飞轮：干净句已汇入训练集");
+    }
+}
+
+/// 统一管线入参（对齐 api-server `PipelineSpec`：桌面端无网关形态 / 进程级 LRU，
+/// 其余口径同源）
+struct PipelineSpecLite<'a> {
+    lang: &'a str,
+    text: &'a str,
+    category: &'a Option<String>,
+    level: u8,
+    force_llm: bool,
+    refresh: bool,
+    sink: Option<gec_core::StageSink>,
+}
+
+/// 管线产出：检测结果 + 复用标记 + 参数快照（仅实际检测时产出，
+/// 语义同 api-server `PipelineResult`）
+struct PipelineOut {
+    outcome: gec_core::DetectOutcome,
+    from_history: bool,
+    params: Option<shared_model::DetectParams>,
+}
+
+/// 桌面端唯一执行入口（与 api-server `run_pipeline` 执行段同构，命令层只透传参数）：
+/// level 1 历史复用 → 引擎级联 → 规则开关 / 白名单 / category 过滤 → issue_type 填充
+/// → anomaly 采纳与 L3 干净句后台任务；参数快照仅实际检测时计算。
+async fn run_pipeline(core: &Arc<Core>, spec: PipelineSpecLite<'_>) -> Result<PipelineOut, String> {
+    let PipelineSpecLite {
+        lang,
+        text,
+        category,
+        level,
+        force_llm,
+        refresh,
+        sink,
+    } = spec;
+    // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
+    // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
+    let (mut outcome, from_history) = if level <= 1 && !force_llm {
+        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎；refresh 跳过复用）
+        let reused = if refresh {
+            None
+        } else {
+            try_reuse_history(core, lang, text, category, 1).await
+        };
+        if let Some(reused) = reused {
+            (reused, true)
+        } else {
+            // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
+            let engine = core
+                .router
+                .read()
+                .unwrap()
+                .get(lang)
+                .cloned()
+                .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
+            (
+                engine
+                    .detect_level_traced(text, 1, false, None, sink)
+                    .await
+                    .map_err(|e| e.to_string())?,
+                false,
+            )
+        }
+    } else {
+        let engine = core
+            .router
+            .read()
+            .unwrap()
+            .get(lang)
+            .cloned()
+            .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
+        let llm = core.llm_detect_engine(lang);
+        (
+            engine
+                .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
+                .await
+                .map_err(|e| match e {
+                    gec_core::DetectorError::LlmNotConfigured(m) => m,
+                    other => other.to_string(),
+                })?,
+            false,
+        )
+    };
+    // 过滤已禁用规则 + 自定义词白名单（与 analyze 入口共用同一过滤）
+    apply_suppression_filters(core, lang, &mut outcome);
+    // 按 category 过滤
+    if let Some(cat) = category {
+        outcome
+            .errors
+            .retain(|e| e.category.as_deref() == Some(cat.as_str()));
+    }
+    // 填充 W3C ITS 2.0 issue_type
+    for e in &mut outcome.errors {
+        if e.issue_type.is_none() {
+            e.issue_type = Some(derive_issue_type(&e.error_type).to_string());
+        }
+    }
+    // anomaly 自动采纳（二期飞轮 L1）：LLM 高置信命中自动沉淀到向量知识库；
+    // 转后台任务（逐候选 embed 调用 + 知识库读写不阻塞检测响应）
+    {
+        let core = core.clone();
+        let lang = lang.to_string();
+        let errors = outcome.errors.clone();
+        tokio::spawn(async move {
+            auto_adopt_anomalies_cmd(&core, &lang, &errors).await;
+        });
+    }
+    // L3 飞轮（三期闭环）：仅当 LLM 实际复查确认干净且最终无错误时采集原句作负样本
+    //（level 1「未检出」可能是漏报，不采集——与 api-server 同口径）；文件 I/O 转后台
+    if outcome.llm_confirmed_clean && outcome.errors.is_empty() {
+        let core = core.clone();
+        let lang = lang.to_string();
+        let text = text.to_string();
+        tokio::spawn(async move {
+            collect_clean_sentences(&core, &lang, &text);
+        });
+    }
+    // 参数快照：实际检测即算（历史复用回放不写新记录，无需快照）
+    let params = if !from_history {
+        Some(
+            core.current_detect_params(lang, level, force_llm, category)
+                .await,
+        )
+    } else {
+        None
+    };
+    Ok(PipelineOut {
+        outcome,
+        from_history,
+        params,
+    })
 }
 
 #[tauri::command]
@@ -1293,98 +1541,26 @@ pub async fn detect(
     if !(1..=3).contains(&level) {
         return Err(format!("无效响应级别: {level}（应为 1-3）"));
     }
-    // 读锁内仅克隆路由 Arc（锁立即释放），避免 guard 跨 await（非 Send）
-    let router = core.router.read().unwrap().clone();
     let sink = stage_sink(&app, progress_id.as_deref());
-    // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
-    // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
-    let (mut outcome, from_history) = if level <= 1 && !force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎；refresh 跳过复用）
-        let reused = if refresh.unwrap_or(false) {
-            None
-        } else {
-            try_reuse_history(&core, &lang, &text, &category, 1).await
-        };
-        if let Some(reused) = reused {
-            (reused, true)
-        } else {
-            let engine = router
-                .get(&lang)
-                .cloned()
-                .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
-            (
-                engine
-                    .detect_level_traced(&text, 1, false, None, sink)
-                    .await
-                    .map_err(|e| e.to_string())?,
-                false,
-            )
-        }
-    } else {
-        let engine = router
-            .get(&lang)
-            .cloned()
-            .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
-        let llm = core.llm_detect_engine(&lang);
-        (
-            engine
-                .detect_level_traced(&text, level, force_llm, llm.as_deref(), sink)
-                .await
-                .map_err(|e| match e {
-                    gec_core::DetectorError::LlmNotConfigured(m) => m,
-                    other => other.to_string(),
-                })?,
-            false,
-        )
-    };
-    // 过滤已禁用的规则（开关状态存于 SQLite 词表存储；未入库的规则 id 视为启用；
-    // 批量查询：一次读规则表 + 内存匹配，而非逐条点查（N+1））
-    let rule_ids: Vec<&str> = outcome
-        .errors
-        .iter()
-        .filter_map(|e| e.rule_id.as_deref())
-        .collect();
-    let disabled: std::collections::HashSet<String> = core
-        .lexicon_store
-        .get_rules(&lang, &rule_ids)
-        .ok()
-        .map(|defs| {
-            defs.into_iter()
-                .filter_map(|d| d.filter(|d| !d.enabled).map(|d| d.id))
-                .collect()
-        })
-        .unwrap_or_default();
-    outcome
-        .errors
-        .retain(|e| !e.rule_id.as_deref().is_some_and(|id| disabled.contains(id)));
-    // 过滤自定义词白名单
-    outcome
-        .errors
-        .retain(|e| !core.custom_words.is_whitelisted(&lang, &e.original));
-    // 按 category 过滤
-    if let Some(cat) = &category {
-        outcome
-            .errors
-            .retain(|e| e.category.as_deref() == Some(cat.as_str()));
-    }
-    // 填充 W3C ITS 2.0 issue_type
-    for e in &mut outcome.errors {
-        if e.issue_type.is_none() {
-            e.issue_type = Some(derive_issue_type(&e.error_type).to_string());
-        }
-    }
-    // anomaly 自动采纳（二期飞轮 L1）：LLM 高置信命中自动沉淀到向量知识库；
-    // 转后台任务（逐候选 embed 调用 + 知识库读写不阻塞检测响应）
-    {
-        let core = (*core).clone();
-        let lang = lang.clone();
-        let errors = outcome.errors.clone();
-        tokio::spawn(async move {
-            auto_adopt_anomalies_cmd(&core, &lang, &errors).await;
-        });
-    }
-    // 自动持久化（与 api-server detect 路由对齐：session_id=None、无归因结果；
-    // 含各阶段计时 + 参数快照 + 文本哈希；后台写入，不阻塞检测响应）
+    let PipelineOut {
+        outcome,
+        from_history,
+        params,
+    } = run_pipeline(
+        &core,
+        PipelineSpecLite {
+            lang: &lang,
+            text: &text,
+            category: &category,
+            level,
+            force_llm,
+            refresh: refresh.unwrap_or(false),
+            sink,
+        },
+    )
+    .await?;
+    // 自动持久化（与 api-server run_pipeline persist 块对齐：session_id=None、无归因结果；
+    // 含各阶段计时 + 参数快照 + 文本哈希 + 纠正版 + 层级摘要；后台写入，不阻塞检测响应）
     // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：
     // 仅 quality=full 落库（partial/degraded 只回传不落库，杜绝降级结果被复用，
     // 语义与 Web 端 detect 路由一致）
@@ -1396,11 +1572,11 @@ pub async fn detect(
             serde_json::to_string(&outcome.errors).unwrap_or_else(|_| "[]".to_string());
         let timings_json = (!outcome.timings.is_empty())
             .then(|| serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string()));
-        let params = core
-            .current_detect_params(&lang, level, force_llm, &category)
-            .await;
-        let params_json = serde_json::to_string(&params).ok();
+        let params_json = params.as_ref().and_then(|p| serde_json::to_string(p).ok());
         let text_hash = shared_model::text_hash(&text);
+        let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
+        let layers_json = (!outcome.layers.is_empty())
+            .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
         tokio::spawn(async move {
             if let Err(e) = core.detect_history.insert(
                 None,
@@ -1412,6 +1588,8 @@ pub async fn detect(
                 Some(APP_VERSION),
                 params_json.as_deref(),
                 Some(&text_hash),
+                Some(corrected_text.as_str()),
+                layers_json.as_deref(),
             ) {
                 tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
             }
@@ -1451,72 +1629,26 @@ pub async fn analyze(
     if !(1..=3).contains(&level) {
         return Err(format!("无效响应级别: {level}（应为 1-3）"));
     }
-    let router = core.router.read().unwrap().clone();
     let sink = stage_sink(&app, progress_id.as_deref());
-    // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
-    // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
-    let (mut outcome, from_history) = if level <= 1 && !force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎；refresh 跳过复用）
-        let reused = if refresh.unwrap_or(false) {
-            None
-        } else {
-            try_reuse_history(&core, &lang, &text, &None, 1).await
-        };
-        if let Some(reused) = reused {
-            (reused, true)
-        } else {
-            let engine = router
-                .get(&lang)
-                .cloned()
-                .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
-            (
-                engine
-                    .detect_level_traced(&text, 1, false, None, sink)
-                    .await
-                    .map_err(|e| e.to_string())?,
-                false,
-            )
-        }
-    } else {
-        let engine = router
-            .get(&lang)
-            .cloned()
-            .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
-        let llm = core.llm_detect_engine(&lang);
-        (
-            engine
-                .detect_level_traced(&text, level, force_llm, llm.as_deref(), sink)
-                .await
-                .map_err(|e| match e {
-                    gec_core::DetectorError::LlmNotConfigured(m) => m,
-                    other => other.to_string(),
-                })?,
-            false,
-        )
-    };
-    // 与 detect 命令一致的后处理：过滤已禁用规则 + 自定义词白名单
-    // （「放弃」反馈 / 「停用规则」建议在重检测时同样生效）
-    let rule_ids: Vec<&str> = outcome
-        .errors
-        .iter()
-        .filter_map(|e| e.rule_id.as_deref())
-        .collect();
-    let disabled: std::collections::HashSet<String> = core
-        .lexicon_store
-        .get_rules(&lang, &rule_ids)
-        .ok()
-        .map(|defs| {
-            defs.into_iter()
-                .filter_map(|d| d.filter(|d| !d.enabled).map(|d| d.id))
-                .collect()
-        })
-        .unwrap_or_default();
-    outcome
-        .errors
-        .retain(|e| !e.rule_id.as_deref().is_some_and(|id| disabled.contains(id)));
-    outcome
-        .errors
-        .retain(|e| !core.custom_words.is_whitelisted(&lang, &e.original));
+    // 统一管线（与 detect 命令及 api-server run_pipeline 同构）：历史复用 / 级联检测 /
+    // 抑制过滤 / issue_type / anomaly 采纳 / L3 采集 / 参数快照
+    let PipelineOut {
+        outcome,
+        from_history,
+        params,
+    } = run_pipeline(
+        &core,
+        PipelineSpecLite {
+            lang: &lang,
+            text: &text,
+            category: &None,
+            level,
+            force_llm,
+            refresh: refresh.unwrap_or(false),
+            sink,
+        },
+    )
+    .await?;
     let engine = core.tables.get(&lang);
     let (history, meta) = match &session_id {
         Some(id) => {
@@ -1556,7 +1688,13 @@ pub async fn analyze(
                 };
                 let ctx = AttributionContext {
                     lang: lang.clone(),
-                    error_type: error.error_type.clone(),
+                    // zh 细粒度类型在决策表按粗族回退（§11.11 兼容，表不改）；
+                    // en/ja 原样（ja 表有 word_order 命中行，不可折叠）
+                    error_type: if lang == "zh" {
+                        coarse_error_type(&error.error_type).to_string()
+                    } else {
+                        error.error_type.clone()
+                    },
                     confidence: error.confidence,
                     session_error_count: history,
                     session_meta: meta.clone(),
@@ -1586,11 +1724,14 @@ pub async fn analyze(
         let analyzed_json = serde_json::to_string(&out).ok();
         let timings_json = (!outcome.timings.is_empty())
             .then(|| serde_json::to_string(&outcome.timings).unwrap_or_else(|_| "{}".to_string()));
-        let params = core
-            .current_detect_params(&lang, level, force_llm, &None)
-            .await;
-        let params_json = serde_json::to_string(&params).ok();
+        let params_json = params.as_ref().and_then(|p| serde_json::to_string(p).ok());
         let text_hash = shared_model::text_hash(&text);
+        let corrected_text = shared_model::apply_corrections(
+            &text,
+            &out.iter().map(|a| a.error.clone()).collect::<Vec<_>>(),
+        );
+        let layers_json = (!outcome.layers.is_empty())
+            .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
         let session_id = session_id.clone();
         tokio::spawn(async move {
             if let Err(e) = core.detect_history.insert(
@@ -1603,6 +1744,8 @@ pub async fn analyze(
                 Some(APP_VERSION),
                 params_json.as_deref(),
                 Some(&text_hash),
+                Some(corrected_text.as_str()),
+                layers_json.as_deref(),
             ) {
                 tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
             }
