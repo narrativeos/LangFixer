@@ -1385,8 +1385,14 @@ impl GecEngine for CascadeDetector {
         );
         quality.dropped = dropped;
         let s_spans = crate::docchunk::sentence_spans(text);
+        // 句表铺满序列含纯标点/纯空白片段（所有权不变式所需），句覆盖
+        // 分母只计含实词的真实句（与②.5 召回同一口径）
+        let s_sentences: Vec<[usize; 2]> = s_spans
+            .into_iter()
+            .filter(|s| crate::docchunk::is_sentence(text, s))
+            .collect();
         let unreviewed_sentences = if gray_unresolved {
-            s_spans
+            s_sentences
                 .iter()
                 .filter(|s| targeted_spans.iter().any(|t| spans_overlap(**s, *t)))
                 .count()
@@ -1394,8 +1400,8 @@ impl GecEngine for CascadeDetector {
             0
         };
         let sentences = crate::quality::SentenceStats {
-            total: s_spans.len(),
-            reviewed: s_spans.len() - unreviewed_sentences,
+            total: s_sentences.len(),
+            reviewed: s_sentences.len() - unreviewed_sentences,
         };
         Ok(DetectOutcome {
             errors,
@@ -2959,7 +2965,13 @@ mod tests {
         let ev = events.clone();
         let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level_traced("他昨天报复很大。今天天气很好。", 2, false, Some(&llm), Some(sink))
+            .detect_level_traced(
+                "他昨天报复很大。今天天气很好。",
+                2,
+                false,
+                Some(&llm),
+                Some(sink),
+            )
             .await
             .unwrap();
         assert!(
@@ -2980,18 +2992,24 @@ mod tests {
             "定向复查应计入 llm_ms 计时"
         );
         let evs = events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e,
+        assert!(
+            evs.iter().any(|e| matches!(e,
             crate::progress::StageEvent::Start { stages }
                 if stages.contains(&shared_model::sources::TARGETED))),
-            "Start 计划应含 ③-T");
-        assert!(evs.iter().any(|e| matches!(e,
+            "Start 计划应含 ③-T"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
             crate::progress::StageEvent::Stage { stage, status, .. }
                 if *stage == shared_model::sources::TARGETED && *status == "ran")),
-            "③-T 应以自身层名记 ran");
-        assert!(evs.iter().any(|e| matches!(e,
+            "③-T 应以自身层名记 ran"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
             crate::progress::StageEvent::Stage { stage, status, .. }
                 if *stage == shared_model::sources::LLM && *status == "skipped")),
-            "③-T 触发时 ③ 全文复核应记 skipped");
+            "③-T 触发时 ③ 全文复核应记 skipped"
+        );
     }
 
     /// 定向复查的 span 映射：灰区句不在文本开头时，偏移正确平移回原文
@@ -3043,7 +3061,13 @@ mod tests {
         let ev = events.clone();
         let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level_traced("他昨天报复很大。今天天气很好。", 2, false, Some(&llm), Some(sink))
+            .detect_level_traced(
+                "他昨天报复很大。今天天气很好。",
+                2,
+                false,
+                Some(&llm),
+                Some(sink),
+            )
             .await
             .unwrap();
         assert!(
@@ -3053,14 +3077,18 @@ mod tests {
         );
         // 全文 ③ 已覆盖灰区 → ③-T 在计划但未触发，必须记 skipped（不留悬空节点）
         let evs = events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e,
+        assert!(
+            evs.iter().any(|e| matches!(e,
             crate::progress::StageEvent::Start { stages }
                 if stages.contains(&shared_model::sources::TARGETED))),
-            "Start 计划应含 ③-T");
-        assert!(evs.iter().any(|e| matches!(e,
+            "Start 计划应含 ③-T"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
             crate::progress::StageEvent::Stage { stage, status, .. }
                 if *stage == shared_model::sources::TARGETED && *status == "skipped")),
-            "全文 LLM 路径下 ③-T 应记 skipped");
+            "全文 LLM 路径下 ③-T 应记 skipped"
+        );
     }
 
     /// level 2 不跑特征模型（L3 专属层）：即使 L3 会命中也不产出 feature 错误

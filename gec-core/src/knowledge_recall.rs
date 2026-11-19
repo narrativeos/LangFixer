@@ -48,35 +48,15 @@ pub trait KnowledgeRecall: Send + Sync {
 /// 换行符（`\n`/`\r`）仅在当前片段已含实质内容时才断句，
 /// 否则作为下一句的前导空白（避免空句 / 纯标点片段）；
 /// 无终结符的尾部残余作为最后一句。
+/// 输入文本按句切分：委派给全库唯一切句实现
+/// [`crate::docchunk::sentence_spans`]（口径与句表/③-T 完全一致），
+/// 纯标点/纯空白片段不算句（[`crate::docchunk::is_sentence`] 过滤）。
 pub fn split_sentences(text: &str) -> Vec<(String, usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut seg_start = 0usize;
-    for (i, ch) in text.char_indices() {
-        let is_boundary = match ch {
-            '.' | '。' | '！' | '？' | '!' | '?' | '；' | ';' => true,
-            '\n' | '\r' => text[seg_start..i].chars().any(|c| c.is_alphanumeric()),
-            _ => false,
-        };
-        if !is_boundary {
-            continue;
-        }
-        let end = i + ch.len_utf8();
-        let seg = text.get(start..end).unwrap_or("");
-        if seg.chars().any(|c| c.is_alphanumeric()) {
-            out.push((seg.to_string(), start, end));
-        }
-        // 无论片段是否为有效句子都推进起点（纯标点片段被消费掉）
-        start = end;
-        seg_start = end;
-    }
-    if start < text.len() {
-        let seg = text.get(start..).unwrap_or("");
-        if seg.chars().any(|c| c.is_alphanumeric()) {
-            out.push((seg.to_string(), start, text.len()));
-        }
-    }
-    out
+    crate::docchunk::sentence_spans(text)
+        .into_iter()
+        .filter(|s| crate::docchunk::is_sentence(text, s))
+        .map(|s| (text[s[0]..s[1]].to_string(), s[0], s[1]))
+        .collect()
 }
 
 fn char_bigrams(s: &str) -> Vec<(u32, u32)> {
@@ -181,12 +161,22 @@ mod tests {
     fn split_sentences_english_and_newline() {
         let s = "Hello world. Second one!\nThird";
         let out = split_sentences(s);
+        // 句末标点已落定后再换行：下一句另起（换行归入下一句 span 开头）；
+        // 句内软换行（未完句跨行）不断句，见 docchunk 同名用例
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].0, "Hello world.");
         // 句首空白保留在 span 内（original 与 span 一致）
         assert_eq!(out[1].0, " Second one!");
         assert_eq!(out[2].0, "\nThird");
         assert_eq!(out[2].2, s.len());
+    }
+
+    #[test]
+    fn split_sentences_decimal_not_split() {
+        // 委派后继承小数守卫：旧第二套切句规则的「3.5 拦腰断」缺陷消失
+        let out = split_sentences("The value is 3.5 meters.");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "The value is 3.5 meters.");
     }
 
     #[test]

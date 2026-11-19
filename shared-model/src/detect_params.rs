@@ -16,10 +16,13 @@ use crate::table::DecisionTableMeta;
 
 /// 句级切分器版本（版本向量的 `splitter` 成分）。
 ///
-/// 当前实现为标点切句（。！？；! ? ; 换行，`gec_core::docchunk::sentence_spans`）；
-/// 切换切句器（如接入 HanLP）必须递增此版本，使句级层的缓存键 / 历史复用
-/// 自动漂移（Detect Pipeline v2 §3.1：句级分块的确定性只随本版本变）。
-pub const SPLITTER_VERSION: &str = "punct-v1";
+/// 当前实现为标点切句（句末标点串 。！？；!?; 与带守卫的英文句号、空行分段，
+/// 软换行不断句；见 `gec_core::docchunk::sentence_spans`）；
+/// 切换切句器（如接入 HanLP）或改变边界规则都必须递增此版本，使句级层的
+/// 缓存键 / 历史复用自动漂移（Detect Pipeline v2 §3.1：句级分块的确定性只随本
+/// 版本变）。punct-v2：英文句号作边界（小数/省略号/文件名守卫）、引号收尾归句、
+/// 软换行不断句、空行分段（此前 punct-v1 仅 。！？；!?; 与每个换行）。
+pub const SPLITTER_VERSION: &str = "punct-v2";
 
 /// 检测参数快照（存入历史 `params_json`；重复检测复用历史的比对依据）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

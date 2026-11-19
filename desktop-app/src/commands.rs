@@ -1358,6 +1358,7 @@ fn collect_clean_sentences(core: &Core, lang: &str, text: &str) {
     // 切句统一走 gec-core 切块器（与 api-server / 切块同一 splitter 口径，不再两套规则）
     let sentences: Vec<String> = gec_core::docchunk::sentence_spans(text)
         .into_iter()
+        .filter(|s| gec_core::docchunk::is_sentence(text, s))
         .map(|s| text[s[0]..s[1]].trim().to_string())
         .filter(|s| s.chars().count() >= 4)
         .collect();

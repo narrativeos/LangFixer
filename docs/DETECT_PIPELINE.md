@@ -97,7 +97,7 @@ flowchart TD
   },
   "chunks": { "mode": "single|chunked", "total": 2, "done": 2, "failed": 0, "cache_hit": 1 },
   "sentences": { "total": 43, "reviewed": 43 },
-  "version": { "rules_fp": "…", "tables": "…", "model": "…", "prompt": "…", "splitter": "hanlp|punct", "spec": "…" },
+  "version": { "rules_fp": "…", "tables": "…", "model": "…", "prompt": "…", "splitter": "punct-v2", "spec": "…" },
   "timings": { /* 现状保留 */ },
   "from_history": false, "from_cache": false
 }

@@ -48,8 +48,8 @@ pub use contribution::{
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
 pub use docchunk::{
-    DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, sentence_spans, split_document,
-    unowned_bytes,
+    DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, is_sentence, sentence_spans,
+    split_document, unowned_bytes,
 };
 pub use docjob::{DocBudget, DocJob, DocJobProgress, DocJobStore, run_doc_job};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};

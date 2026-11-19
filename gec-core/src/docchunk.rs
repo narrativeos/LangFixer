@@ -100,11 +100,19 @@ pub fn split_document_with_context(
         .collect()
 }
 
-/// 句级切分（结构切分，Detect Pipeline v2 §3.1）：按句子边界
-/// （。！？；!?; 与换行）把全文切成**字节 span** 序列，铺满全文且互不重叠。
+/// 句级切分（结构切分，Detect Pipeline v2 §3.1）：按句子边界把全文切成
+/// **字节 span** 序列，铺满全文且互不重叠。边界规则：
+/// - 中英文句末标点串（。！？；!?; 及英文句号 `.`）结束一句，紧接的引号/括号
+///   收尾符一并归入该句；英文句号带守卫：小数（`3.5`）、省略号、文件名/域名段
+///   不作边界；
+/// - 软换行（含 CRLF）不断句；空行（连续≥一个空行，即 run 内≥2个换行符）是段落
+///   边界，仅当该段已有内容时切分；
+/// - 纯标点/空白片段保留在铺满序列中（所有权不变式），句级消费方用
+///   [`is_sentence`] 过滤；句表统计只计含实词的句。
 ///
-/// 与 [`split_document`] 内部的超长段按句切分同一套边界字符；句级切分是
-/// 全局唯一的一次结构切分（句表），供句覆盖统计、③-T 定向复查消费方复用；
+/// 与 [`split_document`] 内部超长段按句切分同一套规则，是全库唯一切句实现
+/// （知识召回层亦委派至此；版本向量的 splitter 成分即本实现的版本号）；句级
+/// 切分是全局唯一的一次结构切分（句表），供句覆盖统计、③-T 定向复查消费方复用；
 /// 其确定性只随 `shared_model::SPLITTER_VERSION` 变。空文本 → 空列表。
 pub fn sentence_spans(text: &str) -> Vec<[usize; 2]> {
     // target 取半上限：hard_cap = target×2 不溢出，且任何句子都不会超预算被硬切
@@ -127,20 +135,112 @@ pub fn unowned_bytes(text_len: usize, ranges: &[[usize; 2]]) -> usize {
     text_len.saturating_sub(covered.min(text_len))
 }
 
+/// 句末终止符（中英文）：无条件断句
+fn is_terminator(ch: char) -> bool {
+    matches!(ch, '。' | '！' | '？' | '；' | '!' | '?' | ';')
+}
+
+/// 引号/括号类收尾符：紧跟在终止符串后时归入同一句（不得另起空句）
+fn is_closer(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{201c}'
+            | '\u{201d}'
+            | '\u{2018}'
+            | '\u{2019}'
+            | '「'
+            | '」'
+            | '『'
+            | '』'
+            | '【'
+            | '】'
+            | '（'
+            | '）'
+            | '('
+            | ')'
+            | '［'
+            | '］'
+            | '['
+            | ']'
+            | '}'
+            | '」'
+            | '>'
+            | '»'
+    )
+}
+
+fn is_newline(ch: char) -> bool {
+    ch == '\n' || ch == '\r'
+}
+
+/// 英文句号 `.` 是否作句边界：前一个字符是字母/数字且不是另一个句号；
+/// 后继为空白/收尾符/文尾。小数（`3.5`）、省略号（`x...`）、文件名/域名
+/// （后缀紧跟字母/数字）因此都不会被误切；缩写（`Mr. Smith`）会误切，
+/// 已知取舍
+fn is_period_break(prev: Option<char>, next: Option<char>) -> bool {
+    let prev_ok = prev
+        .map(|c| c.is_alphanumeric() && c != '.')
+        .unwrap_or(false);
+    let next_ok = match next {
+        None => true,
+        Some(c) => !c.is_alphanumeric() && c != '.' && (c.is_whitespace() || is_closer(c)),
+    };
+    prev_ok && next_ok
+}
+
+/// span 内是否含实词（字母/数字，含 CJK）：句表铺满序列会包含纯标点/纯空白
+/// 片段，句级消费方用本函数过滤出「真实句子」
+pub fn is_sentence(text: &str, span: &[usize; 2]) -> bool {
+    text[span[0]..span[1]].chars().any(|c| c.is_alphanumeric())
+}
+
 /// 段落内按句边界切分；单句仍超过 `target * LONG_PARA_FACTOR` 时按字数硬切
 fn split_sentences(text: &str, start: usize, end: usize, target: usize) -> Vec<[usize; 2]> {
+    let chars: Vec<(usize, usize, char)> = text[start..end]
+        .char_indices()
+        .map(|(o, c)| (start + o, start + o + c.len_utf8(), c))
+        .collect();
     let mut segs: Vec<[usize; 2]> = Vec::new();
     let mut seg_start = start;
-    for (off, ch) in text[start..end].char_indices() {
-        let is_break = matches!(
-            ch,
-            '。' | '！' | '？' | '；' | '!' | '?' | ';' | '\n' | '\r'
-        );
-        if is_break {
-            let b = start + off + ch.len_utf8();
-            segs.push([seg_start, b]);
-            seg_start = b;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let (cs, ce, ch) = chars[i];
+        let prev = if i > 0 { Some(chars[i - 1].2) } else { None };
+        let next = chars.get(i + 1).map(|c| c.2);
+        let period_break = ch == '.' && is_period_break(prev, next);
+        if is_terminator(ch) || period_break {
+            // 终止符串 + 紧随的引号/括号收尾符归同一句
+            let mut j = i + 1;
+            let mut e = ce;
+            while j < chars.len() && (is_terminator(chars[j].2) || is_closer(chars[j].2)) {
+                e = chars[j].1;
+                j += 1;
+            }
+            segs.push([seg_start, e]);
+            seg_start = e;
+            i = j;
+            continue;
         }
+        if is_newline(ch) {
+            // 软换行不断句；空行（≥2 个逻辑换行）是段落边界，仅当前句已有内容时切；
+            // 切点在换行 run 前，空行归入下一句 span（铺满不变式不破）
+            let mut j = i + 1;
+            let mut nl = 0usize;
+            while j < chars.len() && is_newline(chars[j].2) {
+                j += 1;
+            }
+            for (_, _, c) in &chars[i..j] {
+                // \r\n 计一个换行，孤立 \r / \n 各计一个
+                nl += usize::from(*c == '\n');
+            }
+            if nl >= 2 && text[seg_start..cs].chars().any(|c| !c.is_whitespace()) {
+                segs.push([seg_start, cs]);
+                seg_start = cs;
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
     }
     if seg_start < end {
         segs.push([seg_start, end]);
@@ -306,5 +406,78 @@ mod tests {
         // 重叠不重复计数也不扣分
         assert_eq!(unowned_bytes(10, &[[0, 6], [3, 10]]), 0);
         assert_eq!(unowned_bytes(0, &[]), 0);
+    }
+
+    #[test]
+    fn english_period_splits_sentences() {
+        let t = "Hello world. Next one!";
+        let sp = sentence_spans(t);
+        assert_eq!(sp.len(), 2, "英文句号应作断句边界: {sp:?}");
+        assert_eq!(&t[sp[0][0]..sp[0][1]], "Hello world.");
+        assert_eq!(unowned_bytes(t.len(), &sp), 0);
+    }
+
+    #[test]
+    fn decimal_ellipsis_and_filenames_are_not_breaks() {
+        // 小数、省略号、文件名/域名都不算句边界
+        for t in [
+            "The value is 3.5 today.",
+            "Wait... and then we left.",
+            "See file.txt and x.com for it.",
+        ] {
+            let sp = sentence_spans(t);
+            assert_eq!(sp.len(), 1, "{t} 应只按末尾句点切一刀: {sp:?}");
+        }
+    }
+
+    #[test]
+    fn quote_and_punct_runs_end_one_sentence() {
+        let t = "他喊道「你好！」然后走了。";
+        let sp = sentence_spans(t);
+        assert_eq!(sp.len(), 2, "引号收尾不得另起空句: {sp:?}");
+        assert_eq!(&t[sp[0][0]..sp[0][1]], "他喊道「你好！」");
+        let t2 = "真的吗？？？我们走。";
+        let sp2 = sentence_spans(t2);
+        assert_eq!(sp2.len(), 2, "连续标点串只结束一句: {sp2:?}");
+        assert_eq!(&t2[sp2[0][0]..sp2[0][1]], "真的吗？？？");
+    }
+
+    #[test]
+    fn wrapped_line_stays_one_sentence() {
+        // 软换行不得把句子拦腰砍断（英文长句换行、CRLF 都算软换行）
+        for t in [
+            "this line continues\nand ends here。",
+            "this line continues\r\nand ends here。",
+        ] {
+            let sp = sentence_spans(t);
+            assert_eq!(sp.len(), 1, "软换行不断句: {sp:?}");
+        }
+    }
+
+    #[test]
+    fn blank_line_breaks_paragraphs() {
+        let t = "段落一\n\n段落二。";
+        let sp = sentence_spans(t);
+        assert_eq!(sp.len(), 2, "空行是段落边界: {sp:?}");
+        assert_eq!(&t[sp[0][0]..sp[0][1]], "段落一");
+        assert_eq!(&t[sp[1][0]..sp[1][1]], "\n\n段落二。");
+        assert_eq!(unowned_bytes(t.len(), &sp), 0);
+        // 句尾后的空行不另生空句
+        let t2 = "好。\n\n走。";
+        let sp2 = sentence_spans(t2);
+        assert_eq!(sp2.len(), 2, "空行不得造出空句: {sp2:?}");
+        assert_eq!(&t2[sp2[1][0]..sp2[1][1]], "\n\n走。");
+    }
+
+    #[test]
+    fn sentence_filter_drops_punctuation_and_whitespace_spans() {
+        let t = "。。。abc";
+        let sp: Vec<[usize; 2]> = sentence_spans(t)
+            .into_iter()
+            .filter(|s| is_sentence(t, s))
+            .collect();
+        assert_eq!(sp.len(), 1);
+        assert_eq!(&t[sp[0][0]..sp[0][1]], "abc");
+        assert!(!is_sentence("好。\n", &[6, 7]));
     }
 }

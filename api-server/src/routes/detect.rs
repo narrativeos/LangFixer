@@ -556,9 +556,10 @@ async fn collect_clean_sentences(state: &AppState, lang: &str, text: &str) {
         return;
     }
     // 切句统一走 gec-core 切块器（单一 splitter 口径，不再维护第二套切句规则；
-    // 对 L3 负样本采集仅差「英文句点不作断点」这一点，无害）
+    // 纯标点/纯空白片段用 is_sentence 过滤，句表/召回同口径）
     let sentences: Vec<String> = gec_core::docchunk::sentence_spans(text)
         .into_iter()
+        .filter(|s| gec_core::docchunk::is_sentence(text, s))
         .map(|s| text[s[0]..s[1]].trim().to_string())
         .filter(|s| s.chars().count() >= 4)
         .collect();
