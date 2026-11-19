@@ -101,7 +101,7 @@ async function changePw() {
     toast('请填写当前密码与新密码', 'warn')
     return
   }
-  if (pwNew.value.length < 8) {
+  if (Array.from(pwNew.value).length < 8) {
     toast('新密码至少 8 位', 'warn')
     return
   }
@@ -115,7 +115,7 @@ async function changePw() {
     pwOld.value = ''
     pwNew.value = ''
     pwConfirm.value = ''
-    toast('密码已更新：旧密码立即作废，下次登录用新密码', 'ok')
+    toast('密码已更新：旧密码与其他会话作废，本窗口已换新会话', 'ok')
   } catch (e) {
     toast(`改密失败：${cleanError(e)}`, 'danger')
   } finally {
@@ -200,8 +200,8 @@ async function changePw() {
       <section v-if="identity.authenticated && identity.admin && identity.password_login" class="access-block">
         <h3>修改管理员密码</h3>
         <p>
-          用于 <code>admin</code> 账号的登录密码。改完旧密码立即作废，
-          当前会话不受影响；忘记时可用 <code>LANGFIXER_ADMIN_PASSWORD</code> 环境变量重置。
+          用于 <code>admin</code> 账号的登录密码。改完旧密码与其余登录会话立即作废，
+          本窗口自动换新会话继续可用；忘记时可用 <code>LANGFIXER_ADMIN_PASSWORD</code> 环境变量重置。
         </p>
         <div class="pw-form">
           <LInput v-model="pwOld" type="password" placeholder="当前密码" :disabled="pwBusy" autocomplete="current-password" />

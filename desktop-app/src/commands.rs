@@ -1355,19 +1355,12 @@ fn collect_clean_sentences(core: &Core, lang: &str, text: &str) {
     if !matches!(lang, "en" | "zh") {
         return;
     }
-    // 简易切句（。！？；.!? + 换行），与 api-server 端切句口径一致
-    let mut sentences: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for c in text.chars() {
-        cur.push(c);
-        if matches!(c, '。' | '！' | '？' | '；' | '.' | '!' | '?' | '\n') {
-            let s = cur.trim().to_string();
-            if s.chars().count() >= 4 {
-                sentences.push(s);
-            }
-            cur.clear();
-        }
-    }
+    // 切句统一走 gec-core 切块器（与 api-server / 切块同一 splitter 口径，不再两套规则）
+    let sentences: Vec<String> = gec_core::docchunk::sentence_spans(text)
+        .into_iter()
+        .map(|s| text[s[0]..s[1]].trim().to_string())
+        .filter(|s| s.chars().count() >= 4)
+        .collect();
     let mut count = 0usize;
     for sentence in sentences {
         let sample = serde_json::json!({

@@ -367,8 +367,9 @@ export const useGecStore = defineStore('gec', {
       progressPolling = true
       try {
         const r = await api.detectProgress(p.id)
-        // 更新一轮已发起 / 新一轮检测已接管：陈旧响应不得落库
-        if (seq !== pollSeq || this.progress.id !== p.id) return
+        // 更新一轮已发起 / 新一轮检测已接管 / 本次已取消落定：陈旧响应不得落库，
+        // 否则在途轮询会把已标「中断」的阶段复活成进行中
+        if (seq !== pollSeq || this.progress.id !== p.id || this.progress.canceled) return
         const v = applyStageEvents(r.events)
         if (v.stages.length || !this.progress.finished) this.progress.stages = v.stages
         if (r.finished || v.finished) {
