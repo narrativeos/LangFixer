@@ -128,6 +128,10 @@ export const useGecStore = defineStore('gec', {
     /** 依赖服务状态快照（GET /gec/deps；运营台「依赖服务」卡片与状态条 chip 用；
      *  桌面端 / 网关受限形态为空数组） */
     deps: [] as DepStatus[],
+    /** 拉起中轮询定时器：启动监督是异步的，快照里有 starting 就隔几秒重拉直到落定，
+     *  否则登录后状态条会停在「拉起中」，直到进一次设置页才刷新 */
+    depsPollTimer: null as ReturnType<typeof setTimeout> | null,
+    depsPollTries: 0,
     /** L3 特征模型层已启用（来自 GET /gec/settings 的 l3.enabled；三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
      *  服务端默认开启，旧设置文件缺失该字段时按开启处理） */
     l3Enabled: true,
@@ -226,6 +230,18 @@ export const useGecStore = defineStore('gec', {
         this.deps = (await api.listDeps()).items
       } catch {
         // 后端不支持 /gec/deps（旧版）时保持空，面板与 chip 不渲染
+      }
+      // 有服务在拉起中：隔 4s 重拉直到落定（封顶 150 次≈ 10 分钟，防服务卡在拉起态时无限轮询）
+      if (this.depsPollTimer) clearTimeout(this.depsPollTimer)
+      this.depsPollTimer = null
+      if (this.deps.some((d) => d.state === 'starting') && this.depsPollTries < 150) {
+        this.depsPollTries += 1
+        this.depsPollTimer = setTimeout(() => {
+          this.depsPollTimer = null
+          void this.loadDeps()
+        }, 4000)
+      } else if (!this.deps.some((d) => d.state === 'starting')) {
+        this.depsPollTries = 0
       }
     },
     /** 拉取设置并同步检测管线各层启用状态（「检查模式」状态标签 + 检测管线提示用） */
