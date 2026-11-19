@@ -66,6 +66,7 @@ impl CarrierDetector for ServerDetector {
             &category,
             level,
             force_llm,
+            false,
             None,
         )
         .await

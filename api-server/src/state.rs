@@ -588,6 +588,7 @@ impl AppState {
             llm_configured,
             llm_model: llm_configured.then_some(llm_model),
             model_version,
+            splitter: shared_model::SPLITTER_VERSION.into(),
             rules_fingerprint: shared_model::rules_fingerprint(
                 meta.as_ref(),
                 &self.lexicon_hash.read().unwrap(),
@@ -789,9 +790,9 @@ mod send_check_tests {
         let text = "t";
         let category: Option<String> = None;
         assert_send(&async {
+            let params = state.current_detect_params(lang, 1, false, &category).await;
             let _ =
-                crate::routes::detect::try_reuse_history(state.as_ref(), lang, text, &category, 1)
-                    .await;
+                crate::routes::detect::try_reuse_history(state.as_ref(), lang, text, &params).await;
         });
     }
 }

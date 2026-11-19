@@ -399,6 +399,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/gec/history",
             axum::routing::get(history::list).delete(history::clear),
         )
+        .route("/gec/cache/clear", axum::routing::post(detect::clear_cache))
         .route(
             "/gec/history/:id",
             axum::routing::get(history::get).delete(history::remove),

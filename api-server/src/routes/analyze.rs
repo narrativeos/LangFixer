@@ -24,6 +24,9 @@ pub struct AnalyzeRequest {
     /// （未配置 LLM 时返回 503）
     #[serde(default)]
     pub force_llm: bool,
+    /// 忽略历史复用，强制实检并回写历史（语义同 [`super::detect::DetectRequest::refresh`]）
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -48,6 +51,20 @@ pub struct AnalyzeResponse {
     /// 层级贡献摘要：本次检测实际参与的每层状态与检出数（前端「检测路径」）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<gec_core::LayerReport>,
+    /// 结果质量自描述（full/partial/degraded + 覆盖率 + 降级原因）；
+    /// 历史复用回放时无（回放结果来自既往 full 运行）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<gec_core::QualityReport>,
+    /// 切块账本（模式 / 块数 / 完成与失败数 / 覆盖率）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<gec_core::ChunkStats>,
+    /// 句级账本（总句数 / 送审句数）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<gec_core::SentenceStats>,
+    /// 检测时版本向量（规则指纹 / 决策模型 / 切块器）；仅实际检测时返回，
+    /// 历史复用回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<serde_json::Value>,
 }
 
 /// POST /gec/analyze — 检测 + 归因一站式接口（自动持久化到历史）
@@ -83,11 +100,14 @@ pub async fn analyze(
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history): (DetectOutcome, bool) = if level <= 1 && !req.force_llm {
         // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）；
-        // 网关形态跳过（每账号实时跑并自写历史，归属完整）
-        let reused = if crate::auth::gateway_mode() {
+        // 网关形态跳过（每账号实时跑并自写历史，归属完整）；refresh 同样跳过（强制实检）
+        let reused = if crate::auth::gateway_mode() || req.refresh {
             None
         } else {
-            detect::try_reuse_history(state.as_ref(), &req.lang, &req.text, &None, 1).await
+            let params = state
+                .current_detect_params(&req.lang, 1, false, &None)
+                .await;
+            detect::try_reuse_history(state.as_ref(), &req.lang, &req.text, &params).await
         };
         if let Some(reused) = reused {
             if let Some(id) = progress_id {
@@ -189,7 +209,10 @@ pub async fn analyze(
     }
 
     // 自动持久化（含归因结果 + 各阶段计时 + 参数快照 + 文本哈希；后台写入，不阻塞检测响应）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）
+    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
+    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
+    // 正常结果）
+    let mut version: Option<serde_json::Value> = None;
     if !from_history {
         let state = state.clone();
         let lang = req.lang.clone();
@@ -211,24 +234,34 @@ pub async fn analyze(
         );
         let layers_json = (!outcome.layers.is_empty())
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        let session_id = session_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) = state.detect_history.insert(
-                Some(&session_id),
-                &lang,
-                &text,
-                &errors_json,
-                analyzed_json.as_deref(),
-                timings_json.as_deref(),
-                Some(APP_VERSION),
-                params_json.as_deref(),
-                Some(&text_hash),
-                Some(corrected_text.as_str()),
-                layers_json.as_deref(),
-            ) {
-                tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
-            }
+        // 版本向量：实际检测时的参数快照（历史复用回放 quality=None → 不返回）
+        version = outcome.quality.as_ref().map(|_| {
+            serde_json::json!({
+                "rules_fingerprint": params.rules_fingerprint,
+                "model_version": params.model_version,
+                "splitter": params.splitter,
+            })
         });
+        let session_id = session_id.clone();
+        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+            tokio::spawn(async move {
+                if let Err(e) = state.detect_history.insert(
+                    Some(&session_id),
+                    &lang,
+                    &text,
+                    &errors_json,
+                    analyzed_json.as_deref(),
+                    timings_json.as_deref(),
+                    Some(APP_VERSION),
+                    params_json.as_deref(),
+                    Some(&text_hash),
+                    Some(corrected_text.as_str()),
+                    layers_json.as_deref(),
+                ) {
+                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
+                }
+            });
+        }
     }
 
     Ok(Json(AnalyzeResponse {
@@ -240,5 +273,9 @@ pub async fn analyze(
         from_history,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
+        quality: outcome.quality,
+        chunks: outcome.chunks,
+        sentences: outcome.sentences,
+        version,
     }))
 }

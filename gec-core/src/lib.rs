@@ -26,6 +26,7 @@ pub mod models;
 pub mod optimization_round;
 pub mod pipeline;
 pub mod progress;
+pub mod quality;
 pub mod reflection;
 pub mod reflection_center;
 pub mod settings_test;
@@ -46,7 +47,10 @@ pub use contribution::{
 };
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
-pub use docchunk::{DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, split_document};
+pub use docchunk::{
+    DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, sentence_spans, split_document,
+    unowned_bytes,
+};
 pub use docjob::{DocBudget, DocJob, DocJobProgress, DocJobStore, run_doc_job};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};
 pub use engine::{
@@ -65,6 +69,7 @@ pub use optimization_round::{
 };
 pub use pipeline::DetectionPipeline;
 pub use progress::{StageEvent, StageSink};
+pub use quality::{ChunkStats, QualityReport, SentenceStats};
 pub use reflection::{
     ExampleInfo, KnowledgeInfo, ReflectionContext, ReflectionReport, ReflectionSuggestion,
     RuleDefInfo, normalize_source, reflect_rejection, suggestion_kinds,

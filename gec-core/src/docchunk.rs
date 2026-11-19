@@ -100,12 +100,42 @@ pub fn split_document_with_context(
         .collect()
 }
 
+/// 句级切分（结构切分，Detect Pipeline v2 §3.1）：按句子边界
+/// （。！？；!?; 与换行）把全文切成**字节 span** 序列，铺满全文且互不重叠。
+///
+/// 与 [`split_document`] 内部的超长段按句切分同一套边界字符；句级切分是
+/// 全局唯一的一次结构切分（句表），供句覆盖统计、③-T 定向复查消费方复用；
+/// 其确定性只随 `shared_model::SPLITTER_VERSION` 变。空文本 → 空列表。
+pub fn sentence_spans(text: &str) -> Vec<[usize; 2]> {
+    // target 取半上限：hard_cap = target×2 不溢出，且任何句子都不会超预算被硬切
+    split_sentences(text, 0, text.len(), usize::MAX >> 1)
+}
+
+/// 段级所有权铺满校验（截断探测器，Detect Pipeline v2 §7 告警①）：
+/// 返回 `[0, text.len())` 内**不属于任何区间**的字节数。
+/// 区间需按起址排序传入；重叠不扣分（所有权去重负责）。
+pub fn unowned_bytes(text_len: usize, ranges: &[[usize; 2]]) -> usize {
+    let mut covered = 0usize;
+    let mut reach = 0usize; // 已覆盖到的字节位置
+    for r in ranges {
+        let s = r[0].max(reach);
+        if r[1] > s {
+            covered += r[1] - s;
+            reach = r[1];
+        }
+    }
+    text_len.saturating_sub(covered.min(text_len))
+}
+
 /// 段落内按句边界切分；单句仍超过 `target * LONG_PARA_FACTOR` 时按字数硬切
 fn split_sentences(text: &str, start: usize, end: usize, target: usize) -> Vec<[usize; 2]> {
     let mut segs: Vec<[usize; 2]> = Vec::new();
     let mut seg_start = start;
     for (off, ch) in text[start..end].char_indices() {
-        let is_break = matches!(ch, '。' | '！' | '？' | '；' | '!' | '?' | ';' | '\n' | '\r');
+        let is_break = matches!(
+            ch,
+            '。' | '！' | '？' | '；' | '!' | '?' | ';' | '\n' | '\r'
+        );
         if is_break {
             let b = start + off + ch.len_utf8();
             segs.push([seg_start, b]);
@@ -164,7 +194,6 @@ fn back_chars(text: &str, from: usize, chars: usize) -> usize {
     }
     pos
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -249,5 +278,33 @@ mod tests {
         for c in &cs {
             assert!(c.send[..c.context_prefix].chars().count() <= DEFAULT_CONTEXT_CHARS);
         }
+    }
+
+    #[test]
+    fn sentence_spans_tile_full_text() {
+        let t = "他昨天报复很大。今天心情不错！真的吗？好的；就这样\n第二句 here. 结尾无标点";
+        let sp = sentence_spans(t);
+        assert!(!sp.is_empty());
+        // 铺满不变式：首尾相接、无空洞、无重叠
+        assert_eq!(sp[0][0], 0);
+        assert_eq!(sp.last().unwrap()[1], t.len());
+        for w in sp.windows(2) {
+            assert_eq!(w[0][1], w[1][0]);
+        }
+        assert_eq!(unowned_bytes(t.len(), &sp), 0);
+        for s in &sp {
+            assert!(t.is_char_boundary(s[0]) && t.is_char_boundary(s[1]));
+        }
+        // 空文本
+        assert!(sentence_spans("").is_empty());
+    }
+
+    #[test]
+    fn unowned_bytes_detects_gaps() {
+        // [0,3) + [5,8) 在 [0,10) 内留下 [3,5) 与 [8,10) 共 4 字节空洞
+        assert_eq!(unowned_bytes(10, &[[0, 3], [5, 8]]), 4);
+        // 重叠不重复计数也不扣分
+        assert_eq!(unowned_bytes(10, &[[0, 6], [3, 10]]), 0);
+        assert_eq!(unowned_bytes(0, &[]), 0);
     }
 }

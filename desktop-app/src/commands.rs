@@ -965,6 +965,7 @@ impl Core {
             llm_configured,
             llm_model: llm_configured.then_some(llm_model),
             model_version,
+            splitter: shared_model::SPLITTER_VERSION.into(),
             rules_fingerprint: shared_model::rules_fingerprint(
                 meta.as_ref(),
                 &self.lexicon_hash.read().unwrap(),
@@ -1166,6 +1167,15 @@ pub struct DetectResult {
     /// 层级贡献摘要：本次检测实际参与的每层状态与检出数（前端「检测路径」）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<gec_core::LayerReport>,
+    /// 结果质量自描述（full/partial/degraded）；历史回放时为 None（出自既往 full 运行）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<gec_core::QualityReport>,
+    /// 切块账本（模式/块数/覆盖率）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<gec_core::ChunkStats>,
+    /// 句级账本（总句数/送审句数）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<gec_core::SentenceStats>,
 }
 
 /// 检测 + 归因响应（Tauri 命令返回）
@@ -1189,6 +1199,15 @@ pub struct AnalyzeResult {
     /// 层级贡献摘要：本次检测实际参与的每层状态与检出数（前端「检测路径」）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<gec_core::LayerReport>,
+    /// 结果质量自描述（full/partial/degraded）；历史回放时为 None（出自既往 full 运行）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<gec_core::QualityReport>,
+    /// 切块账本（模式/块数/覆盖率）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<gec_core::ChunkStats>,
+    /// 句级账本（总句数/送审句数）；回放时无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<gec_core::SentenceStats>,
 }
 
 /// 历史复用（重复检测）：查同文本历史，最近一条**参数一致且不含 LLM**
@@ -1198,7 +1217,8 @@ pub struct AnalyzeResult {
 /// - 记录携带可解析的 `params_json`（旧记录不可复用）；
 /// - 存储文本与当前文本一致（`text_hash` 命中后的精确校验，防哈希碰撞）；
 /// - 参数逐项一致（level / force_llm / category / 决策层 / L3 / LLM 配置 /
-///   **决策模型版本号** / **规则侧版本指纹**——规则侧或模型侧任何变化都会使历史失效）；
+///   **决策模型版本号** / **规则侧版本指纹** / **切块器版本**——规则侧、模型侧
+///   或切块器任何变化都会使历史失效）；
 /// - 记录为 level 1 非强制运行，且结果中无 `source == "llm"` 的错误。
 async fn try_reuse_history(
     core: &Core,
@@ -1264,6 +1284,8 @@ pub async fn detect(
     level: Option<u8>,
     // 「漏报」强制兜底：无视 level 触发条件，无条件对全文跑一次 LLM 兜底
     force_llm: bool,
+    // 忽略缓存绕过：跳过历史复用强制实检并回写历史（语义同 Web 端 refresh）
+    refresh: Option<bool>,
     // 分阶段进度条事件标识（前端生成；随 invoke 参数传入，事件经 detect:stage 推回）
     progress_id: Option<String>,
 ) -> Result<DetectResult, String> {
@@ -1277,8 +1299,13 @@ pub async fn detect(
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）
-        if let Some(reused) = try_reuse_history(&core, &lang, &text, &category, 1).await {
+        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎；refresh 跳过复用）
+        let reused = if refresh.unwrap_or(false) {
+            None
+        } else {
+            try_reuse_history(&core, &lang, &text, &category, 1).await
+        };
+        if let Some(reused) = reused {
             (reused, true)
         } else {
             let engine = router
@@ -1358,8 +1385,10 @@ pub async fn detect(
     }
     // 自动持久化（与 api-server detect 路由对齐：session_id=None、无归因结果；
     // 含各阶段计时 + 参数快照 + 文本哈希；后台写入，不阻塞检测响应）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）
-    if !from_history {
+    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：
+    // 仅 quality=full 落库（partial/degraded 只回传不落库，杜绝降级结果被复用，
+    // 语义与 Web 端 detect 路由一致）
+    if !from_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
         let core = (*core).clone();
         let lang = lang.clone();
         let text = text.clone();
@@ -1395,6 +1424,9 @@ pub async fn detect(
         from_history,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
+        quality: outcome.quality,
+        chunks: outcome.chunks,
+        sentences: outcome.sentences,
     })
 }
 
@@ -1410,6 +1442,8 @@ pub async fn analyze(
     level: Option<u8>,
     // 「漏报」强制兜底（语义同 `detect` 的 force_llm）
     force_llm: bool,
+    // 忽略缓存绕过（语义同 `detect` 的 refresh）
+    refresh: Option<bool>,
     // 分阶段进度条事件标识（语义同 `detect` 的 progress_id）
     progress_id: Option<String>,
 ) -> Result<AnalyzeResult, String> {
@@ -1422,8 +1456,13 @@ pub async fn analyze(
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
-        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎）
-        if let Some(reused) = try_reuse_history(&core, &lang, &text, &None, 1).await {
+        // 历史复用：同文本 + 参数一致 + 无 LLM 的最近记录直接复用（跳过引擎；refresh 跳过复用）
+        let reused = if refresh.unwrap_or(false) {
+            None
+        } else {
+            try_reuse_history(&core, &lang, &text, &None, 1).await
+        };
+        if let Some(reused) = reused {
             (reused, true)
         } else {
             let engine = router
@@ -1537,8 +1576,8 @@ pub async fn analyze(
     let session_id = session_id.unwrap_or_else(|| format!("s_{}", uuid::Uuid::new_v4().simple()));
     // 自动持久化（含归因结果 + 各阶段计时 + 参数快照 + 文本哈希；与 api-server analyze 路由对齐；
     // 后台写入，不阻塞检测响应）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）
-    if !from_history {
+    // 历史复用不写新记录；缓存资格：仅 quality=full 落库（同 detect 命令）
+    if !from_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
         let core = (*core).clone();
         let lang = lang.clone();
         let text = text.clone();
@@ -1578,6 +1617,9 @@ pub async fn analyze(
         from_history,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
+        quality: outcome.quality,
+        chunks: outcome.chunks,
+        sentences: outcome.sentences,
     })
 }
 

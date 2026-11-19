@@ -2,17 +2,30 @@
 //!
 //! 兼容 Harper / HuggingFace transformers server 类自建服务：
 //! `POST {endpoint}/gec`，请求 `{"text": ..., "lang": ...}`，
-//! 响应 `{"errors": [{error_type, confidence, span, original, correction?, message?}]}`。
+//! 响应 `{"errors": [{error_type, confidence, span, original, correction?, message?}]}`
+//! （span 为**请求文本内字节偏移**，与 [`shared_model::Error::span`] 同语义）。
 //!
-//! 环境变量：`GEC_STAT_ENDPOINT`（服务地址）/ `GEC_STAT_TIMEOUT_SECS` / `GEC_STAT_MODEL`（模型名）。
+//! **预算窗分块（Detect Pipeline v2 P2，截断修复）**：下游服务普遍在
+//! ~512 token 处静默截断（MacBERT max_length），全文单发等于只检前段。
+//! 本层按 [`docchunk::split_document_with_context`] 滑窗切块逐窗调用（块≤窗），
+//! 响应 span 平移回原文坐标；失败窗计入 [`ChunkStats`]（coverage 下降），
+//! 绝不静默丢弃。外层（api-server / 桌面）通过 [`GecEngine::last_chunk_run`]
+//! 读取末次窗执行情况并织入 quality。
+//!
+//! 环境变量：`GEC_STAT_ENDPOINT`（服务地址）/ `GEC_STAT_TIMEOUT_SECS` /
+//! `GEC_STAT_MODEL`（模型名）/ `GEC_STAT_WINDOW_CHARS`（每窗字符预算，默认 500，
+//! 为 512-token 截断线预留余量）。
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::detector::DetectorError;
+use crate::docchunk;
 use crate::engine::{GecEngine, GecEngineKind};
+use crate::quality::ChunkStats;
 use shared_model::Error;
 
 /// 统计 GEC 服务配置（环境变量驱动）
@@ -47,6 +60,10 @@ pub struct StatisticalGecEngine {
     lang: String,
     client: reqwest::Client,
     config: StatisticalConfig,
+    /// 每窗字符预算（服务 token 窗在 Rust 侧的字符近似；超窗即分块，不送全文）
+    window_chars: usize,
+    /// 末次 detect 的窗执行情况（与 `last_nlp_call` 同一先例：逐请求覆写）
+    last_run: Mutex<Option<ChunkStats>>,
 }
 
 impl StatisticalGecEngine {
@@ -55,16 +72,43 @@ impl StatisticalGecEngine {
             .timeout(config.timeout)
             .build()
             .unwrap_or_default();
+        // 默认 500 字/窗：MacBERT 类服务 max_length=512 token（含 [CLS]/[SEP]，
+        // 中文约 1 字/token），预留边距避免服务侧静默截断尾 2 token
+        let window_chars = std::env::var("GEC_STAT_WINDOW_CHARS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| *v >= 100)
+            .unwrap_or(500);
         Self {
             lang: lang.into(),
             client,
             config,
+            window_chars,
+            last_run: Mutex::new(None),
         }
     }
 
     /// 从环境变量（`GEC_STAT_*`）构建
     pub fn from_env(lang: impl Into<String>) -> Self {
         Self::new(lang, StatisticalConfig::from_env())
+    }
+
+    /// 覆盖窗预算（测试与设置面板接入用）。下限 100：docchunk 目标块
+    /// 地板 50 字（块上限 2×target），窗需 ≥100 才能保证 send ≤ 窗
+    pub fn with_window_chars(mut self, chars: usize) -> Self {
+        self.window_chars = chars.max(100);
+        self
+    }
+
+    /// 末次 detect 的窗执行情况（供外层织入 quality；读取不消费）
+    pub fn last_run_stats(&self) -> Option<ChunkStats> {
+        self.last_run.lock().unwrap().clone()
+    }
+
+    /// 按窗切块：target = max(窗/2, 50) 保证每块 send ≤ 窗
+    /// （docchunk 块上限 2×target，target 地板 50）；无上下文前缀
+    fn windows(&self, text: &str) -> Vec<docchunk::DocChunk> {
+        docchunk::split_document_with_context(text, (self.window_chars / 2).max(50), 0)
     }
 }
 
@@ -101,12 +145,76 @@ impl GecEngine for StatisticalGecEngine {
         &self.config.model
     }
 
+    fn last_chunk_run(&self) -> Option<ChunkStats> {
+        self.last_run.lock().unwrap().clone()
+    }
+
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
         let url = format!("{}/gec", self.config.endpoint.trim_end_matches('/'));
+        let windows = self.windows(text);
+        // 所有权铺满校验（截断探测器）：窗切块必须无空洞
+        let unowned = docchunk::unowned_bytes(
+            text.len(),
+            &windows.iter().map(|w| w.owner).collect::<Vec<_>>(),
+        );
+        if unowned != 0 {
+            tracing::error!(unowned, "stat 臂窗切块存在所有权空洞（切块器回归）");
+        }
+        let total = windows.len();
+        let mut out: Vec<Error> = Vec::new();
+        let mut failed = 0usize;
+        let mut first_err: Option<DetectorError> = None;
+        for w in &windows {
+            match self.post_window(&url, &w.send).await {
+                Ok(errors) => {
+                    for e in errors {
+                        out.push(self.remap_window_error(e, &w.send, w.owner[0]));
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    tracing::warn!(
+                        error = %e,
+                        window = ?w.owner,
+                        "统计臂窗失败（该窗本轮未复查，其余窗继续）"
+                    );
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        if total > 0 && failed == total {
+            *self.last_run.lock().unwrap() = Some(ChunkStats {
+                mode: if total > 1 { "chunked" } else { "single" }.into(),
+                total,
+                done: 0,
+                failed,
+                parse_failed: 0,
+            });
+            return Err(first_err.unwrap_or_else(|| {
+                DetectorError::ServiceUnavailable("统计 GEC 服务全部窗失败".into())
+            }));
+        }
+        *self.last_run.lock().unwrap() = Some(ChunkStats {
+            mode: if total > 1 { "chunked" } else { "single" }.into(),
+            total,
+            done: total - failed,
+            failed,
+            parse_failed: 0,
+        });
+        out.sort_by_key(|e| e.span[0]);
+        Ok(out)
+    }
+}
+
+impl StatisticalGecEngine {
+    /// 单窗请求：响应 span 为窗内字节偏移
+    async fn post_window(&self, url: &str, send: &str) -> Result<Vec<StatError>, DetectorError> {
         let resp = self
             .client
-            .post(&url)
-            .json(&serde_json::json!({ "text": text, "lang": self.lang }))
+            .post(url)
+            .json(&serde_json::json!({ "text": send, "lang": self.lang }))
             .send()
             .await
             .map_err(|e| DetectorError::ServiceUnavailable(e.to_string()))?;
@@ -122,25 +230,38 @@ impl GecEngine for StatisticalGecEngine {
             .json()
             .await
             .map_err(|e| DetectorError::ServiceUnavailable(e.to_string()))?;
-        Ok(body
-            .errors
-            .into_iter()
-            .map(|e| {
-                Error::new(
-                    &self.lang,
-                    e.error_type,
-                    e.confidence,
-                    e.span,
-                    e.original,
-                    e.correction,
-                    if e.message.is_empty() {
-                        "统计模型检出错误"
-                    } else {
-                        &e.message
-                    },
-                )
-            })
-            .collect())
+        Ok(body.errors)
+    }
+
+    /// 窗内错误 → 原文坐标：span 钳制到窗内并平移到原文字节偏移
+    /// （服务偶尔产出越界/字符偏移时保守钳制，不丢整条）
+    fn remap_window_error(&self, e: StatError, send: &str, owner_start: usize) -> Error {
+        let clamp = |v: usize| -> usize {
+            let mut b = v.min(send.len());
+            // 钳到字符边界（越界字符偏移按字节下标处理，向后对齐）
+            while b > 0 && !send.is_char_boundary(b) {
+                b -= 1;
+            }
+            b
+        };
+        let mut s = clamp(e.span[0]);
+        let mut en = clamp(e.span[1]);
+        if en < s {
+            std::mem::swap(&mut s, &mut en);
+        }
+        Error::new(
+            &self.lang,
+            e.error_type,
+            e.confidence,
+            [owner_start + s, owner_start + en],
+            e.original,
+            e.correction,
+            if e.message.is_empty() {
+                "统计模型检出错误"
+            } else {
+                &e.message
+            },
+        )
     }
 }
 
@@ -148,6 +269,127 @@ impl GecEngine for StatisticalGecEngine {
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 本地 mock 统计 GEC 服务：可指定第 N 次请求失败（None = 恒成功）；
+    /// 每次成功响应在窗首回声一条错误（span 为**窗内字节偏移**，契约同 csc_server）
+    async fn mock_stat_server_hook(fail_at: Option<usize>, counter: Arc<AtomicUsize>) -> String {
+        let app = axum::Router::new().route(
+            "/gec",
+            axum::routing::post(move |body: axum::body::Bytes| async move {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if fail_at == Some(n) {
+                    return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+                let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let text = req["text"].as_str().unwrap_or("").to_string();
+                let original: String = text.chars().take(2).collect();
+                let span_end = original.len();
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "errors": [
+                            {
+                                "error_type": "grammar",
+                                "confidence": 0.9,
+                                "span": [0usize, span_end],
+                                "original": original,
+                                "correction": "fixed",
+                                "message": "echo"
+                            }
+                        ]
+                    })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    fn stat_config(endpoint: String) -> StatisticalConfig {
+        StatisticalConfig {
+            endpoint,
+            timeout: Duration::from_secs(5),
+            model: "mock-model".into(),
+        }
+    }
+
+    /// 17 字 × N 句：window 120 → target 60 → 每窗约 3 句（块 ≤120 ≤ 窗）
+    fn window_test_text(sentences: usize) -> String {
+        "这句话用来构造统计臂的滑窗测试。".repeat(sentences)
+    }
+
+    #[tokio::test]
+    async fn statistical_windows_and_remaps_spans() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(None, counter.clone()).await;
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let text = window_test_text(9); // 9 句 ×17 字 = 153 字 → 多窗
+        let errors = engine.detect(&text).await.unwrap();
+        assert!(counter.load(Ordering::SeqCst) >= 3, "应逐窗多次请求");
+        // span 已平移回原文坐标：每条错误的 span 必须对应原文子串
+        for e in &errors {
+            assert_eq!(&text[e.span[0]..e.span[1]], e.original, "span 重映射错误");
+        }
+        // 跨窗分布：末尾窗的检出起点必须远超首窗预算
+        assert!(
+            errors.last().unwrap().span[0] > 120,
+            "后续窗检出应落在文本后段"
+        );
+        let stats = engine.last_chunk_run().unwrap();
+        assert_eq!(stats.mode, "chunked");
+        assert_eq!(stats.done, stats.total);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.coverage(), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn statistical_window_failure_lowers_coverage() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(Some(2), counter).await; // 第 2 窗失败
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let text = window_test_text(9);
+        let errors = engine.detect(&text).await.unwrap();
+        // 失败窗不阻断其余窗；结果仍来自第 1/3..窗
+        assert!(errors.len() >= 2, "其余窗应继续产出: {errors:?}");
+        for e in &errors {
+            assert_eq!(&text[e.span[0]..e.span[1]], e.original);
+        }
+        let stats = engine.last_chunk_run().unwrap();
+        assert_eq!(stats.total, stats.done + 1);
+        assert_eq!(stats.failed, 1);
+        assert!(stats.coverage().unwrap() < 1.0, "coverage 必须下降");
+    }
+
+    #[tokio::test]
+    async fn statistical_all_windows_fail_is_error() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(Some(1), counter).await; // 单窗全文，唯一窗失败
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let err = engine.detect("短句。").await.unwrap_err();
+        assert!(matches!(err, DetectorError::ServiceUnavailable(_)));
+        let stats = engine.last_chunk_run().unwrap();
+        assert_eq!((stats.total, stats.done, stats.failed), (1, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn statistical_short_text_single_window_full_coverage() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let endpoint = mock_stat_server_hook(None, counter.clone()).await;
+        let engine = StatisticalGecEngine::new("zh", stat_config(endpoint)).with_window_chars(120);
+        let errors = engine.detect("他昨天报复很大。").await.unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "短文本应单窗单请求");
+        assert_eq!(errors.len(), 1);
+        let stats = engine.last_chunk_run().unwrap();
+        assert_eq!(stats.mode, "single");
+        assert_eq!(stats.coverage(), Some(1.0));
+    }
 
     /// 本地 mock 统计 GEC 服务
     async fn mock_stat_server() -> String {
@@ -185,14 +427,7 @@ mod tests {
     #[tokio::test]
     async fn statistical_roundtrip() {
         let endpoint = mock_stat_server().await;
-        let engine = StatisticalGecEngine::new(
-            "en",
-            StatisticalConfig {
-                endpoint,
-                timeout: Duration::from_secs(5),
-                model: "mock-model".into(),
-            },
-        );
+        let engine = StatisticalGecEngine::new("en", stat_config(endpoint));
         assert_eq!(engine.kind(), GecEngineKind::Statistical);
         assert_eq!(engine.name(), "mock-model");
         let errors = engine.detect("I saw a apple.").await.unwrap();

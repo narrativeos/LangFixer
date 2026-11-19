@@ -282,7 +282,7 @@ impl DecisionGecEngine {
                 .map(|e| {
                     let mut err = Error::new(
                         &self.lang,
-                        map_error_type(&e.error_type),
+                        map_error_type(e.error_type()),
                         e.confidence,
                         char_span_to_bytes(text, e.span),
                         e.original,
@@ -384,9 +384,15 @@ struct DecideResponse {
 /// span 级错误（微调后服务可细化到片段级）
 #[derive(Debug, Deserialize)]
 struct DecisionSpanError {
-    /// 错误类型（兼容旧服务的 `type` 字段名）
-    #[serde(default, alias = "type")]
-    error_type: String,
+    /// 错误类型；旧服务可能写作 `type`（见 `legacy_type`）。
+    /// 注意不能用 `#[serde(alias)]`：部分服务同时返回 `error_type` 与
+    /// `type` 两个键，alias 会令二者映射同一字段而触发 serde
+    /// "duplicate field" 错误（整个响应解码失败 → 决策层 unavailable）。
+    #[serde(default)]
+    error_type: Option<String>,
+    /// 旧服务的 `type` 字段名（与 `error_type` 同时出现时优先前者）
+    #[serde(default, rename = "type")]
+    legacy_type: Option<String>,
     #[serde(default = "default_confidence")]
     confidence: f64,
     span: [usize; 2],
@@ -401,6 +407,16 @@ struct DecisionSpanError {
 
 fn default_confidence() -> f64 {
     0.5
+}
+
+impl DecisionSpanError {
+    /// 容错取错误类型：`error_type` 优先，旧服务的 `type` 回退。
+    fn error_type(&self) -> &str {
+        self.error_type
+            .as_deref()
+            .or(self.legacy_type.as_deref())
+            .unwrap_or("")
+    }
 }
 
 /// vegaml 错误类型 → 统一错误类型（`shared_model::error_types`）
@@ -655,6 +671,60 @@ mod tests {
         assert_eq!(errors[0].confidence, 0.85);
         assert_eq!(errors[0].correction.as_deref(), Some("修正"));
         assert_eq!(errors[0].message, "搭配不当");
+    }
+
+    /// 回归：真实服务（decision-model/server.py）同时返回 `error_type` 与旧字段
+    /// `type`，曾用 `#[serde(alias)]` 导致 serde "duplicate field" 解码失败，
+    /// 使非空 errors 的响应全部 unavailable。
+    #[tokio::test]
+    async fn span_errors_with_both_error_type_and_legacy_type_key() {
+        let endpoint = mock_decide_server(std::sync::Arc::new(|text| {
+            serde_json::json!({
+                "has_error": true,
+                "has_error_prob": 0.9,
+                "error_type": "grammar",
+                "abstain": false,
+                "errors": [
+                    {
+                        "span": [0, text.chars().count()],
+                        "error_type": "grammar",
+                        "type": "grammar",
+                        "original": text,
+                        "confidence": 0.9,
+                        "message": "决策模型判定该句存在错误（句级判断）"
+                    }
+                ]
+            })
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let errors = engine.detect("这句话有语病").await.unwrap();
+        assert_eq!(errors.len(), 1, "双键响应应正常解码并产出错误");
+        assert_eq!(errors[0].error_type, "grammar");
+    }
+
+    /// 旧服务只写 `type` 字段时仍应回退生效。
+    #[tokio::test]
+    async fn span_errors_legacy_type_key_only() {
+        let endpoint = mock_decide_server(std::sync::Arc::new(|text| {
+            serde_json::json!({
+                "has_error": true,
+                "has_error_prob": 0.9,
+                "abstain": false,
+                "errors": [
+                    {
+                        "span": [0, text.chars().count()],
+                        "type": "collocation",
+                        "original": text
+                    }
+                ]
+            })
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let errors = engine.detect("搭配不当").await.unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].error_type, "collocation");
     }
 
     #[tokio::test]

@@ -100,6 +100,12 @@ pub trait GecEngine: Send + Sync {
     fn last_nlp_call(&self) -> Option<NlpCall> {
         None
     }
+    /// 最近一次 `detect` 的**预算块/窗**执行情况（[`crate::quality::ChunkStats`]）。
+    /// `None` = 本引擎无预算块切块（全文单层路径）；有切块的引擎（stat 滑窗）覆写，
+    /// 组合 / 级联引擎从成员转发（与 [`last_nlp_call`](Self::last_nlp_call) 同一先例）。
+    fn last_chunk_run(&self) -> Option<crate::quality::ChunkStats> {
+        None
+    }
     /// 本引擎组合中挂载的决策模型引擎（若有；查询模型版本号等元数据用）。
     /// 组合引擎（[`CascadeDetector`]）覆写本方法转发到决策层。
     fn decision_engine(&self) -> Option<&crate::decision::DecisionGecEngine> {
@@ -150,6 +156,8 @@ pub trait GecEngine: Send + Sync {
         // （无决策层的引擎 level 2 无弃权信号，等价 1 级）
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
+        let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
+        let mut llm_ran = false;
         if force_llm || level == 3 {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -164,9 +172,11 @@ pub trait GecEngine: Send + Sync {
             // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
             // 那是要人改设置，不是运行时故障。
             match llm_layer_detect(llm, text).await {
-                Ok((extra, llm_status, clean)) => {
+                Ok((extra, llm_status, clean, chunk)) => {
                     llm_ms = Some(t_llm.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
+                    llm_ran = true;
+                    llm_chunk = Some(chunk);
                     layers.push(LayerReport::new(
                         shared_model::sources::LLM,
                         llm_status,
@@ -185,6 +195,30 @@ pub trait GecEngine: Send + Sync {
                 }
             }
         }
+        // S6 质量自描述（Detect Pipeline v2 §5）：段级预算（本层 LLM + 成员引擎的
+        // 预算窗）进 chunks；layers → 降级项；句级单层引擎不核算
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = self.last_chunk_run();
+        if let Some(c) = &llm_chunk {
+            chunk_stats = Some(match chunk_stats {
+                Some(mut a) => {
+                    a.merge(c);
+                    a
+                }
+                None => c.clone(),
+            });
+        }
+        let chunks = match chunk_stats {
+            Some(c) => c,
+            None if (force_llm || level == 3) && !llm_ran => crate::quality::ChunkStats {
+                mode: "single".into(),
+                total: 1,
+                done: 0,
+                failed: 1,
+                parse_failed: 0,
+            },
+            None => crate::quality::ChunkStats::single(),
+        };
+        let quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
         Ok(DetectOutcome {
             errors,
             decision_abstained: false,
@@ -198,6 +232,9 @@ pub trait GecEngine: Send + Sync {
                 ..Default::default()
             },
             layers,
+            quality: Some(quality),
+            chunks: Some(chunks),
+            sentences: None,
         })
     }
     /// 与 [`detect_level`](Self::detect_level) 相同，但附带可选的阶段事件接收器
@@ -293,6 +330,13 @@ pub struct DetectOutcome {
     /// 层级贡献摘要：本次检测**实际参与**的每层状态与检出数（前端「检测路径」展示）；
     /// 空 = 未产生（缓存命中 / 历史复用等未实际检测路径）
     pub layers: Vec<LayerReport>,
+    /// 质量自描述（Detect Pipeline v2）：`None` = 未实际检测（缓存命中 / 历史回放）；
+    /// **仅 `status == "full"` 的运行可写 LRU / 历史**（调用方在写入侧判定）
+    pub quality: Option<crate::quality::QualityReport>,
+    /// 段级（预算块）执行摘要；`None` = 未实际检测
+    pub chunks: Option<crate::quality::ChunkStats>,
+    /// 句级（结构切分）执行摘要；`None` = 未实际检测 / 单层引擎未做句级核算
+    pub sentences: Option<crate::quality::SentenceStats>,
 }
 
 /// 层级贡献报告：本次检测实际参与的每一层各一条
@@ -494,14 +538,15 @@ pub async fn targeted_llm_review(
 /// - `GEC_LLM_CHUNK_TARGET`：目标块大小字符数（默认 1500）；
 /// - `GEC_LLM_CONCURRENCY`：块并发（默认 8）。
 ///
-/// 返回（错误列表，层状态，`llm_confirmed_clean`）：
+/// 返回（错误列表，层状态，`llm_confirmed_clean`，段级执行摘要）：
 /// - 解析失败（单发）或块失败/解析失败（分块）→ 层状态 `partial`，
 ///   且 `confirmed_clean` 必为 `false`——**解析失败不得伪装成「无错误」**；
-/// - 分块路径全部块失败 → [`Err`]（与单发网络失败同语义，由调用方降级）。
+/// - 分块路径全部块失败 → [`Err`]（与单发网络失败同语义，由调用方降级）；
+/// - 第四位 [`ChunkStats`] 供调用方织入 quality.coverage / chunks（Detect Pipeline v2）。
 pub async fn llm_layer_detect(
     llm: &LlmGecEngine,
     text: &str,
-) -> Result<(Vec<Error>, &'static str, bool), DetectorError> {
+) -> Result<(Vec<Error>, &'static str, bool, crate::quality::ChunkStats), DetectorError> {
     // 隐私防线：送 LLM（可能为外部端点）前掩码 PII（手机号 / 身份证 / 固话 /
     // 长数字串 / 邮箱本地部分；等长替换，span 字节偏移空间不变）；
     // 与被掩区域重叠的 LLM 检出丢弃。GEC_LLM_MASK_PII=0 可关
@@ -515,7 +560,19 @@ pub async fn llm_layer_detect(
         }
         let parse_failed = llm.take_parse_failed();
         let clean = errors.is_empty() && !parse_failed;
-        Ok((errors, if parse_failed { "partial" } else { "ran" }, clean))
+        let stats = crate::quality::ChunkStats {
+            mode: "single".into(),
+            total: 1,
+            done: if parse_failed { 0 } else { 1 },
+            failed: 0,
+            parse_failed: parse_failed as usize,
+        };
+        Ok((
+            errors,
+            if parse_failed { "partial" } else { "ran" },
+            clean,
+            stats,
+        ))
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
         let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
@@ -539,7 +596,14 @@ pub async fn llm_layer_detect(
             coverage = %o.coverage(),
             "文档级 LLM 复查完成（分块并行）"
         );
-        Ok((o.errors, status, clean))
+        let stats = crate::quality::ChunkStats {
+            mode: "chunked".into(),
+            total: o.chunks,
+            done: o.chunks - bad.min(o.chunks),
+            failed: o.failed_chunks,
+            parse_failed: o.parse_failed_chunks,
+        };
+        Ok((o.errors, status, clean, stats))
     }
 }
 
@@ -600,6 +664,11 @@ impl GecEngine for CompositeDetector {
         self.primary
             .last_nlp_call()
             .or_else(|| self.fallback.as_ref().and_then(|fb| fb.last_nlp_call()))
+    }
+    fn last_chunk_run(&self) -> Option<crate::quality::ChunkStats> {
+        self.primary
+            .last_chunk_run()
+            .or_else(|| self.fallback.as_ref().and_then(|fb| fb.last_chunk_run()))
     }
 }
 
@@ -979,6 +1048,9 @@ impl GecEngine for CascadeDetector {
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
         let mut llm_ran = false;
+        // 段级预算块执行摘要（③ LLM）与灰区句未复查标记（③-T 句级核算）
+        let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
+        let mut gray_unresolved = false;
         if need_llm {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -991,10 +1063,11 @@ impl GecEngine for CascadeDetector {
             // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
             // 层记 `unavailable`，不把整次 detect 打回 502。
             match llm_layer_detect(llm, text).await {
-                Ok((extra, llm_status, clean)) => {
+                Ok((extra, llm_status, clean, chunk)) => {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
                     llm_ran = true;
+                    llm_chunk = Some(chunk);
                     if let Some(sink) = &progress {
                         sink(crate::progress::StageEvent::Stage {
                             stage: shared_model::sources::LLM,
@@ -1040,6 +1113,7 @@ impl GecEngine for CascadeDetector {
                             merge_errors(&mut errors, extra);
                         }
                         Err(e) => {
+                            gray_unresolved = true;
                             layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
                             tracing::warn!(
                                 error = %e,
@@ -1049,6 +1123,7 @@ impl GecEngine for CascadeDetector {
                     }
                 }
                 None => {
+                    gray_unresolved = true;
                     tracing::debug!("L3 部分定案存在灰区句但未配置 LLM → 本轮放行（灰区句未复查）");
                 }
             }
@@ -1110,12 +1185,57 @@ impl GecEngine for CascadeDetector {
                 total_ms: timings.total_ms,
             });
         }
+        // S6 质量自描述（Detect Pipeline v2 §5）：
+        // - chunks：③ LLM 段级摘要 ⊕ 成员引擎预算窗摘要（stat 滑窗）；
+        //   无任何预算层且未触发 LLM → 全文单发；触发但未成功 → 单发未复查；
+        // - quality：layers 非 ran 项 → 降级项；coverage 由 chunks 核算；
+        //   unowned_chars 恒 0（docchunk 铺满不变式；stat 侧另记告警）；
+        // - sentences：句级恒切一次；③-T 未定案时灰区句不计入已复查（③ 全文
+        //   复查覆盖全文，不扣）。
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = self.rule.last_chunk_run();
+        if let Some(c) = &llm_chunk {
+            chunk_stats = Some(match chunk_stats {
+                Some(mut a) => {
+                    a.merge(c);
+                    a
+                }
+                None => c.clone(),
+            });
+        }
+        let chunks = match chunk_stats {
+            Some(c) => c,
+            None if need_llm && !llm_ran => crate::quality::ChunkStats {
+                mode: "single".into(),
+                total: 1,
+                done: 0,
+                failed: 1,
+                parse_failed: 0,
+            },
+            None => crate::quality::ChunkStats::single(),
+        };
+        let quality = crate::quality::QualityReport::assemble(&layers, chunks.coverage(), 0);
+        let s_spans = crate::docchunk::sentence_spans(text);
+        let unreviewed_sentences = if gray_unresolved {
+            s_spans
+                .iter()
+                .filter(|s| targeted_spans.iter().any(|t| spans_overlap(**s, *t)))
+                .count()
+        } else {
+            0
+        };
+        let sentences = crate::quality::SentenceStats {
+            total: s_spans.len(),
+            reviewed: s_spans.len() - unreviewed_sentences,
+        };
         Ok(DetectOutcome {
             errors,
             decision_abstained: abstained,
             llm_confirmed_clean,
             timings,
             layers,
+            quality: Some(quality),
+            chunks: Some(chunks),
+            sentences: Some(sentences),
         })
     }
 }
@@ -1572,7 +1692,7 @@ mod tests {
         }
         let fallback: Arc<dyn GecEngine> = Arc::new(FakeRule2);
         let composite = CompositeDetector::new("en", primary, Some(fallback));
-        let errors = composite.detect("abc").await.unwrap();
+        let errors = composite.detect("abcdef").await.unwrap();
         assert_eq!(errors.len(), 3);
         assert_eq!(errors[0].span, [0, 2]);
         assert_eq!(
@@ -2875,20 +2995,25 @@ mod tests {
         // （「复查失败」绝不得伪装成「复查确认干净」）
         let endpoint = mock_llm_content("抱歉，我无法完成该任务。").await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, confirmed_clean) = llm_layer_detect(&llm, "正确句子").await.unwrap();
+        let (errors, status, confirmed_clean, chunk) =
+            llm_layer_detect(&llm, "正确句子").await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "partial");
         assert!(!confirmed_clean, "解析失败不得当作确认干净");
+        assert_eq!(chunk.mode, "single");
+        assert_eq!((chunk.total, chunk.done, chunk.parse_failed), (1, 0, 1));
     }
 
     #[tokio::test]
     async fn llm_layer_normal_run_marks_ran() {
         let endpoint = mock_llm_content("[]").await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, confirmed_clean) = llm_layer_detect(&llm, "正确句子").await.unwrap();
+        let (errors, status, confirmed_clean, chunk) =
+            llm_layer_detect(&llm, "正确句子").await.unwrap();
         assert!(errors.is_empty());
         assert_eq!(status, "ran");
         assert!(confirmed_clean);
+        assert_eq!(chunk.coverage(), Some(1.0));
     }
 
     #[tokio::test]
@@ -2902,7 +3027,7 @@ mod tests {
         let o = llm.detect_document(text, 50, 4).await.unwrap();
         assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
         assert_eq!(o.coverage(), 1.0);
-        let (errors, _status, _clean) = llm_layer_detect(&llm, text).await.unwrap();
+        let (errors, _status, _clean, _chunk) = llm_layer_detect(&llm, text).await.unwrap();
         assert!(errors.is_empty());
     }
 
@@ -3053,7 +3178,8 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _clean) = llm_layer_detect(&llm, "电话13800138000有误").await.unwrap();
+        let (errors, status, _clean, _chunk) =
+            llm_layer_detect(&llm, "电话13800138000有误").await.unwrap();
         assert!(
             errors.is_empty(),
             "被掩区域（`*`）的检出应被过滤：{errors:?}"
@@ -3069,7 +3195,7 @@ mod tests {
         )
         .await;
         let llm = llm_engine(&endpoint);
-        let (errors, status, _) = llm_layer_detect(&llm, "他13800138000说报负很大")
+        let (errors, status, _, _chunk) = llm_layer_detect(&llm, "他13800138000说报负很大")
             .await
             .unwrap();
         assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");

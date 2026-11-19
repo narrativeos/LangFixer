@@ -25,6 +25,10 @@ pub struct DetectRequest {
     /// 无条件对全文跑一次 LLM 兜底（未配置 LLM 时返回 503）
     #[serde(default)]
     pub force_llm: bool,
+    /// 忽略缓存绕过：跳过进程内 LRU 与历史复用，强制实检并用新结果回写
+    /// 缓存 / 历史（规则 / 模型变更后怀疑命中旧结果时的显式纠正措施）
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 /// 检测响应（错误列表 + 决策模型弃权信号 + 各阶段计时 + 历史复用标记）
@@ -50,6 +54,20 @@ pub struct DetectResponse {
     /// 缓存命中 / 历史复用等未实际检测路径不返回（历史复用时回放记录中的 layers）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<gec_core::LayerReport>,
+    /// 结果质量自描述（full/partial/degraded + 覆盖率 + 降级原因）；
+    /// 缓存命中 / 历史复用回放时无（回放结果来自既往 full 运行）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<gec_core::QualityReport>,
+    /// 切块账本（模式 / 块数 / 完成与失败数 / 覆盖率）；回放时无
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<gec_core::ChunkStats>,
+    /// 句级账本（总句数 / 送审句数）；回放时无
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<gec_core::SentenceStats>,
+    /// 检测时版本向量（规则指纹 / 决策模型 / 切块器）；仅实际检测时返回，
+    /// 缓存命中 / 历史复用回放时无
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -104,23 +122,19 @@ pub(crate) async fn try_reuse_history(
     state: &AppState,
     lang: &str,
     text: &str,
-    category: &Option<String>,
-    level: u8,
+    params: &shared_model::DetectParams,
 ) -> Option<DetectOutcome> {
     let hash = shared_model::text_hash(text);
     let candidates = state.detect_history.latest_for_text(lang, &hash, 10).ok()?;
     if candidates.is_empty() {
         return None;
     }
-    let current = state
-        .current_detect_params(lang, level, false, category)
-        .await;
     let idx = candidates.iter().position(|c| {
         shared_model::history_reusable(
             c.params_json.as_deref().unwrap_or(""),
             &c.text,
             &c.errors_json,
-            &current,
+            params,
             text,
         )
     })?;
@@ -145,6 +159,10 @@ pub(crate) async fn try_reuse_history(
 
 /// 执行检测 + 缓存 + 历史复用 + 过滤（已禁用规则 / 自定义词白名单 / category）+ 三级响应级别
 ///
+/// 缓存两层（LRU / 历史）的键都携带完整参数指纹（规则侧 + 模型侧 + 层开关）：
+/// 规则或模型变更后旧条目必然 miss，不会命中错误缓存；`refresh = true` 进一步
+/// 跳过两层读取强制实检（显式纠正措施）。
+///
 /// 返回 `(结果, from_history)`：`from_history = true` 表示结果来自历史复用
 /// （调用方据此跳过历史写入，并向前端返回 `from_history` 标记）。
 /// 后处理（anomaly 自动采纳 / L3 飞轮）全部在**后台任务**执行，
@@ -156,6 +174,7 @@ pub(crate) async fn run_detection(
     category: &Option<String>,
     level: Option<u8>,
     force_llm: bool,
+    refresh: bool,
     progress_id: Option<&str>,
 ) -> Result<(DetectOutcome, bool), ApiError> {
     let level = level.unwrap_or(1);
@@ -175,57 +194,51 @@ pub(crate) async fn run_detection(
             super::detect_progress::finish(&state.detect_progress, id);
         }
     };
-    let key = cache_key(lang, text);
     // 网关形态：跳过进程级缓存与历史复用，每账号实时跑并自写历史（归属完整）
     let gw = crate::auth::gateway_mode();
-    let cached = if gw {
-        None
+    // LRU 键携带完整参数指纹（与历史复用门槛同一口径）：规则侧（词表 / 决策表 /
+    // 禁用规则 / 自定义词）、模型侧（决策模型重训练）与层开关的任一变化都使旧键
+    // 失效——修复旧版「键只含文本、变更后仍命中错误缓存」的缺口。
+    // refresh = 显式绕过两层缓存读取，强制实检并回写。
+    let params_opt = if level == 1 && !force_llm && !gw {
+        Some(
+            state
+                .as_ref()
+                .current_detect_params(lang, 1, false, category)
+                .await,
+        )
     } else {
-        state.as_ref().cache.get(&key)
+        None
+    };
+    let cache_k = params_opt.as_ref().map(|p| cache_key(lang, text, p));
+    let cached = match (&cache_k, gw || refresh) {
+        (Some(k), false) => state.as_ref().cache.get(k),
+        _ => None,
     };
 
     // 1. 基础结果（1 级：规则 + 决策模型，若启用）；
     //    level 2/3 或 force_llm 涉及 LLM 兜底（非确定性、不缓存）→ 实时跑完整级联
-    let (mut outcome, from_history) = match (level, force_llm, cached) {
-        (1, false, Some(cached)) => {
+    let (mut outcome, from_history) = if let Some(errors) = cached {
+        finish_progress(progress_id);
+        (
+            DetectOutcome {
+                errors,
+                ..Default::default()
+            },
+            false,
+        )
+    } else if level == 1 && !force_llm {
+        // 历史复用：LRU 未命中 → 查同文本历史（参数一致 + 无 LLM 的最近记录；
+        // refresh / 网关形态跳过）
+        let reused = match &params_opt {
+            Some(p) if !gw && !refresh => try_reuse_history(state.as_ref(), lang, text, p).await,
+            _ => None,
+        };
+        if let Some(reused) = reused {
             finish_progress(progress_id);
-            (
-                DetectOutcome {
-                    errors: cached,
-                    ..Default::default()
-                },
-                false,
-            )
-        }
-        (1, false, None) => {
-            // 历史复用：LRU 未命中 → 查同文本历史（参数一致 + 无 LLM 的最近记录）
-            let reused = if gw {
-                None
-            } else {
-                try_reuse_history(state.as_ref(), lang, text, category, level).await
-            };
-            if let Some(reused) = reused {
-                finish_progress(progress_id);
-                (reused, true)
-            } else {
-                // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
-                let engine = state
-                    .as_ref()
-                    .router
-                    .read()
-                    .unwrap()
-                    .get(lang)
-                    .cloned()
-                    .ok_or_else(|| DetectorError::UnsupportedLanguage(lang.to_string()))?;
-                // 统一走 detect_level：1 级结果 + 各阶段计时（含 NLP 预热）
-                let outcome = engine
-                    .detect_level_traced(text, 1, false, None, sink)
-                    .await?;
-                state.as_ref().cache.insert(key, outcome.errors.clone());
-                (outcome, false)
-            }
-        }
-        (_, _, _) => {
+            (reused, true)
+        } else {
+            // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
             let engine = state
                 .as_ref()
                 .router
@@ -234,14 +247,35 @@ pub(crate) async fn run_detection(
                 .get(lang)
                 .cloned()
                 .ok_or_else(|| DetectorError::UnsupportedLanguage(lang.to_string()))?;
-            let llm = state.as_ref().llm_detect_engine(lang);
-            (
-                engine
-                    .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
-                    .await?,
-                false,
-            )
+            // 统一走 detect_level：1 级结果 + 各阶段计时（含 NLP 预热）
+            let outcome = engine
+                .detect_level_traced(text, 1, false, None, sink)
+                .await?;
+            // 缓存资格：仅 quality=full 的运行可写 LRU（partial/degraded 只回传
+            // 不入缓存，杜绝降级结果被缓存放大）
+            if let Some(k) = cache_k {
+                if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+                    state.as_ref().cache.insert(k, outcome.errors.clone());
+                }
+            }
+            (outcome, false)
         }
+    } else {
+        let engine = state
+            .as_ref()
+            .router
+            .read()
+            .unwrap()
+            .get(lang)
+            .cloned()
+            .ok_or_else(|| DetectorError::UnsupportedLanguage(lang.to_string()))?;
+        let llm = state.as_ref().llm_detect_engine(lang);
+        (
+            engine
+                .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
+                .await?,
+            false,
+        )
     };
 
     // 无事件引擎（纯规则默认配置等）的进度兜底：支持事件的引擎已自行 End / 缓存历史已 finish，均 no-op
@@ -416,6 +450,41 @@ async fn auto_adopt_anomalies(state: &AppState, lang: &str, errors: &[Error]) {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ClearCacheRequest {
+    /// 同时清空历史复用库（SQLite `detect_history`）；缺省 false（仅清进程内 LRU）
+    #[serde(default)]
+    pub history: bool,
+}
+
+/// POST /gec/cache/clear — 显式清缓存纠正措施：
+/// 清空进程内 LRU 检测缓存（缺省）；`history=true` 时一并清空历史复用库。
+/// 规则 / 模型变更本身已使旧缓存键失效（指纹入键），本端点用于「缓存无法纠正」
+/// 时的手动兜底（例：词表文件被仓外手段直接修改、或需要强制全新检测）。
+pub async fn clear_cache(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ClearCacheRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let lru_cleared = state.cache.clear();
+    let history_cleared = if req.history {
+        state
+            .detect_history
+            .clear()
+            .map_err(|e| ApiError::Internal(format!("清空历史失败: {e}")))?
+    } else {
+        0
+    };
+    tracing::info!(
+        lru_cleared,
+        history_cleared,
+        "显式清缓存（POST /gec/cache/clear）"
+    );
+    Ok(Json(serde_json::json!({
+        "lru_cleared": lru_cleared,
+        "history_cleared": history_cleared,
+    })))
+}
+
 /// POST /gec/detect — 检测文本中的语法错误（自动持久化到历史）
 pub async fn detect(
     State(state): State<Arc<AppState>>,
@@ -437,12 +506,16 @@ pub async fn detect(
         &q.category,
         req.level,
         req.force_llm,
+        req.refresh,
         super::detect_progress::id_from_headers(&headers),
     )
     .await?;
 
     // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）
+    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
+    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
+    // 正常结果；LRU 命中回放结果出自 full 运行，照常落库）
+    let mut version: Option<serde_json::Value> = None;
     if !from_history {
         let state = state.clone();
         let lang = req.lang.clone();
@@ -459,23 +532,33 @@ pub async fn detect(
         let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
         let layers_json = (!outcome.layers.is_empty())
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        tokio::spawn(async move {
-            if let Err(e) = state.detect_history.insert(
-                gw_tag.as_deref(),
-                &lang,
-                &text,
-                &errors_json,
-                None,
-                timings_json.as_deref(),
-                Some(APP_VERSION),
-                params_json.as_deref(),
-                Some(&text_hash),
-                Some(corrected_text.as_str()),
-                layers_json.as_deref(),
-            ) {
-                tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
-            }
+        // 版本向量：实际检测时的参数快照（LRU 命中回放 quality=None → 不返回）
+        version = outcome.quality.as_ref().map(|_| {
+            serde_json::json!({
+                "rules_fingerprint": params.rules_fingerprint,
+                "model_version": params.model_version,
+                "splitter": params.splitter,
+            })
         });
+        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+            tokio::spawn(async move {
+                if let Err(e) = state.detect_history.insert(
+                    gw_tag.as_deref(),
+                    &lang,
+                    &text,
+                    &errors_json,
+                    None,
+                    timings_json.as_deref(),
+                    Some(APP_VERSION),
+                    params_json.as_deref(),
+                    Some(&text_hash),
+                    Some(corrected_text.as_str()),
+                    layers_json.as_deref(),
+                ) {
+                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
+                }
+            });
+        }
     }
 
     Ok(Json(DetectResponse {
@@ -485,6 +568,10 @@ pub async fn detect(
         from_history,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
+        quality: outcome.quality,
+        chunks: outcome.chunks,
+        sentences: outcome.sentences,
+        version,
     }))
 }
 
@@ -501,6 +588,9 @@ pub struct DetectLangRequest {
     /// 「漏报」强制兜底（语义同 [`DetectRequest::force_llm`]）
     #[serde(default)]
     pub force_llm: bool,
+    /// 忽略缓存绕过（语义同 [`DetectRequest::refresh`]）
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 /// POST /gec/:lang/detect — 语言变体检测（lang 来自路径；自动持久化）
@@ -525,12 +615,15 @@ pub async fn detect_lang(
         &q.category,
         req.level,
         req.force_llm,
+        req.refresh,
         super::detect_progress::id_from_headers(&headers),
     )
     .await?;
 
     // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）
+    // 历史复用不写新记录；缓存资格：仅 quality=full 可写历史
+    //（同 detect handler；partial/degraded 只回传不落库）
+    let mut version: Option<serde_json::Value> = None;
     if !from_history {
         let state = state.clone();
         let lang = lang.clone();
@@ -547,23 +640,33 @@ pub async fn detect_lang(
         let corrected_text = shared_model::apply_corrections(&text, &outcome.errors);
         let layers_json = (!outcome.layers.is_empty())
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        tokio::spawn(async move {
-            if let Err(e) = state.detect_history.insert(
-                gw_tag.as_deref(),
-                &lang,
-                &text,
-                &errors_json,
-                None,
-                timings_json.as_deref(),
-                Some(APP_VERSION),
-                params_json.as_deref(),
-                Some(&text_hash),
-                Some(corrected_text.as_str()),
-                layers_json.as_deref(),
-            ) {
-                tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
-            }
+        // 版本向量：实际检测时的参数快照（LRU 命中回放 quality=None → 不返回）
+        version = outcome.quality.as_ref().map(|_| {
+            serde_json::json!({
+                "rules_fingerprint": params.rules_fingerprint,
+                "model_version": params.model_version,
+                "splitter": params.splitter,
+            })
         });
+        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+            tokio::spawn(async move {
+                if let Err(e) = state.detect_history.insert(
+                    gw_tag.as_deref(),
+                    &lang,
+                    &text,
+                    &errors_json,
+                    None,
+                    timings_json.as_deref(),
+                    Some(APP_VERSION),
+                    params_json.as_deref(),
+                    Some(&text_hash),
+                    Some(corrected_text.as_str()),
+                    layers_json.as_deref(),
+                ) {
+                    tracing::warn!(error = %e, "检测历史写入失败（不影响返回结果）");
+                }
+            });
+        }
     }
 
     Ok(Json(DetectResponse {
@@ -573,5 +676,9 @@ pub async fn detect_lang(
         from_history,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
+        quality: outcome.quality,
+        chunks: outcome.chunks,
+        sentences: outcome.sentences,
+        version,
     }))
 }
