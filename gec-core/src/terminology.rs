@@ -260,6 +260,23 @@ impl GecEngine for TerminologyEngine {
         self.terminology.apply(&lang, text, &mut outcome.errors);
         Ok(outcome)
     }
+    /// 阶段事件透传：不过滤事件直接交给内层引擎（术语处理本身在 End 之后，不单独设阶段）
+    async fn detect_level_traced(
+        &self,
+        text: &str,
+        level: u8,
+        force_llm: bool,
+        llm: Option<&crate::llm::LlmGecEngine>,
+        progress: Option<crate::progress::StageSink>,
+    ) -> Result<DetectOutcome, DetectorError> {
+        let lang = self.inner.name().to_string();
+        let mut outcome = self
+            .inner
+            .detect_level_traced(text, level, force_llm, llm, progress)
+            .await?;
+        self.terminology.apply(&lang, text, &mut outcome.errors);
+        Ok(outcome)
+    }
     fn last_nlp_call(&self) -> Option<NlpCall> {
         self.inner.last_nlp_call()
     }

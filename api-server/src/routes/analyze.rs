@@ -54,6 +54,7 @@ pub struct AnalyzeResponse {
 pub async fn analyze(
     State(state): State<Arc<AppState>>,
     Extension(tenant): Extension<Tenant>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AnalyzeRequest>,
 ) -> Result<Json<AnalyzeResponse>, ApiError> {
     let level = req.level.unwrap_or(1);
@@ -72,6 +73,12 @@ pub async fn analyze(
         .get(&req.lang)
         .cloned()
         .ok_or_else(|| DetectorError::UnsupportedLanguage(req.lang.clone()))?;
+    // 分阶段进度（与 run_detection 同模式：X-Progress-Id → 事件登记；历史命中直接标完成）
+    let progress_id = super::detect_progress::id_from_headers(&headers);
+    let sink = progress_id.map(|id| {
+        super::detect_progress::begin(&state.detect_progress, id);
+        super::detect_progress::sink(state.clone(), id)
+    });
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发，不缓存）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history): (DetectOutcome, bool) = if level <= 1 && !req.force_llm {
@@ -83,15 +90,23 @@ pub async fn analyze(
             detect::try_reuse_history(state.as_ref(), &req.lang, &req.text, &None, 1).await
         };
         if let Some(reused) = reused {
+            if let Some(id) = progress_id {
+                super::detect_progress::finish(&state.detect_progress, id);
+            }
             (reused, true)
         } else {
-            (engine.detect_level(&req.text, 1, false, None).await?, false)
+            (
+                engine
+                    .detect_level_traced(&req.text, 1, false, None, sink)
+                    .await?,
+                false,
+            )
         }
     } else {
         let llm = state.llm_detect_engine(&req.lang);
         (
             engine
-                .detect_level(&req.text, level, req.force_llm, llm.as_deref())
+                .detect_level_traced(&req.text, level, req.force_llm, llm.as_deref(), sink)
                 .await?,
             false,
         )
@@ -99,6 +114,10 @@ pub async fn analyze(
     // 与 detect 路由一致的后处理：过滤已禁用规则 + 自定义词白名单
     // （「放弃」反馈 / 「停用规则」建议在重检测时同样生效）
     detect::apply_suppression_filters(state.as_ref(), &req.lang, &mut outcome);
+    // 无事件引擎的进度兜底（支持事件的引擎已 End / 历史已 finish，均 no-op）
+    if let Some(id) = progress_id {
+        super::detect_progress::fallback(&state.detect_progress, id, &outcome.timings);
+    }
     let engine = state.tables.get(&req.lang);
 
     // 会话 ID：请求提供则用，否则自动生成

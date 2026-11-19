@@ -96,6 +96,11 @@ pub struct AppState {
     pub doc_jobs: Arc<gec_core::DocJobStore>,
     /// 文档作业取消位（job_id → flag；置位后未开跑的块保持 pending，可续跑）
     pub doc_job_cancel: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    /// 检测进度登记表（progress_id → 阶段事件序列；`routes/detect_progress`，
+    /// 前端分阶段进度条轮询数据源，闲置条目自动回收）
+    pub detect_progress: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, crate::routes::detect_progress::Entry>>,
+    >,
     /// 决策表目录（资源包导入/删除写回决策表与 aux 数据文件；
     /// `RwLock`：设置界面变更 `tables_dir` 时同步更新）
     pub tables_dir: RwLock<std::path::PathBuf>,
@@ -441,6 +446,7 @@ impl AppState {
             optimization_round,
             doc_jobs,
             doc_job_cancel: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            detect_progress: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 

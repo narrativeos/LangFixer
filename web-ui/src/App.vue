@@ -11,6 +11,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import EvolutionCenter from './components/EvolutionCenter.vue'
 import LayerContributions from './components/LayerContributions.vue'
 import PipelineStatus from './components/PipelineStatus.vue'
+import StageProgress from './components/StageProgress.vue'
 import MediaWorkspace from './components/MediaWorkspace.vue'
 import DocJobsPanel from './components/DocJobsPanel.vue'
 import LearningPanel from './components/LearningPanel.vue'
@@ -330,6 +331,7 @@ onBeforeUnmount(() => {
 if (isTauri) {
   unlistenTauri.push(tauriListen('menu-action', onMenuAction))
   unlistenTauri.push(tauriListen('tauri://drag-drop', onDragDrop))
+  unlistenTauri.push(tauriListen('detect:stage', (p) => store.onStageEvent(p)))
 }
 
 // ── 主题:跟随系统 + localStorage 覆盖;桌面端原生窗口背景对齐 ──
@@ -405,6 +407,9 @@ if (isTauri) api.setWindowTheme(isDark.value)
         {{ identity.admin ? '超管' : '评审' }}
       </LButton>
     </header>
+
+    <!-- 分阶段检测进度条（仅工作台：引擎阶段事件 → 每层进度与耗时） -->
+    <StageProgress v-if="!inConsole" />
 
     <!-- 工作台壳 -->
     <main v-if="!inConsole" class="l-main">

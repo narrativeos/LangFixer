@@ -1237,8 +1237,24 @@ async fn try_reuse_history(
     })
 }
 
+/// 阶段事件 sink：把引擎阶段事件转成 Tauri 应用事件 `detect:stage`（前端分阶段进度条）；
+/// 按 progress_id 过滤（前端仅消费本次检测的事件）。未传 progress_id 时不建 sink（零开销）。
+fn stage_sink(app: &tauri::AppHandle, progress_id: Option<&str>) -> Option<gec_core::StageSink> {
+    let pid = progress_id.filter(|s| !s.is_empty())?;
+    let app = app.clone();
+    let pid = pid.to_string();
+    Some(Arc::new(move |ev: gec_core::StageEvent| {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "detect:stage",
+            serde_json::json!({ "progress_id": pid, "event": ev }),
+        );
+    }))
+}
+
 #[tauri::command]
 pub async fn detect(
+    app: tauri::AppHandle,
     core: tauri::State<'_, Arc<Core>>,
     lang: String,
     text: String,
@@ -1248,6 +1264,8 @@ pub async fn detect(
     level: Option<u8>,
     // 「漏报」强制兜底：无视 level 触发条件，无条件对全文跑一次 LLM 兜底
     force_llm: bool,
+    // 分阶段进度条事件标识（前端生成；随 invoke 参数传入，事件经 detect:stage 推回）
+    progress_id: Option<String>,
 ) -> Result<DetectResult, String> {
     let level = level.unwrap_or(1);
     if !(1..=3).contains(&level) {
@@ -1255,6 +1273,7 @@ pub async fn detect(
     }
     // 读锁内仅克隆路由 Arc（锁立即释放），避免 guard 跨 await（非 Send）
     let router = core.router.read().unwrap().clone();
+    let sink = stage_sink(&app, progress_id.as_deref());
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
@@ -1268,7 +1287,7 @@ pub async fn detect(
                 .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
             (
                 engine
-                    .detect_level(&text, 1, false, None)
+                    .detect_level_traced(&text, 1, false, None, sink)
                     .await
                     .map_err(|e| e.to_string())?,
                 false,
@@ -1282,7 +1301,7 @@ pub async fn detect(
         let llm = core.llm_detect_engine(&lang);
         (
             engine
-                .detect_level(&text, level, force_llm, llm.as_deref())
+                .detect_level_traced(&text, level, force_llm, llm.as_deref(), sink)
                 .await
                 .map_err(|e| match e {
                     gec_core::DetectorError::LlmNotConfigured(m) => m,
@@ -1382,6 +1401,7 @@ pub async fn detect(
 /// 检测 + 归因一站式（支持三级响应级别 + 漏报强制兜底）
 #[tauri::command]
 pub async fn analyze(
+    app: tauri::AppHandle,
     core: tauri::State<'_, Arc<Core>>,
     lang: String,
     text: String,
@@ -1390,12 +1410,15 @@ pub async fn analyze(
     level: Option<u8>,
     // 「漏报」强制兜底（语义同 `detect` 的 force_llm）
     force_llm: bool,
+    // 分阶段进度条事件标识（语义同 `detect` 的 progress_id）
+    progress_id: Option<String>,
 ) -> Result<AnalyzeResult, String> {
     let level = level.unwrap_or(1);
     if !(1..=3).contains(&level) {
         return Err(format!("无效响应级别: {level}（应为 1-3）"));
     }
     let router = core.router.read().unwrap().clone();
+    let sink = stage_sink(&app, progress_id.as_deref());
     // level 1 = 常规检测；level 2/3 或 force_llm = 完整级联（LLM 兜底按需/强制触发）
     // 统一走 detect_level：各阶段计时（含 NLP 预热）随结果返回并持久化
     let (mut outcome, from_history) = if level <= 1 && !force_llm {
@@ -1409,7 +1432,7 @@ pub async fn analyze(
                 .ok_or_else(|| format!("语言 {lang} 无检测器"))?;
             (
                 engine
-                    .detect_level(&text, 1, false, None)
+                    .detect_level_traced(&text, 1, false, None, sink)
                     .await
                     .map_err(|e| e.to_string())?,
                 false,
@@ -1423,7 +1446,7 @@ pub async fn analyze(
         let llm = core.llm_detect_engine(&lang);
         (
             engine
-                .detect_level(&text, level, force_llm, llm.as_deref())
+                .detect_level_traced(&text, level, force_llm, llm.as_deref(), sink)
                 .await
                 .map_err(|e| match e {
                     gec_core::DetectorError::LlmNotConfigured(m) => m,
@@ -7055,4 +7078,3 @@ fn llm_breaker() -> Arc<gec_core::circuit::CircuitBreaker> {
         .get_or_init(|| Arc::new(gec_core::circuit::CircuitBreaker::default()))
         .clone()
 }
-

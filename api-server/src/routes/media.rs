@@ -59,10 +59,17 @@ impl CarrierDetector for ServerDetector {
         category: Option<&str>,
     ) -> Result<DetectResult, FlowError> {
         let category = category.map(|c| c.to_string());
-        let (outcome, _) =
-            run_detection(self.state.clone(), lang, text, &category, level, force_llm)
-                .await
-                .map_err(flow_err_from_api)?;
+        let (outcome, _) = run_detection(
+            self.state.clone(),
+            lang,
+            text,
+            &category,
+            level,
+            force_llm,
+            None,
+        )
+        .await
+        .map_err(flow_err_from_api)?;
         Ok(DetectResult {
             errors: outcome.errors,
             layers: outcome

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod custom_words;
 pub mod deps;
 pub mod detect;
+pub mod detect_progress;
 pub mod doc_jobs;
 pub mod eval;
 pub mod explain;
@@ -108,6 +109,11 @@ impl From<attribution_engine::AttributionError> for ApiError {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/gec/detect", axum::routing::post(detect::detect))
+        // 分阶段进度条：检测进行中按 progress_id 轮询阶段事件（见 routes/detect_progress）
+        .route(
+            "/gec/detect/progress",
+            axum::routing::get(detect_progress::progress),
+        )
         // ── 多模态审校（MULTIMODAL.md §8）：上传载体可达数十 MB，单独放宽 body limit ──
         .nest(
             "/gec/media",

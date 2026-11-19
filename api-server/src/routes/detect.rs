@@ -156,6 +156,7 @@ pub(crate) async fn run_detection(
     category: &Option<String>,
     level: Option<u8>,
     force_llm: bool,
+    progress_id: Option<&str>,
 ) -> Result<(DetectOutcome, bool), ApiError> {
     let level = level.unwrap_or(1);
     if !(1..=3).contains(&level) {
@@ -163,6 +164,17 @@ pub(crate) async fn run_detection(
             "无效响应级别: {level}（应为 1-3）"
         )));
     }
+    // 分阶段进度（前端进度条）：客户端经 X-Progress-Id 传入时登记事件条目，
+    // 引擎侧由 sink 在阶段结束点推送；缓存 / 历史命中无阶段事件，直接标完成
+    let sink = progress_id.map(|id| {
+        super::detect_progress::begin(&state.detect_progress, id);
+        super::detect_progress::sink(state.clone(), id)
+    });
+    let finish_progress = |id: Option<&str>| {
+        if let Some(id) = id {
+            super::detect_progress::finish(&state.detect_progress, id);
+        }
+    };
     let key = cache_key(lang, text);
     // 网关形态：跳过进程级缓存与历史复用，每账号实时跑并自写历史（归属完整）
     let gw = crate::auth::gateway_mode();
@@ -175,13 +187,16 @@ pub(crate) async fn run_detection(
     // 1. 基础结果（1 级：规则 + 决策模型，若启用）；
     //    level 2/3 或 force_llm 涉及 LLM 兜底（非确定性、不缓存）→ 实时跑完整级联
     let (mut outcome, from_history) = match (level, force_llm, cached) {
-        (1, false, Some(cached)) => (
-            DetectOutcome {
-                errors: cached,
-                ..Default::default()
-            },
-            false,
-        ),
+        (1, false, Some(cached)) => {
+            finish_progress(progress_id);
+            (
+                DetectOutcome {
+                    errors: cached,
+                    ..Default::default()
+                },
+                false,
+            )
+        }
         (1, false, None) => {
             // 历史复用：LRU 未命中 → 查同文本历史（参数一致 + 无 LLM 的最近记录）
             let reused = if gw {
@@ -190,6 +205,7 @@ pub(crate) async fn run_detection(
                 try_reuse_history(state.as_ref(), lang, text, category, level).await
             };
             if let Some(reused) = reused {
+                finish_progress(progress_id);
                 (reused, true)
             } else {
                 // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
@@ -202,7 +218,9 @@ pub(crate) async fn run_detection(
                     .cloned()
                     .ok_or_else(|| DetectorError::UnsupportedLanguage(lang.to_string()))?;
                 // 统一走 detect_level：1 级结果 + 各阶段计时（含 NLP 预热）
-                let outcome = engine.detect_level(text, 1, false, None).await?;
+                let outcome = engine
+                    .detect_level_traced(text, 1, false, None, sink)
+                    .await?;
                 state.as_ref().cache.insert(key, outcome.errors.clone());
                 (outcome, false)
             }
@@ -219,12 +237,17 @@ pub(crate) async fn run_detection(
             let llm = state.as_ref().llm_detect_engine(lang);
             (
                 engine
-                    .detect_level(text, level, force_llm, llm.as_deref())
+                    .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
                     .await?,
                 false,
             )
         }
     };
+
+    // 无事件引擎（纯规则默认配置等）的进度兜底：支持事件的引擎已自行 End / 缓存历史已 finish，均 no-op
+    if let Some(id) = progress_id {
+        super::detect_progress::fallback(&state.detect_progress, id, &outcome.timings);
+    }
 
     // 2. + 3. 过滤已禁用的规则 + 自定义词白名单（与 analyze 路由共用同一过滤，
     //    保证「放弃」反馈 / 「停用规则」建议在所有检测入口一致生效）
@@ -398,6 +421,7 @@ pub async fn detect(
     State(state): State<Arc<AppState>>,
     Extension(tenant): Extension<Tenant>,
     Query(q): Query<DetectQuery>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<DetectRequest>,
 ) -> Result<Json<DetectResponse>, ApiError> {
     // 网关形态：先按字符数计配额（超限 429），历史按账号伪会话归户
@@ -413,6 +437,7 @@ pub async fn detect(
         &q.category,
         req.level,
         req.force_llm,
+        super::detect_progress::id_from_headers(&headers),
     )
     .await?;
 
@@ -484,6 +509,7 @@ pub async fn detect_lang(
     Extension(tenant): Extension<Tenant>,
     Path(lang): Path<String>,
     Query(q): Query<DetectQuery>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<DetectLangRequest>,
 ) -> Result<Json<DetectResponse>, ApiError> {
     // 网关形态：先按字符数计配额（超限 429），历史按账号伪会话归户
@@ -499,6 +525,7 @@ pub async fn detect_lang(
         &q.category,
         req.level,
         req.force_llm,
+        super::detect_progress::id_from_headers(&headers),
     )
     .await?;
 

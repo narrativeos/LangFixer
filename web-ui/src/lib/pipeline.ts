@@ -1,3 +1,5 @@
+import type { DetectTimings, StageEvent } from '../types'
+
 /**
  * 检测管线层展示（① 本地 ZEN 规则 → ②.5 知识召回 → ③-F 特征模型 → ③ LLM 兜底）
  *
@@ -149,5 +151,117 @@ export function summarizeRun(t: {
     ran: t.llm_ms != null,
   })
   out.push({ no: 'Σ', label: `总耗时 ${t.total_ms}ms`, ran: true })
+  return out
+}
+
+/**
+ * 分阶段进度条（header 下方 StageProgress 组件）：把后端阶段事件序列映射为进度视图。
+ *
+ * 事件来源：Web 端轮询 /gec/detect/progress 拿全量快照；桌面端经 detect:stage 事件累加。
+ * 每次全量重算（纯函数）：Start 声明计划骨架；并行组（规则/决策/特征，引擎 join!）
+ * 开局即运行；知识召回在并行组全部结束后运行；LLM 复核最后；End 收尾。
+ * 阶段标识与 gec-core `sources` 层名对齐（rule / decision / feature / knowledge / llm）。
+ */
+export interface StageView {
+  key: string
+  /** 层编号（① / ② / ②.5 / ③-F / ③），与「本次管线」摘要一致 */
+  no: string
+  label: string
+  status: 'pending' | 'running' | 'done' | 'unavailable' | 'skipped' | 'canceled'
+  ms: number | null
+}
+
+export interface StageProgressView {
+  stages: StageView[]
+  finished: boolean
+  totalMs: number | null
+}
+
+const STAGE_META: Record<string, { no: string; label: string }> = {
+  rule: { no: '①', label: '规则检测' },
+  decision: { no: '②', label: '决策模型' },
+  feature: { no: '③-F', label: '特征模型' },
+  knowledge: { no: '②.5', label: '知识召回' },
+  llm: { no: '③', label: 'LLM 复核' },
+}
+
+/** 渲染顺序（= 引擎内实际推进顺序）；并行组开局即 running */
+const STAGE_ORDER = ['rule', 'decision', 'feature', 'knowledge', 'llm']
+const PARALLEL_STAGES = new Set(['rule', 'decision', 'feature'])
+
+const isSettled = (s: StageView) =>
+  s.status === 'done' || s.status === 'unavailable' || s.status === 'skipped'
+
+export function applyStageEvents(events: StageEvent[]): StageProgressView {
+  let plan: string[] | null = null
+  let finished = false
+  let totalMs: number | null = null
+  const settled = new Map<string, { status: StageView['status']; ms: number | null }>()
+  for (const ev of events) {
+    if (ev.kind === 'start') plan = ev.stages
+    else if (ev.kind === 'stage') {
+      settled.set(ev.stage, {
+        status: ev.status === 'skipped' ? 'skipped' : ev.status === 'unavailable' ? 'unavailable' : 'done',
+        ms: ev.ms,
+      })
+    } else {
+      finished = true
+      totalMs = ev.total_ms
+    }
+  }
+  // 未收到 Start（缓存/历史命中、旧服务端）：无骨架可渲染
+  if (!plan) return { stages: [], finished, totalMs }
+  const ordered = [
+    ...STAGE_ORDER.filter((k) => plan!.includes(k)),
+    ...plan!.filter((k) => !STAGE_ORDER.includes(k)),
+  ]
+  const stages: StageView[] = ordered.map((key) => {
+    const meta = STAGE_META[key] ?? { no: '', label: key }
+    const done = settled.get(key)
+    let status: StageView['status']
+    let ms: number | null = null
+    if (done) {
+      status = done.status
+      ms = done.ms
+    } else if (PARALLEL_STAGES.has(key)) status = 'running'
+    else status = 'pending'
+    return { key, no: meta.no, label: meta.label, status, ms }
+  })
+  // 串行推进位：并行组全部落定 → 召回转 running；召回落定（或不在计划）→ LLM 转 running
+  const seq = stages.filter((s) => !PARALLEL_STAGES.has(s.key))
+  const parallelSettled = stages.filter((s) => PARALLEL_STAGES.has(s.key)).every(isSettled)
+  const knowledgeIdx = seq.findIndex((s) => s.key === 'knowledge')
+  if (knowledgeIdx >= 0 && seq[knowledgeIdx].status === 'pending' && parallelSettled)
+    seq[knowledgeIdx].status = 'running'
+  const llm = stages.find((s) => s.key === 'llm')
+  if (llm && llm.status === 'pending' && stages.filter((s) => s.key !== 'llm').every(isSettled))
+    llm.status = 'running'
+  return { stages, finished, totalMs }
+}
+
+/** 把未落定阶段标记为已取消/失败（检测中断或出错时的收尾视图） */
+export function markStagesCanceled(stages: StageView[]): StageView[] {
+  return stages.map((s) => (s.status === 'running' || s.status === 'pending' ? { ...s, status: 'canceled' } : s))
+}
+
+/** 计时兜底合成（桌面端事件丢失 / 旧服务端）：从 DetectTimings 合成完成视图 */
+export function stageViewsFromTimings(t: DetectTimings): StageView[] {
+  const mk = (key: string, ms: number | null | undefined): StageView | null => {
+    if (ms == null) return null
+    const meta = STAGE_META[key]
+    return { key, no: meta.no, label: meta.label, status: 'done', ms }
+  }
+  const out: StageView[] = []
+  const rule = mk('rule', t.rule_ms)
+  if (rule) out.push(rule)
+  for (const pair of [
+    ['decision', t.decision_ms],
+    ['feature', t.l3_ms],
+    ['knowledge', t.recall_ms],
+    ['llm', t.llm_ms],
+  ] as const) {
+    const v = mk(pair[0], pair[1])
+    if (v) out.push(v)
+  }
   return out
 }

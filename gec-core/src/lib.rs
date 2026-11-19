@@ -25,6 +25,7 @@ pub mod mask;
 pub mod models;
 pub mod optimization_round;
 pub mod pipeline;
+pub mod progress;
 pub mod reflection;
 pub mod reflection_center;
 pub mod settings_test;
@@ -63,6 +64,7 @@ pub use optimization_round::{
     RoundAction, RoundInput, RoundPlan, no_action_reasons, plan_round, round_report, round_status,
 };
 pub use pipeline::DetectionPipeline;
+pub use progress::{StageEvent, StageSink};
 pub use reflection::{
     ExampleInfo, KnowledgeInfo, ReflectionContext, ReflectionReport, ReflectionSuggestion,
     RuleDefInfo, normalize_source, reflect_rejection, suggestion_kinds,

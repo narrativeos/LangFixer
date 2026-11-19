@@ -61,6 +61,19 @@ export interface DetectTimings {
   total_ms: number
 }
 
+/** 检测管线阶段事件（与 gec-core `progress::StageEvent` 序列化格式对齐；分阶段进度条数据面） */
+export type StageEvent =
+  | { kind: 'start'; stages: string[] }
+  | { kind: 'stage'; stage: string; status: 'ran' | 'partial' | 'unavailable' | 'skipped'; ms: number | null }
+  | { kind: 'end'; total_ms: number }
+
+/** GET /gec/detect/progress 响应：事件快照；found=false = 后端尚未登记 / 条目已回收 */
+export interface DetectProgress {
+  found: boolean
+  finished: boolean
+  events: StageEvent[]
+}
+
 /** 检测响应（API / Tauri 返回；含决策模型弃权信号 + 各阶段计时） */
 export interface DetectResponse {
   errors: ErrorItem[]

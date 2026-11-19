@@ -12,6 +12,7 @@ import type {
   DecisionTableView,
   DetectResponse,
   DetectTimings,
+  DetectProgress,
   DocChunkRow,
   DocJobCreated,
   DocJobDetail,
@@ -172,7 +173,7 @@ const tauri = (
   typeof window !== 'undefined' ? (window as unknown as { __TAURI_INTERNALS__?: TauriInternals }) : undefined
 )?.__TAURI_INTERNALS__
 const inTauri = !!tauri
-/** 是否运行在 Tauri 桌面端（前端自适应布局 / 面板分支用） */
+/** 是否运行在 Tauri 桌面端（前端自适应布局 / 面板分支用；store 据此选进度事件通道：事件订阅 vs 轮询） */
 export const isTauri = inTauri
 
 /** 订阅 Tauri 事件（原生菜单栏 menu-action / 窗口拖放 tauri://drag-drop）。
@@ -394,7 +395,7 @@ export const api = {
     category?: string,
     level?: number,
     forceLlm?: boolean,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; progressId?: string },
   ): Promise<DetectResponse> {
     if (inTauri)
       return tauri!
@@ -404,6 +405,7 @@ export const api = {
           category: category ?? null,
           level: level ?? null,
           forceLlm: forceLlm ?? false,
+          progressId: opts?.progressId ?? null,
         })
         .then((r) => r as DetectResponse)
     const url = category ? `/gec/detect?category=${encodeURIComponent(category)}` : '/gec/detect'
@@ -411,8 +413,20 @@ export const api = {
       .post<DetectResponse>(
         url,
         { lang, text, level: level ?? 1, force_llm: forceLlm ?? false },
-        { signal: opts?.signal, timeout: forceLlm || (level ?? 1) >= 2 ? 180_000 : 60_000 },
+        {
+          signal: opts?.signal,
+          timeout: forceLlm || (level ?? 1) >= 2 ? 180_000 : 60_000,
+          ...(opts?.progressId ? { headers: { 'X-Progress-Id': opts.progressId } } : {}),
+        },
       )
+      .then((r) => r.data)
+  },
+
+  /** GET /gec/detect/progress?id= —— 检测阶段事件快照（仅 Web；桌面端经 detect:stage 事件直达）。
+   *  found=false 表示后端尚未登记（POST 刚发出）或条目已回收，继续轮询即可 */
+  detectProgress(id: string): Promise<DetectProgress> {
+    return http
+      .get<DetectProgress>('/gec/detect/progress', { params: { id }, timeout: 5_000 })
       .then((r) => r.data)
   },
 
@@ -813,7 +827,7 @@ export const api = {
     text: string,
     sessionId?: string,
     level?: number,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; progressId?: string },
   ): Promise<AnalyzeResult> {
     if (inTauri)
       return tauri!
@@ -823,6 +837,7 @@ export const api = {
           sessionId: sessionId ?? null,
           level: level ?? null,
           forceLlm: false,
+          progressId: opts?.progressId ?? null,
         })
         .then((r) => r as AnalyzeResult)
     return http
@@ -834,7 +849,11 @@ export const api = {
           session_id: sessionId ?? null,
           level: level ?? 1,
         },
-        { signal: opts?.signal, timeout: (level ?? 1) >= 2 ? 180_000 : 60_000 },
+        {
+          signal: opts?.signal,
+          timeout: (level ?? 1) >= 2 ? 180_000 : 60_000,
+          ...(opts?.progressId ? { headers: { 'X-Progress-Id': opts.progressId } } : {}),
+        },
       )
       .then((r) => r.data)
   },

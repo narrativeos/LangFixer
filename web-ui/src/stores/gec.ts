@@ -1,8 +1,14 @@
 import { errMsg, isCancelError } from '../lib/err'
 import { applyCorrections } from '../lib/correct'
 import { loadCaps, saveCaps, type Caps } from '../lib/caps'
+import {
+  applyStageEvents,
+  markStagesCanceled,
+  stageViewsFromTimings,
+  type StageView,
+} from '../lib/pipeline'
 import { defineStore } from 'pinia'
-import { api } from '../api/client'
+import { api, isTauri } from '../api/client'
 import type {
   AnalyzedError,
   DecisionTableMeta,
@@ -12,7 +18,12 @@ import type {
   ErrorItem,
   ExplainResponse,
   LanguageInfo,
+  StageEvent,
 } from '../types'
+
+/** 分阶段进度条：Web 端轮询定时器 + 在飞标记（模块级，不响应式） */
+let progressTimer: number | undefined
+let progressPolling = false
 
 export interface LlmExplainState {
   loading: boolean
@@ -136,6 +147,21 @@ export const useGecStore = defineStore('gec', {
     /** 本次检测各阶段计时（detect / detectLlm / analyze 成功后保存；
      *  ResultsPanel 据此渲染「本次管线」摘要：哪些层实际跑了 / 各层耗时） */
     timings: null as DetectTimings | null,
+    /** 分阶段进度条实时状态（header 下方 StageProgress 组件数据面）：
+     *  beginDetect 起新 id + 开始跟踪；finishDetect 收尾；Web 端轮询 / 桌面端事件推送 */
+    progress: {
+      id: '',
+      active: false,
+      stages: [] as StageView[],
+      events: [] as StageEvent[],
+      finished: false,
+      /** 检测被取消 / 出错且未收到 End 事件 */
+      canceled: false,
+      /** 缓存 / 历史命中：无阶段事件，瞬时返回 */
+      instant: false,
+      totalMs: null as number | null,
+      startedAt: 0,
+    },
     llm: {
       loading: false,
       explanation: '',
@@ -248,15 +274,99 @@ export const useGecStore = defineStore('gec', {
     beginDetect(kind: 'analyze' | 'detect' | 'detectLlm') {
       this.loading = true
       this.detectKind = kind
-      this.lastDetectKind = kind
       this.errorMsg = ''
       this.clearResults()
       detectController = new AbortController()
+      // 新检测：生成本次进度 id（随 X-Progress-Id / invoke 参数下发，事件按此过滤）
+      this.progress = {
+        id: `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        active: true,
+        stages: [],
+        events: [],
+        finished: false,
+        canceled: false,
+        instant: false,
+        totalMs: null,
+        startedAt: Date.now(),
+      }
+      this.startProgressTracking()
     },
     finishDetect() {
+      this.stopProgressTracking()
+      if (!this.progress.finished) {
+        // 未收到 End（取消 / 出错）：未落定阶段标为已中断
+        this.progress.finished = true
+        this.progress.canceled = true
+        this.progress.totalMs = Math.max(0, Date.now() - this.progress.startedAt)
+        this.progress.stages = markStagesCanceled(this.progress.stages)
+      }
+      this.progress.active = false
       this.loading = false
       this.detectKind = null
       detectController = null
+    },
+    /** 检测成功收尾：若事件滞后于响应（或桌面端事件丢失），用 timings 合成完成视图 */
+    settleProgress(timings?: DetectTimings | null, fromHistory?: boolean) {
+      const p = this.progress
+      if (!p.active) return
+      if (fromHistory && p.stages.length === 0) p.instant = true
+      if (!p.finished) {
+        p.finished = true
+        p.totalMs = timings?.total_ms ?? Math.max(0, Date.now() - p.startedAt)
+        if (p.stages.length === 0 && timings && !fromHistory) p.stages = stageViewsFromTimings(timings)
+      }
+    },
+    /** 进度摘要展示完毕（组件 8s 自动淡出 / 新检测会直接重建条目） */
+    dismissProgress() {
+      this.progress.active = false
+      this.progress.finished = false
+      this.progress.id = ''
+    },
+    startProgressTracking() {
+      this.stopProgressTracking()
+      // Web 端：轻量轮询事件快照（180ms）；桌面端事件经 detect:stage 直达，无需轮询
+      if (isTauri) return
+      progressTimer = window.setInterval(() => {
+        if (this.progress.active) void this.pollProgress()
+      }, 180)
+    },
+    stopProgressTracking() {
+      if (progressTimer !== undefined) {
+        clearInterval(progressTimer)
+        progressTimer = undefined
+      }
+    },
+    async pollProgress() {
+      const p = this.progress
+      if (progressPolling || !p.id) return
+      progressPolling = true
+      try {
+        const r = await api.detectProgress(p.id)
+        if (this.progress.id !== p.id) return // 新一轮检测已接管
+        const v = applyStageEvents(r.events)
+        if (v.stages.length || !this.progress.finished) this.progress.stages = v.stages
+        if (r.finished || v.finished) {
+          this.progress.finished = true
+          if (v.totalMs != null) this.progress.totalMs = v.totalMs
+          if (r.events.length === 0) this.progress.instant = true
+        }
+      } catch {
+        /* 轮询瞬时失败：下个 tick 重试 */
+      } finally {
+        progressPolling = false
+      }
+    },
+    /** 桌面端 detect:stage 事件入口（App.vue 订阅后转发；按本次 id 过滤） */
+    onStageEvent(payload: unknown) {
+      const p = payload as { progress_id?: string; event?: StageEvent }
+      if (!p?.event || p.progress_id !== this.progress.id || !this.progress.active) return
+      this.progress.events.push(p.event)
+      const v = applyStageEvents(this.progress.events)
+      this.progress.stages = v.stages
+      if (v.finished) {
+        this.progress.finished = true
+        this.progress.totalMs = v.totalMs
+      }
     },
     /** 检测成功后快照结果基准（resultsStale 判定用） */
     snapshotResult() {
@@ -269,6 +379,7 @@ export const useGecStore = defineStore('gec', {
         // 分类过滤为前端展示层行为（ErrorList 即时过滤），不再下发 category 参数
         const res = await api.detect(this.lang, this.text, undefined, this.level, false, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
         })
         if (detectController?.signal.aborted) return // 已取消：结果到达也直接丢弃
         this.errors = res.errors
@@ -277,6 +388,7 @@ export const useGecStore = defineStore('gec', {
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings, res.from_history)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -294,6 +406,7 @@ export const useGecStore = defineStore('gec', {
         // 分类过滤为前端展示层行为（ErrorList 即时过滤），不再下发 category 参数
         const res = await api.detect(this.lang, this.text, undefined, this.level, true, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
         })
         if (detectController?.signal.aborted) return
         this.errors = res.errors
@@ -301,6 +414,7 @@ export const useGecStore = defineStore('gec', {
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -324,6 +438,7 @@ export const useGecStore = defineStore('gec', {
       try {
         const res = await api.analyze(this.lang, this.text, sessionId, this.level, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
         })
         if (detectController?.signal.aborted) return
         this.analyzed = res.errors
@@ -333,6 +448,7 @@ export const useGecStore = defineStore('gec', {
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings, res.from_history)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -343,6 +459,7 @@ export const useGecStore = defineStore('gec', {
         this.finishDetect()
       }
     },
+    /** 检测后自动反馈 */
     /** 取消进行中的检测：Web 端中止请求；桌面端 invoke 无法中断 → 语义为「结果到达后丢弃」 */
     cancelDetect() {
       detectController?.abort()

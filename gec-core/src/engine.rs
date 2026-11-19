@@ -200,6 +200,20 @@ pub trait GecEngine: Send + Sync {
             layers,
         })
     }
+    /// 与 [`detect_level`](Self::detect_level) 相同，但附带可选的阶段事件接收器
+    /// （[`crate::progress::StageSink`]）：支持流式推送的引擎（级联检测器）在
+    /// 每个阶段结束点推送 [`crate::progress::StageEvent`]，供前端分阶段进度条实时渲染。
+    /// 默认实现委托 `detect_level`（单层引擎不产生阶段内事件）。
+    async fn detect_level_traced(
+        &self,
+        text: &str,
+        level: u8,
+        force_llm: bool,
+        llm: Option<&LlmGecEngine>,
+        _progress: Option<crate::progress::StageSink>,
+    ) -> Result<DetectOutcome, DetectorError> {
+        self.detect_level(text, level, force_llm, llm).await
+    }
 }
 
 /// 任何语言检测器默认即规则引擎
@@ -677,13 +691,54 @@ impl GecEngine for CascadeDetector {
         force_llm: bool,
         llm: Option<&LlmGecEngine>,
     ) -> Result<DetectOutcome, DetectorError> {
+        self.detect_level_traced(text, level, force_llm, llm, None)
+            .await
+    }
+
+    /// 级联主链路（同 `detect_level`，另把各阶段完成事件推给可选 `progress` sink）。
+    /// 阶段计划 = 挂载层 + 级别；rule / decision / L3 并行段各自结束时推送，
+    /// 召回与 LLM 门控在其后；未触发的 LLM 记 skipped，管线结束推 End（总耗时）。
+    async fn detect_level_traced(
+        &self,
+        text: &str,
+        level: u8,
+        force_llm: bool,
+        llm: Option<&LlmGecEngine>,
+        progress: Option<crate::progress::StageSink>,
+    ) -> Result<DetectOutcome, DetectorError> {
         if !(1..=3).contains(&level) {
             return Err(DetectorError::DetectionFailed(format!(
                 "无效响应级别: {level}（应为 1-3）"
             )));
         }
         let started = std::time::Instant::now();
-        // ①+②(+③-F) 规则 / 决策模型 / L3 特征模型**并行**执行：
+        // 阶段事件：开局声明本次参与的阶段计划（与 timings 各字段的挂载条件一致；
+        // LLM 只要门控存在就入计划，实际未触发时在尾部补记 skipped）
+        if let Some(sink) = &progress {
+            let mut plan: Vec<&'static str> = vec![shared_model::sources::RULE];
+            if self.decision.is_some() {
+                plan.push(shared_model::sources::DECISION);
+            }
+            if self.l3.is_some() && level >= 2 && !force_llm {
+                plan.push(shared_model::sources::FEATURE);
+            }
+            if self.knowledge_recall.is_some() {
+                plan.push(shared_model::sources::KNOWLEDGE);
+            }
+            if force_llm || level >= 2 {
+                plan.push(shared_model::sources::LLM);
+            }
+            sink(crate::progress::StageEvent::Start { stages: plan });
+        }
+        // 并行三分支各自持 sink 克隆（Arc 浅拷贝，分支结束时推送自身完成事件）
+        let p_rule = progress.clone();
+        let p_dec = progress.clone();
+        let p_l3 = progress.clone();
+        // ①＋②（＋③-F）规则 / 决策模型 / L3 特征模型**并行**执行：
+        // 三者都是全文级判断、互不依赖对方结果，总延迟 = 各层 max
+        // （此前为串行求和）；规则不可用时回退决策模型（保持既有故障回退行为，
+        // 且决策服务只调一次——旧实现在回退路径会再调一次 `decide`）。
+        // 各分支独立计时（wall time），用于 [`DetectTimings`]
         // 三者都是全文级判断、互不依赖对方结果，总延迟 = 各层 max
         // （此前为串行求和）；规则不可用时回退决策模型（保持既有故障回退行为，
         // 且决策服务只调一次——旧实现在回退路径会再调一次 `decide`）。
@@ -692,14 +747,30 @@ impl GecEngine for CascadeDetector {
             async {
                 let t = std::time::Instant::now();
                 let r = self.rule.detect(text).await;
-                (r, t.elapsed().as_millis() as u64)
+                let ms = t.elapsed().as_millis() as u64;
+                if let Some(sink) = &p_rule {
+                    sink(crate::progress::StageEvent::Stage {
+                        stage: shared_model::sources::RULE,
+                        status: if r.is_ok() { "ran" } else { "unavailable" },
+                        ms: Some(ms),
+                    });
+                }
+                (r, ms)
             },
             async {
                 match &self.decision {
                     Some(d) => {
                         let t = std::time::Instant::now();
                         let r = d.decide(text).await.map(Some);
-                        (r, t.elapsed().as_millis() as u64)
+                        let ms = t.elapsed().as_millis() as u64;
+                        if let Some(sink) = &p_dec {
+                            sink(crate::progress::StageEvent::Stage {
+                                stage: shared_model::sources::DECISION,
+                                status: if r.is_ok() { "ran" } else { "unavailable" },
+                                ms: Some(ms),
+                            });
+                        }
+                        (r, ms)
                     }
                     None => (Ok(None), 0),
                 }
@@ -710,7 +781,15 @@ impl GecEngine for CascadeDetector {
                         Some(l3) => {
                             let t = std::time::Instant::now();
                             let r = l3.detect(text).await;
-                            (Some(r), t.elapsed().as_millis() as u64)
+                            let ms = t.elapsed().as_millis() as u64;
+                            if let Some(sink) = &p_l3 {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::FEATURE,
+                                    status: if r.is_ok() { "ran" } else { "unavailable" },
+                                    ms: Some(ms),
+                                });
+                            }
+                            (Some(r), ms)
                         }
                         None => (None, 0),
                     }
@@ -793,6 +872,13 @@ impl GecEngine for CascadeDetector {
             let t = std::time::Instant::now();
             let hits = kb.recall(&self.lang, text).await;
             recall_ms = Some(t.elapsed().as_millis() as u64);
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::KNOWLEDGE,
+                    status: "ran",
+                    ms: recall_ms,
+                });
+            }
             let mut recall_found = 0usize;
             for hit in &hits {
                 if let Some(err) = knowledge_hit_to_error(hit) {
@@ -909,11 +995,25 @@ impl GecEngine for CascadeDetector {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
                     llm_confirmed_clean = clean;
                     llm_ran = true;
+                    if let Some(sink) = &progress {
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::LLM,
+                            status: llm_status,
+                            ms: llm_ms,
+                        });
+                    }
                     layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
                     merge_errors(&mut errors, extra);
                 }
                 Err(e) => {
                     llm_ms = Some(t.elapsed().as_millis() as u64);
+                    if let Some(sink) = &progress {
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::LLM,
+                            status: "unavailable",
+                            ms: llm_ms,
+                        });
+                    }
                     layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
                     tracing::warn!(error = %e, "LLM 兜底失败：保留规则/L3 结果（本轮 LLM 未参与）");
                 }
@@ -929,6 +1029,13 @@ impl GecEngine for CascadeDetector {
                             llm_ms = Some(t.elapsed().as_millis() as u64);
                             llm_confirmed_clean = extra.is_empty();
                             llm_ran = true;
+                            if let Some(sink) = &progress {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::LLM,
+                                    status: "ran",
+                                    ms: llm_ms,
+                                });
+                            }
                             layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
                             merge_errors(&mut errors, extra);
                         }
@@ -953,6 +1060,13 @@ impl GecEngine for CascadeDetector {
             && !llm_ran
             && !(need_llm || (!targeted_spans.is_empty() && llm.is_some()))
         {
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::LLM,
+                    status: "skipped",
+                    ms: None,
+                });
+            }
             layers.push(LayerReport::new(sources::LLM, "skipped", 0));
         }
         // ④ 术语库（最后一步，作用于全部来源层合并后的错误）：
@@ -991,6 +1105,11 @@ impl GecEngine for CascadeDetector {
             total_ms = timings.total_ms,
             "检测各阶段计时"
         );
+        if let Some(sink) = &progress {
+            sink(crate::progress::StageEvent::End {
+                total_ms: timings.total_ms,
+            });
+        }
         Ok(DetectOutcome {
             errors,
             decision_abstained: abstained,
