@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { api } from '../api/client'
 import { LButton, LCheckbox, LInput, LSection } from '../ui'
 import { toast } from '../ui/toast'
 import AdminTokensPanel from './AdminTokensPanel.vue'
@@ -86,6 +87,41 @@ async function leave() {
     toast(`退出失败：${errMsg(e)}`, 'danger')
   }
 }
+
+/**
+ * 改管理员密码：需已验证超管（会话或超管 Bearer 都算）。
+ * 后端先落库再换内存，旧密码即时作废；新密码至少 8 位（与后端同口径）。
+ */
+const pwOld = ref('')
+const pwNew = ref('')
+const pwConfirm = ref('')
+const pwBusy = ref(false)
+async function changePw() {
+  if (!pwOld.value || !pwNew.value) {
+    toast('请填写当前密码与新密码', 'warn')
+    return
+  }
+  if (pwNew.value.length < 8) {
+    toast('新密码至少 8 位', 'warn')
+    return
+  }
+  if (pwNew.value !== pwConfirm.value) {
+    toast('两次输入的新密码不一致', 'warn')
+    return
+  }
+  pwBusy.value = true
+  try {
+    await api.changePassword(pwOld.value, pwNew.value)
+    pwOld.value = ''
+    pwNew.value = ''
+    pwConfirm.value = ''
+    toast('密码已更新：旧密码立即作废，下次登录用新密码', 'ok')
+  } catch (e) {
+    toast(`改密失败：${cleanError(e)}`, 'danger')
+  } finally {
+    pwBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -159,6 +195,21 @@ async function leave() {
           <LButton @click="copy(mcpJson, 'MCP 配置')">复制配置</LButton>
         </section>
       </template>
+
+      <!-- 改密：只对已验证超管且后端确实有密码登录时露出（桌面端不经 whoami，不展示） -->
+      <section v-if="identity.authenticated && identity.admin && identity.password_login" class="access-block">
+        <h3>修改管理员密码</h3>
+        <p>
+          用于 <code>admin</code> 账号的登录密码。改完旧密码立即作废，
+          当前会话不受影响；忘记时可用 <code>LANGFIXER_ADMIN_PASSWORD</code> 环境变量重置。
+        </p>
+        <div class="pw-form">
+          <LInput v-model="pwOld" type="password" placeholder="当前密码" :disabled="pwBusy" autocomplete="current-password" />
+          <LInput v-model="pwNew" type="password" placeholder="新密码（至少 8 位）" :disabled="pwBusy" autocomplete="new-password" />
+          <LInput v-model="pwConfirm" type="password" placeholder="确认新密码" :disabled="pwBusy" autocomplete="new-password" @keyup.enter="changePw" />
+          <LButton variant="primary" :loading="pwBusy" @click="changePw">更新密码</LButton>
+        </div>
+      </section>
     </LSection>
 
     <AdminTokensPanel v-if="identity.gateway && identity.admin" />
@@ -234,5 +285,16 @@ async function leave() {
 }
 .access-secret {
   font-family: var(--font-mono);
+}
+.pw-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+@media (max-width: 720px) {
+  .pw-form {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
