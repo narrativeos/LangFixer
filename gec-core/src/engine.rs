@@ -886,6 +886,9 @@ impl GecEngine for CascadeDetector {
             )));
         }
         let started = std::time::Instant::now();
+        // ③-T 门控（开局预声明）：挂 L3、非 force 且已配置 LLM → 灰区句定向复查
+        // 可能出现（是否实际触发取决于 L3 是否部分定案；未触发在尾部记 skipped）
+        let targeted_gate = self.l3.is_some() && level >= 2 && !force_llm && llm.is_some();
         // 阶段事件：开局声明本次参与的阶段计划（与 timings 各字段的挂载条件一致；
         // LLM 只要门控存在就入计划，实际未触发时在尾部补记 skipped）
         if let Some(sink) = &progress {
@@ -898,6 +901,9 @@ impl GecEngine for CascadeDetector {
             }
             if self.knowledge_recall.is_some() {
                 plan.push(shared_model::sources::KNOWLEDGE);
+            }
+            if targeted_gate {
+                plan.push(shared_model::sources::TARGETED);
             }
             if force_llm || level >= 2 {
                 plan.push(shared_model::sources::LLM);
@@ -1106,6 +1112,8 @@ impl GecEngine for CascadeDetector {
         // **部分定案**（`unreviewed_spans` 非空）：定案部分保留，灰区句不再全文
         // 兜底，改由 ③-T 定向 LLM 复查（成本 ≈ 灰区句长度）
         let mut targeted_spans: Vec<[usize; 2]> = Vec::new();
+        // ③-T 是否已自行落定（ran / unavailable）；在计划但未触发则尾部记 skipped
+        let mut targeted_settled = false;
         if let Some(l3_res) = l3_res {
             match l3_res {
                 Ok(o) if !o.abstained => {
@@ -1215,7 +1223,9 @@ impl GecEngine for CascadeDetector {
             }
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
-            // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）
+            // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）。
+            // 阶段事件用自身层名 targeted 发；③ 全文复核本轮未触发记 skipped；
+            // 结果层归因仍记 layers.llm（DETECT_PIPELINE §5 契约）
             match llm {
                 Some(l) => {
                     let t = std::time::Instant::now();
@@ -1225,11 +1235,18 @@ impl GecEngine for CascadeDetector {
                             llm_ms = Some(t.elapsed().as_millis() as u64);
                             llm_confirmed_clean = extra.is_empty();
                             llm_ran = true;
+                            targeted_settled = true;
                             if let Some(sink) = &progress {
                                 sink(crate::progress::StageEvent::Stage {
-                                    stage: shared_model::sources::LLM,
+                                    stage: shared_model::sources::TARGETED,
                                     status: "ran",
                                     ms: llm_ms,
+                                });
+                                // ③ 全文复核本轮未触发（灰区句已由 ③-T 覆盖）
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::LLM,
+                                    status: "skipped",
+                                    ms: None,
                                 });
                             }
                             layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
@@ -1237,6 +1254,19 @@ impl GecEngine for CascadeDetector {
                         }
                         Err(e) => {
                             gray_unresolved = true;
+                            targeted_settled = true;
+                            if let Some(sink) = &progress {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::TARGETED,
+                                    status: "unavailable",
+                                    ms: Some(t.elapsed().as_millis() as u64),
+                                });
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::LLM,
+                                    status: "skipped",
+                                    ms: None,
+                                });
+                            }
                             layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
                             tracing::warn!(
                                 error = %e,
@@ -1247,13 +1277,14 @@ impl GecEngine for CascadeDetector {
                 }
                 None => {
                     gray_unresolved = true;
+                    targeted_settled = true;
                     tracing::debug!("L3 部分定案存在灰区句但未配置 LLM → 本轮放行（灰区句未复查）");
                 }
             }
         }
         // LLM 层被评估但未触发（L3 高置信定案 / 无弃权信号）→ 显式记 skipped，
         // 前端「检测路径」据此区分「LLM 未触发」与「LLM 未参与（level 1）」
-        // （定向复查失败已记 `unavailable`，不再重复记 skipped）
+        // （③-T 触发时其分支内已记 ③ skipped，不重复走到这里）
         if (force_llm || level >= 2)
             && !llm_ran
             && !(need_llm || (!targeted_spans.is_empty() && llm.is_some()))
@@ -1266,6 +1297,16 @@ impl GecEngine for CascadeDetector {
                 });
             }
             layers.push(LayerReport::new(sources::LLM, "skipped", 0));
+        }
+        // ③-T 在计划但未触发（全文 ③ 已覆盖灰区 / L3 无灰区残留）→ 记 skipped
+        if targeted_gate && !targeted_settled {
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::TARGETED,
+                    status: "skipped",
+                    ms: None,
+                });
+            }
         }
         // ④ 术语库（最后一步，作用于全部来源层合并后的错误）：
         // 受保护术语上的错误过滤 + 强制更正词注入
@@ -2913,8 +2954,12 @@ mod tests {
         );
         // 标记 = 第二句：LLM 若收到全文（含第二句）会返回「天气」错误
         let llm = llm_engine(&mock_llm_service_marker("今天天气很好。").await);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level("他昨天报复很大。今天天气很好。", 2, false, Some(&llm))
+            .detect_level_traced("他昨天报复很大。今天天气很好。", 2, false, Some(&llm), Some(sink))
             .await
             .unwrap();
         assert!(
@@ -2934,6 +2979,19 @@ mod tests {
             outcome.timings.llm_ms.is_some(),
             "定向复查应计入 llm_ms 计时"
         );
+        let evs = events.lock().unwrap();
+        assert!(evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Start { stages }
+                if stages.contains(&shared_model::sources::TARGETED))),
+            "Start 计划应含 ③-T");
+        assert!(evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::TARGETED && *status == "ran")),
+            "③-T 应以自身层名记 ran");
+        assert!(evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::LLM && *status == "skipped")),
+            "③-T 触发时 ③ 全文复核应记 skipped");
     }
 
     /// 定向复查的 span 映射：灰区句不在文本开头时，偏移正确平移回原文
@@ -2980,8 +3038,12 @@ mod tests {
         );
         // 全文送审 → 标记命中 → LLM 返回「天气」错误
         let llm = llm_engine(&mock_llm_service_marker("今天天气很好。").await);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level("他昨天报复很大。今天天气很好。", 2, false, Some(&llm))
+            .detect_level_traced("他昨天报复很大。今天天气很好。", 2, false, Some(&llm), Some(sink))
             .await
             .unwrap();
         assert!(
@@ -2989,6 +3051,16 @@ mod tests {
             "决策弃权应触发全文 LLM（而非仅定向复查）: {:?}",
             outcome.errors
         );
+        // 全文 ③ 已覆盖灰区 → ③-T 在计划但未触发，必须记 skipped（不留悬空节点）
+        let evs = events.lock().unwrap();
+        assert!(evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Start { stages }
+                if stages.contains(&shared_model::sources::TARGETED))),
+            "Start 计划应含 ③-T");
+        assert!(evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::TARGETED && *status == "skipped")),
+            "全文 LLM 路径下 ③-T 应记 skipped");
     }
 
     /// level 2 不跑特征模型（L3 专属层）：即使 L3 会命中也不产出 feature 错误

@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 /// 单个阶段事件。`stage` 复用 [`shared_model::sources`] 的层名
-/// （rule / decision / knowledge / feature / llm），与 `layers` 报告同源，
+/// （rule / decision / knowledge / feature / targeted / llm），与 `layers` 报告同源，
 /// 前端进度条与「本次管线」摘要共用一套标识。
 #[derive(Clone, Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]

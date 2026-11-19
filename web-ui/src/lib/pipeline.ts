@@ -159,8 +159,10 @@ export function summarizeRun(t: {
  *
  * 事件来源：Web 端轮询 /gec/detect/progress 拿全量快照；桌面端经 detect:stage 事件累加。
  * 每次全量重算（纯函数）：Start 声明计划骨架；并行组（规则/决策/特征，引擎 join!）
- * 开局即运行；知识召回在并行组全部结束后运行；LLM 复核最后；End 收尾。
- * 阶段标识与 gec-core `sources` 层名对齐（rule / decision / feature / knowledge / llm）。
+ * 开局即运行；知识召回在并行组全部结束后运行；③-T 灰区句定向复查在知识召回后
+ * （L3 部分定案留有灰区句时触发，否则记 skipped）；LLM 复核最后；End 收尾。
+ * 阶段标识与 gec-core `sources` 层名对齐（rule / decision / feature / knowledge /
+ * targeted / llm；③-T 结果层归因仍记 llm，见 DETECT_PIPELINE §5）。
  */
 export interface StageView {
   key: string
@@ -184,11 +186,12 @@ const STAGE_META: Record<string, { no: string; label: string }> = {
   decision: { no: '②', label: '决策模型' },
   feature: { no: '③-F', label: '特征模型' },
   knowledge: { no: '②.5', label: '知识召回' },
+  targeted: { no: '③-T', label: '灰区定向复查' },
   llm: { no: '③', label: 'LLM 复核' },
 }
 
 /** 渲染顺序（= 引擎内实际推进顺序）；并行组开局即 running */
-const STAGE_ORDER = ['rule', 'decision', 'feature', 'knowledge', 'llm']
+const STAGE_ORDER = ['rule', 'decision', 'feature', 'knowledge', 'targeted', 'llm']
 const PARALLEL_STAGES = new Set(['rule', 'decision', 'feature'])
 
 const isSettled = (s: StageView) =>
@@ -240,12 +243,20 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
     const chunks = chunked.get(key) ?? null
     return { key, no: meta.no, label: meta.label, status, ms, chunks }
   })
-  // 串行推进位：并行组全部落定 → 召回转 running；召回落定（或不在计划）→ LLM 转 running
+  // 串行推进位：并行组全部落定 → 召回转 running；召回及其前序全部落定 → ③-T 转 running；
+  // 再全落定（或不在计划）→ LLM 转 running
   const seq = stages.filter((s) => !PARALLEL_STAGES.has(s.key))
   const parallelSettled = stages.filter((s) => PARALLEL_STAGES.has(s.key)).every(isSettled)
   const knowledgeIdx = seq.findIndex((s) => s.key === 'knowledge')
   if (knowledgeIdx >= 0 && seq[knowledgeIdx].status === 'pending' && parallelSettled)
     seq[knowledgeIdx].status = 'running'
+  const targeted = stages.find((s) => s.key === 'targeted')
+  if (
+    targeted &&
+    targeted.status === 'pending' &&
+    stages.filter((s) => s.key !== 'llm' && s.key !== 'targeted').every(isSettled)
+  )
+    targeted.status = 'running'
   const llm = stages.find((s) => s.key === 'llm')
   if (llm && llm.status === 'pending' && stages.filter((s) => s.key !== 'llm').every(isSettled))
     llm.status = 'running'

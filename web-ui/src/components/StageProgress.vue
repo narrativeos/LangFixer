@@ -3,9 +3,9 @@
  * 分阶段检测进度（header 与工作台 main 之间）：动态流程图。
  *
  * 拓扑与引擎真实执行一致（gec-core detect_level_traced 的 tokio::join!）：
- * ①规则 / ②决策 / ③-F特征 三路并行 → ②.5知识召回（串行）→ ③LLM复核；
- * L3 特征模型对 LLM 另有一条「定案门」虚线边（高置信定案 → LLM 跳过）。
- * 步骤条式的线性顺序无法表达并行组，故弃用。
+ * ①规则 / ②决策 / ③-F特征 三路并行 → ②.5知识召回（串行）→ ③-T灰区定向复查
+ * → ③LLM复核；L3 特征模型另有两虚线边：部分定案留有灰区句 → 触发 ③-T；
+ * 高置信定案 → LLM 跳过。步骤条式的线性顺序无法表达并行组，故弃用。
  *
  * 数据面 = store.progress（与线性版相同的事件收敛逻辑，见 lib/pipeline）；
  * 节点副行 = 贡献度：检出条数（layers[].found）· 共识（also_found_by）· 耗时；
@@ -74,16 +74,18 @@ const featureDecided = computed(() =>
   (store.layers ?? []).some((l) => l.layer === 'feature' && l.status === 'decided'),
 )
 
-/** 步骤贡献度：已落定且该层检出 >0 才显示（弃权 / 不可用 / 0 条不占位） */
+/** 该层本次检出条数（LayerReport.found）；③-T 的结果层归因记在 llm 名下
+ * （DETECT_PIPELINE §5：layers 不含 targeted），故重定向读取 */
 function foundOf(s: StageView): number | null {
   if (!isSettled(s)) return null
-  const n = foundMap.value[s.key]
+  const n = s.key === 'targeted' ? foundMap.value.llm : foundMap.value[s.key]
   return n != null && n > 0 ? n : null
 }
 
-/** 共识命中数（仅落定步骤） */
+/** 共识命中数（仅落定步骤；③-T 同样经 llm 归因） */
 function alsoOf(s: StageView): number {
-  return isSettled(s) ? (alsoMap.value[s.key] ?? 0) : 0
+  if (!isSettled(s)) return 0
+  return alsoMap.value[s.key === 'targeted' ? 'llm' : s.key] ?? 0
 }
 
 const stateWord: Record<StageView['status'], string> = {
@@ -207,7 +209,7 @@ const layout = computed(() => {
       flow: isSettled(a.s) && b.s.status === 'running',
     })
   }
-  // L3 定案门：特征模型 → LLM（虚线；高置信定案时 LLM 跳过）
+  // L3 高置信定案门：特征模型 → LLM（虚线；定案时 LLM 跳过）
   if (byKey['feature'] && byKey['llm']) {
     const f = byKey['feature']
     const l = byKey['llm']
@@ -219,16 +221,35 @@ const layout = computed(() => {
       flow: false,
     })
   }
+  // L3 部分定案灰区门：特征模型 → ③-T（虚线；留有灰区句时触发定向复查）
+  if (byKey['feature'] && byKey['targeted']) {
+    const f = byKey['feature']
+    const t = byKey['targeted']
+    edges.push({
+      key: 'gate-t',
+      d: `M ${f.x + NODE_W} ${f.cy} C ${f.x + NODE_W + 40} ${f.cy}, ${t.cx} ${f.cy + 8}, ${t.cx} ${t.y + NODE_H}`,
+      dashed: true,
+      lit: isSettled(f.s),
+      flow: false,
+    })
+  }
   return { w, h, nodes, edges, byKey }
 })
 
-/** 定案门标签位置 */
-const gateLabel = computed(() => {
+/** 门标签位置：贴在目标节点上方（避免两门标签互相碰撞） */
+const gateLabels = computed(() => {
   const L = layout.value
   const f = L?.byKey['feature']
-  const l = L?.byKey['llm']
-  if (!f || !l) return null
-  return { x: (f.x + NODE_W + l.cx) / 2 + 10, y: (f.cy + l.y + NODE_H) / 2 + 8 }
+  if (!f || !L) return []
+  const out: { x: number; y: number; text: string }[] = []
+  for (const [key, text] of [
+    ['targeted', '灰区门'],
+    ['llm', '定案门'],
+  ] as const) {
+    const n = L.byKey[key]
+    if (n) out.push({ x: n.cx, y: Math.max(9, n.y - 4), text })
+  }
+  return out
 })
 
 const settledCount = computed(() => p.value.stages.filter(isSettled).length)
@@ -278,7 +299,7 @@ const stateText = computed(() => {
         <text v-if="icon(n.s)" class="lchk" x="131" y="18" text-anchor="end">{{ icon(n.s) }}</text>
         <circle v-else-if="n.s.status === 'running'" class="lspin" cx="128" cy="13" r="5.5" />
       </g>
-      <text v-if="gateLabel" class="flw-gate-label" :x="gateLabel.x" :y="gateLabel.y" text-anchor="middle">定案门</text>
+      <text v-for="g in gateLabels" :key="g.text" class="flw-gate-label" :x="g.x" :y="g.y" text-anchor="middle">{{ g.text }}</text>
     </svg>
     <div class="flw-foot">
       <span v-if="stateText" class="flw-note">{{ stateText }}</span>

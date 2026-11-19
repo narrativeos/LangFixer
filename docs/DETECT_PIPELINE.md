@@ -19,9 +19,10 @@ flowchart TD
     IN[输入 text + lang + level + 配置快照] --> S0[S0 规范化与扫描<br/>NFC 校验 / 句表 / PII 区 / 术语区<br/>不改写字节]
     S0 --> S1[S1 索引<br/>字符索引 + 所有权图 docchunk 不变式]
     S1 --> S2[S2 段规划器 SegmentPlanner<br/>按各层声明的预算投影段视图]
-    S2 --> S3[S3 层执行 并行<br/>①规则+NLP ∥ ②决策 ∥ ②.5知识召回<br/>∥ ③-F L3 ∥ stat 主引擎]
-    S3 --> S3T[③-T 灰区句定向复查]
-    S3T --> S3L[③ LLM 兜底 按 level/门控<br/>预算块并行 · 所有权去重]
+    S2 --> S3[S3 层执行 并行<br/>①规则+NLP+stat滑窗 ∥ ②决策 ∥ ③-F L3]
+    S3 --> S25[②.5 知识召回<br/>句级 · 并行组结束后串行]
+    S25 --> S3T[③-T 灰区句定向复查<br/>仅 L3 部分定案时触发 · stage 事件 stage=targeted]
+    S3T --> S3L[③ LLM 兕底 按 level/门控<br/>预算块并行 · 所有权去重]
     S3L --> S4[S4 合并<br/>排序钳制 / 共识去重 also_found_by<br/>④术语守卫 / 规则开关过滤 / 白名单]
     S4 --> S5[S5 归因 zh_gec_attribution<br/>规则精确 → 知识点 → 未定位桶 降级样式]
     S5 --> S6[S6 组装 DetectOutcome v2<br/>errors/layers/quality/chunks/version/timings]
@@ -123,7 +124,7 @@ flowchart TD
 
 ## 7. 可观测性与告警
 
-- 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`——**已实现**（`StageEvent::ChunkBegin/ChunkEnd`，wire kind `chunk_begin`/`chunk_end`；③ LLM 整文档分块与 stat 滑窗两条预算路径；短文本单块不推）；
+- 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`——**已实现**（`StageEvent::ChunkBegin/ChunkEnd`，wire kind `chunk_begin`/`chunk_end`；③ LLM 整文档分块与 stat 滑窗两条预算路径；短文本单块不推）；**层键事件另含 ③-T**（`stage=targeted`，入 Start 计划骨架；L3 部分定案留有灰区句时记 `ran`，未触发记 `skipped`；结果层归因仍记 `layers.llm`（§5 layers 契约不含 targeted），此时全文 ③ 未触发记 `skipped`）；
 - 每请求一行结构化 summary（含版本向量 + quality + chunks + dropped）——**已实现**（api-server `request_summary` SQLite 账本：detect / analyze 每次实检在 `run_pipeline` 内无条件落行，回放行 quality 置 NULL；按天 × 版本聚合见 summary 端点。**残余**：doc-jobs / media / 桌面不写行）；
 - **两个必设告警**——**已实现**（`GET /gec/observability/alerts`，24h 窗口）：
   1. `unowned_chars ≠ 0` 或发生任何静默截断（dropped 四桶非零）→ 完整性回归（本类事故的探测器；写行处同时 `tracing::error!` 即时点名）；

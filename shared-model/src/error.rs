@@ -77,6 +77,9 @@ pub mod sources {
     pub const LLM: &str = "llm";
     /// 知识召回层（②.5 句级向量召回 + 模糊命中）
     pub const KNOWLEDGE: &str = "knowledge";
+    /// ③-T 灰区句定向复查（**仅阶段事件层名**：结果层归因仍记 `llm`，
+    /// 见 docs/DETECT_PIPELINE.md §5 的 layers 契约）
+    pub const TARGETED: &str = "targeted";
 }
 
 impl Error {

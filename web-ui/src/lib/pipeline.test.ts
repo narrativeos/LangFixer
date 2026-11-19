@@ -234,6 +234,34 @@ describe('applyStageEvents（分阶段进度条视图）', () => {
     expect(v.stages.every((s) => s.status === 'done')).toBe(true)
   })
 
+  it('③-T 定向复查：串行序在知识召回与 LLM 之间，按前序落定依序点亮，未触发记 skipped', () => {
+    const evs: StageEvent[] = [
+      start(['rule', 'feature', 'knowledge', 'targeted', 'llm']),
+      stage('rule', 'ran'),
+      stage('feature', 'ran'),
+    ]
+    expect(byKey(evs).knowledge.status).toBe('running')
+    evs.push(stage('knowledge', 'ran'))
+    expect(byKey(evs).targeted.status).toBe('running')
+    expect(byKey(evs).llm.status).toBe('pending')
+    evs.push(stage('targeted', 'ran', 40), stage('llm', 'skipped', null), end(120))
+    const v = applyStageEvents(evs)
+    expect(v.stages.map((s) => s.key)).toEqual(['rule', 'feature', 'knowledge', 'targeted', 'llm'])
+    expect(v.stages.map((s) => s.no)).toEqual(['①', '③-F', '②.5', '③-T', '③'])
+    expect(v.stages.map((s) => s.status)).toEqual(['done', 'done', 'done', 'done', 'skipped'])
+    expect(v.finished).toBe(true)
+    // 在计划但未触发（全文 ③ 覆盖灰区）：引擎尾部补记 skipped，不留悬空节点
+    const m = byKey([
+      start(['rule', 'feature', 'knowledge', 'targeted', 'llm']),
+      stage('rule', 'ran'),
+      stage('feature', 'skipped', null),
+      stage('knowledge', 'ran'),
+      stage('targeted', 'skipped', null),
+      stage('llm', 'ran', 90),
+    ])
+    expect(m.targeted.status).toBe('skipped')
+  })
+
   it('End 事件带 total_ms（桌面端事件路径的唯一总量来源）', () => {
     const v = applyStageEvents([start(['rule']), stage('rule', 'ran', 5), end(42)])
     expect(v).toMatchObject({ finished: true, totalMs: 42 })
