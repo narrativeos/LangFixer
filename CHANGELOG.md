@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **规则覆盖与批量复查工具（`tools/rule-coverage/` / `tools/recheck-batch/`，方案 A/B，
+  2026-11-20 GitHub 调研定案）**：`cluster_fcgec.py` 把 true gold 编辑级真错按 FCGEC
+  七类（语序/搭配/成分缺失/成分赘余/结构混乱/不合逻辑/语意不明）做形状聚类，对照
+  rule_defs 现状出 grammar_novice 兑底的规则点缺口清单（首跑：grammar 桶 4,765 条，
+  多字/成分赘余 2,066 为头号靶子，约数词并置/否定冗余两个规则点可直接落地；
+  虚词 268 条对应 ZH_DE_DA_DE 停用中）；`batch_recheck.py` 把 detect_history 里
+  句级判断灰区句批量送 /gec/recheck 凑 P3 决策表要的 ≥20 条 feedback_recheck
+  样本（现有 6，候选去重后 26，需登录门形态带 --token）。
 - **依赖服务监督器（`api-server/src/deps.rs` + `routes/deps.rs`）**：api-server 启动即自检六项依赖
   （decision:4804 / l3:4806 / char_gate:4811 / hanlp / LLM 网关 / 嵌入），本机可管服务在
   loopback 地址 + 仓内 venv + 资源门槛（decision/l3 300MB、char_gate 2048MB，可用内存读
