@@ -171,6 +171,9 @@ export const useGecStore = defineStore('gec', {
       instant: false,
       totalMs: null as number | null,
       startedAt: 0,
+      /** 发起时的检查模式（StageProgress 据此区分 LLM 层语义：标准模式是
+       *  可选增强层，深度扫描是必需层）；0 = 尚未发起 */
+      level: 0,
     },
     llm: {
       loading: false,
@@ -369,6 +372,7 @@ export const useGecStore = defineStore('gec', {
         instant: false,
         totalMs: null,
         startedAt: Date.now(),
+        level: this.level,
       }
       this.startProgressTracking()
     },

@@ -104,9 +104,25 @@ const stateWord: Record<StageView['status'], string> = {
   running: '进行中',
   done: '完成',
   unavailable: '不可用',
-  skipped: '已跳过',
+  skipped: '跳过',
   canceled: '已中断',
 }
+
+/** ③ LLM 节点的展示语义：标准模式（L2）下 LLM 是可选增强层，运行时失败
+ *  时结果按无 LLM 路径回退，从流程图视角等价于跳过（真实失败仍由检测路径行 /
+ *  服务状态 / 质量徽标如实呈现，不在这里隐藏）；深度扫描（L3）LLM 是必需层，
+ *  不可用原样保留。发起时的 mode 记在 progress.level，避免事后切模式错位 */
+const llmSkippedInFlow = computed(() => (p.value.level || store.level) < 3)
+const llmFailedQuietly = computed(() =>
+  p.value.stages.some((s) => s.key === 'llm' && s.status === 'unavailable'),
+)
+function llmDegrade<T extends { key: string; status: StageView['status'] }>(s: T): T {
+  return llmSkippedInFlow.value && s.key === 'llm' && s.status === 'unavailable'
+    ? { ...s, status: 'skipped' as const }
+    : s
+}
+const stagesView = computed(() => p.value.stages.map(llmDegrade))
+const flowStepsView = computed(() => flowSteps.value.map(llmDegrade))
 
 function icon(s: { status: StageView['status'] }): string {
   switch (s.status) {
@@ -170,7 +186,11 @@ function flowSub(st: FlowStep): string {
 }
 
 function flowTooltip(st: FlowStep): string {
-  const base = `${st.no} ${st.label}：${stateWord[st.status]}${st.note ? ` · ${st.note}` : ''}`
+  const quiet =
+    st.key === 'llm' && llmFailedQuietly.value
+      ? '（送 LLM 复核未成功，本轮结果按无 LLM 路径给出）'
+      : ''
+  const base = `${st.no} ${st.label}：${stateWord[st.status]}${st.note ? ` · ${st.note}` : ''}${quiet}`
   return st.key === 's47'
     ? `${base}（合并/归因/组装/提交在提交瞬间完成，无独立进度事件；仅 quality=full 写缓存/历史）`
     : base
@@ -202,6 +222,8 @@ function tooltip(s: StageView): string {
   const also = alsoOf(s)
   if (n != null) extra = `，本次命中 ${n} 条`
   if (also) extra += `（其中 ${also} 条与其他层共识）`
+  if (s.key === 'llm' && llmFailedQuietly.value)
+    extra += '；送 LLM 复核未成功，本轮结果按无 LLM 路径给出'
   return `${s.no} ${s.label}：${stateWord[s.status]}${extra}`
 }
 
@@ -231,7 +253,7 @@ interface FlowEdge {
 }
 
 const layout = computed(() => {
-  const stages = p.value.stages
+  const stages = stagesView.value
   if (!stages.length) return null
   const parallel = stages.filter((s) => PARALLEL_KEYS.includes(s.key))
   const serial = stages.filter((s) => !PARALLEL_KEYS.includes(s.key))
@@ -367,7 +389,7 @@ const stateText = computed(() => {
       <text v-for="g in gateLabels" :key="g.text" class="flw-gate-label" :x="g.x" :y="g.y" text-anchor="middle">{{ g.text }}</text>
     </svg>
     <ol v-else-if="view === 'flow'" class="flw-rows" aria-label="数据流视图">
-      <li v-for="st in flowSteps" :key="st.key" :class="'st-' + st.status" :title="flowTooltip(st)">
+      <li v-for="st in flowStepsView" :key="st.key" :class="'st-' + st.status" :title="flowTooltip(st)">
         <span class="fr-no">{{ st.no }}</span>
         <span class="fr-label">{{ st.label }}</span>
         <span class="fr-note">{{ flowSub(st) }}</span>
