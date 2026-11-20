@@ -17,6 +17,13 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useGecStore } from '../stores/gec'
 import { applyFlowEvents, type FlowStep, type StageView } from '../lib/pipeline'
+import {
+  buildChunkMatrix,
+  matrixColumnsFromEvents,
+  unitsFromEvents,
+  ORIGIN_LABELS,
+  type MatrixCell,
+} from '../lib/chunkMatrix'
 import { LSegmented } from '../ui'
 
 const store = useGecStore()
@@ -115,12 +122,36 @@ function icon(s: { status: StageView['status'] }): string {
   }
 }
 
-/* ---------- 视图切换：层流程图 ⇄ 数据流视图（同一事件流两个投影） ---------- */
+/* ---------- 视图切换：层流程图 ⇄ 数据流视图 ⇄ 块矩阵（同一事件流的三个投影） ---------- */
 
-type StageViewMode = 'layers' | 'flow'
+type StageViewMode = 'layers' | 'flow' | 'matrix'
 const VIEW_KEY = 'lfl.stageProgress.view'
-const view = ref<StageViewMode>(localStorage.getItem(VIEW_KEY) === 'flow' ? 'flow' : 'layers')
+const savedView: StageViewMode = (() => {
+  const v = localStorage.getItem(VIEW_KEY)
+  return v === 'flow' || v === 'matrix' ? v : 'layers'
+})()
+const view = ref<StageViewMode>(savedView)
 watch(view, (v) => localStorage.setItem(VIEW_KEY, v))
+
+/** 块矩阵：行 = units 事件的句表（后端唯一切句器），列 = 本次参与层；
+ * 单元格由错误项 span × 块区间重叠投影，不重复切句也不改后端结果 */
+const matrixText = computed(() => store.resultText ?? store.text)
+const matrixColumns = computed(() => matrixColumnsFromEvents(p.value.events))
+const matrixRows = computed(() => {
+  const units = unitsFromEvents(p.value.events)
+  if (!units) return []
+  return buildChunkMatrix({
+    text: matrixText.value,
+    units,
+    errors: store.errors,
+    columns: matrixColumns.value,
+    layers: store.layers,
+  })
+})
+function cellIcon(c: MatrixCell): string {
+  if (c.status === 'hit') return String(c.hits)
+  return c.status === 'pass' ? '✓' : c.status === 'skipped' ? '–' : '·'
+}
 
 const flowSteps = computed(() =>
   applyFlowEvents(p.value.events, {
@@ -343,12 +374,38 @@ const stateText = computed(() => {
         <span class="fr-icon">{{ icon(st) }}</span>
       </li>
     </ol>
+    <div v-else-if="view === 'matrix'" class="flw-matrix" aria-label="块矩阵视图">
+      <div v-if="!matrixRows.length" class="cm-empty">暂无句表：块矩阵随检测完成事件流生成（缓存/历史命中与旧版服务端无此数据）</div>
+      <table v-else class="cm-table">
+        <thead>
+          <tr>
+            <th class="cm-idx">#</th>
+            <th class="cm-prev">块预览</th>
+            <th class="cm-chars">字</th>
+            <th class="cm-origin">切分依据</th>
+            <th v-for="c in matrixColumns" :key="c.key" class="cm-col">{{ c.no }} {{ c.label }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(r, i) in matrixRows" :key="r.span[0]">
+            <td class="cm-idx">{{ i + 1 }}</td>
+            <td class="cm-prev" :title="matrixText.slice(r.span[0], r.span[1])">{{ r.preview }}</td>
+            <td class="cm-chars">{{ r.chars }}</td>
+            <td class="cm-origin">{{ ORIGIN_LABELS[r.origin] }}</td>
+            <td v-for="c in matrixColumns" :key="c.key" class="cm-cell" :class="'cm-' + r.cells[c.key].status">
+              {{ cellIcon(r.cells[c.key]) }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <div class="flw-foot">
       <LSegmented
         v-model="view"
         :options="[
           { value: 'layers', label: '层流程图' },
           { value: 'flow', label: '数据流视图' },
+          { value: 'matrix', label: '块矩阵' },
         ]"
       />
       <span v-if="stateText" class="flw-note">{{ stateText }}</span>
@@ -540,5 +597,77 @@ const stateText = computed(() => {
 }
 .flw-foot :deep(.l-segmented) {
   font-size: 11px;
+}
+/* 块矩阵：句表行 × 层列；命中格显条数，通过格 ✓，未执行层 –，未落定 · */
+.flw-matrix {
+  max-height: 264px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  margin: 2px 0;
+}
+.cm-empty {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.cm-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.cm-table th,
+.cm-table td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+.cm-table th:last-child,
+.cm-table td:last-child {
+  border-right: none;
+}
+.cm-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-weight: 600;
+  z-index: 1;
+}
+.cm-prev,
+td.cm-prev {
+  text-align: left;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+th.cm-prev {
+  min-width: 180px;
+}
+.cm-idx,
+td.cm-idx {
+  color: var(--muted);
+}
+.cm-origin {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.cm-cell {
+  font-weight: 600;
+}
+.cm-cell.cm-hit {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.cm-cell.cm-pass {
+  color: var(--ok);
+}
+.cm-cell.cm-skip,
+.cm-cell.cm-pending {
+  color: var(--muted);
+  opacity: 0.6;
 }
 </style>

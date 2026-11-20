@@ -74,6 +74,13 @@ export type StageEvent =
       ok: boolean
       ms: number
     }
+  | {
+      /** 句表（块矩阵数据面）：全文一次性切句结果；origins 与 spans 等长同序，
+       *  标注每个右边界的切分来源（块矩阵视图的块行标签） */
+      kind: 'units'
+      spans: [number, number][]
+      origins: ('punct' | 'marker' | 'pause' | 'fallback')[]
+    }
   | { kind: 'end'; total_ms: number }
 
 /** GET /gec/detect/progress 响应：事件快照；found=false = 后端尚未登记 / 条目已回收 */

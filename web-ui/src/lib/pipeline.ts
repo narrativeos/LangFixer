@@ -181,7 +181,7 @@ export interface StageProgressView {
   totalMs: number | null
 }
 
-const STAGE_META: Record<string, { no: string; label: string }> = {
+export const STAGE_META: Record<string, { no: string; label: string }> = {
   rule: { no: '①', label: '规则检测' },
   decision: { no: '②', label: '决策模型' },
   feature: { no: '③-F', label: '特征模型' },
@@ -191,7 +191,7 @@ const STAGE_META: Record<string, { no: string; label: string }> = {
 }
 
 /** 渲染顺序（= 引擎内实际推进顺序）；并行组开局即 running */
-const STAGE_ORDER = ['rule', 'decision', 'feature', 'knowledge', 'targeted', 'llm']
+export const STAGE_ORDER = ['rule', 'decision', 'feature', 'knowledge', 'targeted', 'llm']
 const PARALLEL_STAGES = new Set(['rule', 'decision', 'feature'])
 
 const isSettled = (s: StageView) =>
@@ -219,6 +219,8 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
       const c = chunked.get(ev.stage) ?? { done: 0, total: ev.total }
       c.done += 1
       chunked.set(ev.stage, c)
+    } else if (ev.kind === 'units') {
+      // 块矩阵数据面：阶段视图不消费，由 chunkMatrix 投影（勿落入兼底分支误判为 end）
     } else {
       finished = true
       totalMs = ev.total_ms

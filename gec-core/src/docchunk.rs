@@ -140,6 +140,18 @@ pub enum BoundaryOrigin {
     Fallback,
 }
 
+impl BoundaryOrigin {
+    /// 事件流线上的稳定小写标识（与前端块矩阵 origin 标签映射对齐）
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoundaryOrigin::Punct => "punct",
+            BoundaryOrigin::Marker => "marker",
+            BoundaryOrigin::Pause => "pause",
+            BoundaryOrigin::Fallback => "fallback",
+        }
+    }
+}
+
 /// [`sentence_spans`] 的带来源标注版本：返回 (字节 span, 右边界来源)。
 /// 正常标点句段一律 [`BoundaryOrigin::Punct`]；超 cap 长段内部边界标
 /// Marker/Pause/Fallback。铺满/不重叠/字符边界不变式与 [`sentence_spans`] 相同。

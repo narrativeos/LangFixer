@@ -42,6 +42,15 @@ pub enum StageEvent {
         ok: bool,
         ms: u64,
     },
+    /// 句表（块矩阵数据面）：全文一次性切句结果随事件流下发。`spans` 为字节区间
+    /// （与 `quality.sentences` 同一句表来源），`origins` 等长同序标注每个右边界的
+    /// 切分来源（`punct` 标点 / `marker` 篇章标记 / `pause` 停顿 / `fallback` 字数兜底）。
+    /// 先于 `End` 推送；前端「块矩阵」视图据此渲染「块行 × 层列」检测矩阵，
+    /// 事件快照落库后历史回放自动带矩阵数据。
+    Units {
+        spans: Vec<[usize; 2]>,
+        origins: Vec<&'static str>,
+    },
     /// 管线结束（全程 wall time，与 `DetectTimings::total_ms` 一致）
     End { total_ms: u64 },
 }
@@ -82,12 +91,16 @@ mod tests {
                 ok: true,
                 ms: 30,
             },
+            StageEvent::Units {
+                spans: vec![[0, 6], [6, 12]],
+                origins: vec!["punct", "fallback"],
+            },
             StageEvent::End { total_ms: 42 },
         ];
         let json = serde_json::to_string(&evs).unwrap();
         assert_eq!(
             json,
-            r#"[{"kind":"start","stages":["rule","knowledge","llm"]},{"kind":"stage","stage":"rule","status":"ran","ms":12},{"kind":"stage","stage":"llm","status":"skipped","ms":null},{"kind":"chunk_begin","stage":"llm","chunk":1,"total":2},{"kind":"chunk_end","stage":"llm","chunk":1,"total":2,"ok":true,"ms":30},{"kind":"end","total_ms":42}]"#
+            r#"[{"kind":"start","stages":["rule","knowledge","llm"]},{"kind":"stage","stage":"rule","status":"ran","ms":12},{"kind":"stage","stage":"llm","status":"skipped","ms":null},{"kind":"chunk_begin","stage":"llm","chunk":1,"total":2},{"kind":"chunk_end","stage":"llm","chunk":1,"total":2,"ok":true,"ms":30},{"kind":"units","spans":[[0,6],[6,12]],"origins":["punct","fallback"]},{"kind":"end","total_ms":42}]"#
         );
     }
 }

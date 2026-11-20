@@ -1344,7 +1344,14 @@ impl GecEngine for CascadeDetector {
             total_ms = timings.total_ms,
             "检测各阶段计时"
         );
+        // 块矩阵数据面：句表（全局唯一切句，与下方 quality 句覆盖同一来源）随事件流
+        // 下发；先于 End 推送，保证轮询侧在 finished 前读到该事件。
+        let unit_spans = crate::docchunk::sentence_spans_with_origin(text);
         if let Some(sink) = &progress {
+            sink(crate::progress::StageEvent::Units {
+                spans: unit_spans.iter().map(|(s, _)| *s).collect(),
+                origins: unit_spans.iter().map(|(_, o)| o.as_str()).collect(),
+            });
             sink(crate::progress::StageEvent::End {
                 total_ms: timings.total_ms,
             });
@@ -1384,12 +1391,12 @@ impl GecEngine for CascadeDetector {
             rule_run.unowned_chars,
         );
         quality.dropped = dropped;
-        let s_spans = crate::docchunk::sentence_spans(text);
         // 句表铺满序列含纯标点/纯空白片段（所有权不变式所需），句覆盖
-        // 分母只计含实词的真实句（与②.5 召回同一口径）
-        let s_sentences: Vec<[usize; 2]> = s_spans
-            .into_iter()
-            .filter(|s| crate::docchunk::is_sentence(text, s))
+        // 分母只计含实词的真实句（与②.5 召回同一口径）；复用上方事件流同源句表，不重复切句
+        let s_sentences: Vec<[usize; 2]> = unit_spans
+            .iter()
+            .filter(|(s, _)| crate::docchunk::is_sentence(text, s))
+            .map(|(s, _)| *s)
             .collect();
         let unreviewed_sentences = if gray_unresolved {
             s_sentences
@@ -2252,6 +2259,51 @@ mod tests {
         assert!(evs
             .iter()
             .any(|e| matches!(e, crate::progress::StageEvent::Stage { stage, .. } if *stage == shared_model::sources::RULE)));
+    }
+
+    #[tokio::test]
+    async fn traced_pushes_units_before_end() {
+        // 块矩阵数据面：sink 应收到句表 Units 事件，先于 End，且 spans/origins
+        // 与全局唯一切句器逐字一致（前端矩阵行不得自行切句，同源才能对齐高亮）
+        let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
+            lang: "zh",
+            fail: false,
+        });
+        let cascade = CascadeDetector::new("zh", rule, None);
+        // 无标点长段：进自动断句，覆盖 marker/pause/fallback 多类边界来源
+        let text = "这是一段没有标点符号的长文需要自动断句".repeat(30);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        cascade
+            .detect_level_traced(&text, 1, false, None, Some(sink))
+            .await
+            .unwrap();
+        let evs = events.lock().unwrap();
+        let units_idx = evs
+            .iter()
+            .position(|e| matches!(e, crate::progress::StageEvent::Units { .. }))
+            .expect("事件流应含 units");
+        let end_idx = evs
+            .iter()
+            .position(|e| matches!(e, crate::progress::StageEvent::End { .. }))
+            .expect("事件流应含 end");
+        assert!(units_idx < end_idx, "units 必须先于 end");
+        let expected = crate::docchunk::sentence_spans_with_origin(&text);
+        if let crate::progress::StageEvent::Units { spans, origins } = &evs[units_idx] {
+            assert_eq!(
+                *spans,
+                expected.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+                "句表必须与唯一切句器同源"
+            );
+            assert_eq!(origins.len(), spans.len());
+            assert!(
+                origins
+                    .iter()
+                    .all(|o| matches!(*o, "punct" | "marker" | "pause" | "fallback"))
+            );
+        }
     }
 
     #[tokio::test]
