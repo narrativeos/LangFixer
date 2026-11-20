@@ -59,7 +59,9 @@ export function unitsFromEvents(
   return last
 }
 
-/** 层状态 → 单元格底色：未执行（skipped/unavailable/弃权）灰化 */
+/** 层状态 → 单元格底色：未执行（skipped/unavailable/弃权）灰化。
+ * unavailable 在单元格上与 skipped 同视觉；模式语义（标准模式 L2 下 LLM 失败按
+ * 跳过呈现）由 StageProgress 矩阵列头的状态词与 tooltip 承担，不在这里重复。 */
 function layerActive(status: string | undefined): boolean | null {
   if (status === undefined) return null // 本次管线无该层报告 = 尚未落定
   return status === 'ran' || status === 'decided'

@@ -23,7 +23,9 @@ import {
   unitsFromEvents,
   ORIGIN_LABELS,
   type MatrixCell,
+  type MatrixColumn,
 } from '../lib/chunkMatrix'
+import { layerStatusLabel } from '../lib/labels'
 import { LSegmented } from '../ui'
 
 const store = useGecStore()
@@ -167,6 +169,25 @@ const matrixRows = computed(() => {
 function cellIcon(c: MatrixCell): string {
   if (c.status === 'hit') return String(c.hits)
   return c.status === 'pass' ? '✓' : c.status === 'skipped' ? '–' : '·'
+}
+
+/** 矩阵列头状态词：与层报告（layers[].status）同源，口径同 ResultsPanel 检测路径；
+ *  ③ LLM 列在标准模式（L2）下 unavailable 与层流程图/数据流视图同样归一为「跳过」
+ *  （深度扫描 L3 保留「不可用已回退」），tooltip 始终给出真实说明 */
+const matrixColState = computed(() => {
+  const statusOf = new Map((store.layers ?? []).map((l) => [l.layer, l.status]))
+  const out: Record<string, { word: string; quiet: boolean }> = {}
+  for (const c of matrixColumns.value) {
+    const raw = statusOf.get(c.key)
+    const quiet = c.key === 'llm' && raw === 'unavailable' && llmSkippedInFlow.value
+    out[c.key] = { word: raw === undefined ? '' : layerStatusLabel(quiet ? 'skipped' : raw), quiet }
+  }
+  return out
+})
+function matrixColTip(c: MatrixColumn): string {
+  const st = matrixColState.value[c.key]
+  if (!st?.word) return ''
+  return `${c.no} ${c.label}：${st.word}${st.quiet ? '（送 LLM 复核未成功，本轮结果按无 LLM 路径给出）' : ''}`
 }
 
 const flowSteps = computed(() =>
@@ -405,7 +426,10 @@ const stateText = computed(() => {
             <th class="cm-prev">块预览</th>
             <th class="cm-chars">字</th>
             <th class="cm-origin">切分依据</th>
-            <th v-for="c in matrixColumns" :key="c.key" class="cm-col">{{ c.no }} {{ c.label }}</th>
+            <th v-for="c in matrixColumns" :key="c.key" class="cm-col" :title="matrixColTip(c)">
+              {{ c.no }} {{ c.label }}
+              <span v-if="matrixColState[c.key]?.word" class="cm-col-state">{{ matrixColState[c.key].word }}</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -679,6 +703,12 @@ td.cm-idx {
 }
 .cm-cell {
   font-weight: 600;
+}
+.cm-col-state {
+  display: block;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--muted);
 }
 .cm-cell.cm-hit {
   color: var(--primary);
