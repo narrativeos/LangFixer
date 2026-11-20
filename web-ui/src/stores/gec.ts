@@ -1,4 +1,5 @@
 import { errMsg, isCancelError } from '../lib/err'
+import { isVerdictOnly } from '../lib/errorDisplay'
 import { applyCorrections } from '../lib/correct'
 import { loadCaps, saveCaps, type Caps } from '../lib/caps'
 import {
@@ -189,6 +190,9 @@ export const useGecStore = defineStore('gec', {
       number,
       { state: 'loading' | 'clean' | 'error'; msg?: string }
     >,
+    /** 「复查全部」批量态（ErrorList 汇总条按钮）：running = 串行批量在飞；
+     *  done/total = 已送检句数 / 发起时待送句数（按钮进度文案用） */
+    recheckAll: { running: false, done: 0, total: 0 },
     /** 结果快照：检测成功时的 text / lang（resultsStale 判定基准；null = 尚无结果） */
     resultText: null as string | null,
     resultLang: '',
@@ -302,6 +306,7 @@ export const useGecStore = defineStore('gec', {
       this.resultText = null
       this.resultLang = ''
       this.verdictRecheck = {}
+      this.recheckAll = { running: false, done: 0, total: 0 }
       this.resetLlm()
     },
     /** 「待复查」句级条目的 LLM 复查（ErrorList 卡片按钮）：对该句字节区间做
@@ -311,6 +316,8 @@ export const useGecStore = defineStore('gec', {
     async recheckVerdict(i: number) {
       const e = this.errors[i]
       if (!e) return
+      // 批量「复查全部」在飞时拒绝单句复查：两路并发 splice/键平移会互相错位
+      if (this.recheckAll.running) return
       // 检测后文本被编辑过：span 坐标已失效，拒绝而非错检
       if (this.resultsStale) {
         this.verdictRecheck[i] = {
@@ -352,6 +359,33 @@ export const useGecStore = defineStore('gec', {
         this.verdictRecheck = remapped
       } catch (err) {
         this.verdictRecheck[i] = { state: 'error', msg: errMsg(err) }
+      }
+    },
+    /** 「复查全部」（ErrorList 汇总条）：把所有还没有复查记录的句级「待复查」
+     *  条目逐句送 LLM 复查。串行执行且每轮现取 store.errors 下标——合流后的
+     *  splice 键平移即时生效，无需预先快照；已有记录（loading/clean/error）的
+     *  句子不重复送，失败即停（失败条目卡片上有「重试复查」，其余无记录的
+     *  句子再点一次即可继续）；标准模式拿不准的句子多时免逐条点选 */
+    async recheckAllVerdicts() {
+      if (this.recheckAll.running) return
+      // 单句复查在飞：其合流与本批并发会错位，等它落定后再发起
+      if (Object.values(this.verdictRecheck).some((v) => v.state === 'loading')) return
+      const total = this.errors.filter((e, i) => isVerdictOnly(e) && !this.verdictRecheck[i]).length
+      this.recheckAll = { running: true, done: 0, total }
+      try {
+        for (let guard = 0; guard <= total; guard++) {
+          if (this.resultsStale) break
+          const i = this.errors.findIndex(
+            (e, idx) => isVerdictOnly(e) && !this.verdictRecheck[idx],
+          )
+          if (i < 0) break
+          await this.recheckVerdict(i)
+          this.recheckAll.done += 1
+          // 失败即停：多为 LLM 不可用/限流，连送只会刷一片同样的错
+          if (this.verdictRecheck[i]?.state === 'error') break
+        }
+      } finally {
+        this.recheckAll.running = false
       }
     },
     /** 三个检测动作的统一入口：重置状态 + 启动中止控制器 */

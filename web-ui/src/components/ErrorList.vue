@@ -67,6 +67,10 @@ function confTone(e: ErrorItem) {
 function recheckOf(i: number) {
   return store.verdictRecheck[i]
 }
+/** 还没有送检过的「待复查」句数（「复查全部」按钮的计数；已复查/失败条目不计） */
+const pendingVerdictCount = computed(() =>
+  store.errors.reduce((n, e, i) => n + (isVerdictOnly(e) && !store.verdictRecheck[i] ? 1 : 0), 0),
+)
 function verdictHintText(i: number): string {
   const st = recheckOf(i)
   if (st?.state === 'loading') return 'AI 正在复查该句，稍候…'
@@ -273,6 +277,22 @@ watch(
       >
         {{ batch.scope ? `采纳中 ${batch.done}/${batch.total}…` : `批量采纳${pendingCount > 0 ? `（${pendingCount}）` : ''}` }}
       </LButton>
+      <LButton
+        v-if="pendingVerdictCount > 0 || store.recheckAll.running"
+        size="sm"
+        variant="ghost"
+        class="batch-recheck-btn"
+        :loading="store.recheckAll.running"
+        :disabled="!store.llmEnabled"
+        :title="
+          store.llmEnabled
+            ? '把所有「待复查」句子逐句送 AI 复查（串行执行，较慢）；已复查过的不重复送，首句失败即停，可稍后再点继续'
+            : 'AI 复查未配置（见设置）'
+        "
+        @click="store.recheckAllVerdicts()"
+      >
+        {{ store.recheckAll.running ? `复查中 ${store.recheckAll.done}/${store.recheckAll.total}…` : `复查全部（${pendingVerdictCount}）` }}
+      </LButton>
     </div>
     <!-- 细分类型过滤行：横向分型的第二级；按型反馈/路由数据积累后可挂按型收益徽章 -->
     <div v-if="typeSummary.length > 1" class="type-bar">
@@ -372,8 +392,14 @@ watch(
           size="sm"
           variant="ghost"
           :loading="recheckOf(g.first.i)?.state === 'loading'"
-          :disabled="!store.llmEnabled"
-          :title="store.llmEnabled ? '送 AI 复查定位并给出修改' : 'AI 复查未配置（见设置）'"
+          :disabled="!store.llmEnabled || store.recheckAll.running"
+          :title="
+            store.recheckAll.running
+              ? '批量复查进行中，逐句轮到即送，无需重复点'
+              : store.llmEnabled
+                ? '送 AI 复查定位并给出修改'
+                : 'AI 复查未配置（见设置）'
+          "
           @click="store.recheckVerdict(g.first.i)"
         >
           {{ recheckOf(g.first.i)?.state === 'error' ? '重试复查' : 'LLM 复查' }}
