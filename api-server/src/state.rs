@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 use attribution_engine::{KnowledgeStore, StagingStore, TableStore};
@@ -19,6 +20,7 @@ use shared_model::session_store::SqliteSessionStore;
 use crate::cache::LruCache;
 use crate::custom_words::CustomWordStore;
 use crate::detect_history::DetectHistoryStore;
+use crate::request_summary::RequestSummaryStore;
 use crate::settings::AppSettings;
 use crate::table_history::TableHistoryStore;
 
@@ -62,6 +64,9 @@ pub struct AppState {
     pub custom_words: CustomWordStore,
     /// 检测历史（SQLite 持久化，全部留存）
     pub detect_history: DetectHistoryStore,
+    /// 请求级摘要账本（§7 可观测性：每次 detect/analyze 一行，看板/告警数据源；
+    /// 与 detect_history 共用同一 db 文件）
+    pub request_summary: RequestSummaryStore,
     /// 多模态审校 job 存储（内存表 + `{workdir}/{job_id}/` 目录；
     /// 原件只读副本隔离，见 `media_flow::jobs` 与 `MULTIMODAL.md` §9）
     /// `Arc` 是为了把同一份 store 交给 `media_flow::FlowCtx`（编排层与路由共享状态）
@@ -71,6 +76,9 @@ pub struct AppState {
     pub lexicon_hash: RwLock<String>,
     /// 决策表版本历史（SQLite 持久化，支持回滚）
     pub table_history: TableHistoryStore,
+    /// LLM 网关进程级熔断（与决策 / L3 / 嵌入客户端同款；本形态 LLM 引擎**每次现构建**，
+    /// 必须共享这一只才谈得上「连续失败开断」——各请求自带新熔断器 = 永不开断）
+    pub llm_breaker: Arc<gec_core::CircuitBreaker>,
     /// 学习知识存储（向量召回用；SQLite 持久化，与 lexicon_store 共用同一 db 文件）
     pub learned_knowledge: Arc<LearnedKnowledgeStore>,
     /// 嵌入引擎（调用 LLM /v1/embeddings 端点；未配置时为 None；
@@ -87,9 +95,23 @@ pub struct AppState {
     /// 优化轮次（SQLite：轮次提案 + 人工确认门 + 执行结果；P3 进化闭环
     /// 「贡献与轮次」环节；与反馈日志 / 反思中心 / 训练作业共用同一 db 文件）
     pub optimization_round: Arc<OptimizationRoundStore>,
+    /// 文档级审校作业存储（SQLite `doc_jobs`/`doc_chunks`：10 万字+ 文档的
+    /// 作业化编排 + 块级 checkpoint/断点续跑，见 `gec_core::docjob`）
+    pub doc_jobs: Arc<gec_core::DocJobStore>,
+    /// 文档作业取消位（job_id → flag；置位后未开跑的块保持 pending，可续跑）
+    pub doc_job_cancel: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    /// 检测进度登记表（progress_id → 阶段事件序列；`routes/detect_progress`，
+    /// 前端分阶段进度条轮询数据源，闲置条目自动回收）
+    pub detect_progress: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, crate::routes::detect_progress::Entry>>,
+    >,
     /// 决策表目录（资源包导入/删除写回决策表与 aux 数据文件；
     /// `RwLock`：设置界面变更 `tables_dir` 时同步更新）
     pub tables_dir: RwLock<std::path::PathBuf>,
+    /// 依赖服务状态快照（监督器探测 + 主动拉起结果；`GET /gec/deps` 读取，见 `deps` 模块）
+    pub deps: RwLock<crate::deps::DepRegistry>,
+    /// 依赖拉起互斥锁（串行化拉起与重测，防并发重复 spawn）
+    pub deps_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -278,6 +300,16 @@ impl AppState {
             }
         };
 
+        // 初始化请求摘要存储（SQLite §7，与 detect_history 共用同一个 db 文件）
+        let request_summary = match RequestSummaryStore::open(&db_path) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(error = %e, "请求摘要存储初始化失败，将使用临时库（看板/告警仍可用）");
+                let tmp = std::env::temp_dir().join("langfixer_summary.db");
+                RequestSummaryStore::open(&tmp).expect("无法打开临时摘要 SQLite")
+            }
+        };
+
         // 初始化决策表版本历史存储（SQLite，与 detect_history 共用同一个 db 文件）
         let table_history = match TableHistoryStore::open(&db_path) {
             Ok(store) => {
@@ -382,6 +414,15 @@ impl AppState {
             }
         };
 
+        // 文档级审校作业存储（SQLite doc_jobs/doc_chunks，共用同一 db 文件）
+        let doc_jobs = Arc::new(match gec_core::DocJobStore::open(&db_path) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!(error = %e, "文档作业存储初始化失败，将使用内存存储");
+                gec_core::DocJobStore::open_in_memory().expect("无法打开内存文档作业存储")
+            }
+        });
+
         Self {
             router: RwLock::new(router),
             tables,
@@ -390,10 +431,13 @@ impl AppState {
             ingest_dir,
             knowledge_dir: kb_dir,
             tables_dir: RwLock::new(tables_dir.clone()),
+            deps: RwLock::new(crate::deps::DepRegistry::default()),
+            deps_lock: Arc::new(tokio::sync::Mutex::new(())),
             sessions,
             settings: RwLock::new(settings),
             media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             settings_path,
+            llm_breaker: Arc::new(gec_core::CircuitBreaker::default()),
             llm_templates,
             model_registry,
             zh_base_cfg: zh_cfg,
@@ -406,6 +450,7 @@ impl AppState {
             cache: LruCache::default(),
             custom_words,
             detect_history,
+            request_summary,
             lexicon_hash: RwLock::new(lexicon_hash),
             table_history,
             learned_knowledge,
@@ -414,6 +459,9 @@ impl AppState {
             reflection_center,
             training_center,
             optimization_round,
+            doc_jobs,
+            doc_job_cancel: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            detect_progress: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -482,7 +530,7 @@ impl AppState {
                 0,
             ),
         };
-        Some(Arc::new(LlmGecEngine::new(
+        Some(Arc::new(LlmGecEngine::with_breaker(
             lang,
             LlmDetectConfig::from_parts(
                 base_url,
@@ -494,6 +542,7 @@ impl AppState {
             )
             .with_output_format(output_format)
             .with_max_tokens(max_tokens),
+            self.llm_breaker.clone(),
         )))
     }
 
@@ -554,6 +603,7 @@ impl AppState {
             llm_configured,
             llm_model: llm_configured.then_some(llm_model),
             model_version,
+            splitter: shared_model::SPLITTER_VERSION.into(),
             rules_fingerprint: shared_model::rules_fingerprint(
                 meta.as_ref(),
                 &self.lexicon_hash.read().unwrap(),
@@ -755,9 +805,9 @@ mod send_check_tests {
         let text = "t";
         let category: Option<String> = None;
         assert_send(&async {
+            let params = state.current_detect_params(lang, 1, false, &category).await;
             let _ =
-                crate::routes::detect::try_reuse_history(state.as_ref(), lang, text, &category, 1)
-                    .await;
+                crate::routes::detect::try_reuse_history(state.as_ref(), lang, text, &params).await;
         });
     }
 }

@@ -33,7 +33,7 @@ async fn live_partial_accept_targeted_review() {
             "{{text}}",
         ),
     );
-    let mapped = targeted_llm_review(&llm, text, &o.unreviewed_spans)
+    let (mapped, _ledger) = targeted_llm_review(&llm, text, &o.unreviewed_spans)
         .await
         .unwrap();
     assert_eq!(mapped.len(), 1);

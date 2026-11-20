@@ -1,11 +1,26 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, nextTick } from 'vue'
+import type { Ref } from 'vue'
 import { errMsg } from '../lib/err'
-
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { modeLabel } from '../lib/labels'
+import {
+  LButton,
+  LCheckbox,
+  LDot,
+  LEmpty,
+  LInput,
+  LSection,
+  LSegmented,
+  LSelect,
+  LSwitch,
+  LTable,
+  LTag,
+} from '../ui'
+import { toast } from '../ui/toast'
 import { api, isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
-import type { AppSettings, L3FlywheelStatus, ModelView, SettingsTestResult, SettingsTestTarget } from '../types'
+import type { LColumn } from '../ui'
+import type { AppSettings, DepStatus, L3FlywheelStatus, ModelView, SettingsTestResult, SettingsTestTarget } from '../types'
 
 const store = useGecStore()
 
@@ -39,6 +54,7 @@ const showOpsToken = ref(false)
 const opsToken = ref('')
 const opsUnlocking = ref(false)
 const opsUnlockError = ref('')
+const showOpsKey = ref(false)
 
 function onCapToggle(key: 'learning' | 'proofreading' | 'ops', value: boolean) {
   if (key !== 'ops') {
@@ -66,7 +82,7 @@ async function unlockOps() {
     store.setCap('ops', true)
     showOpsToken.value = false
     opsToken.value = ''
-    ElMessage.success('已解锁平台运营功能')
+    toast('已解锁平台运营功能', 'ok')
   } catch (e) {
     opsUnlockError.value = errMsg(e)
   } finally {
@@ -81,6 +97,11 @@ const profileNative = ref('')
 const profileCefr = ref('')
 const profileSaving = ref(false)
 const profileError = ref('')
+
+const cefrOptions = [
+  { value: '', label: '未评估（讲解默认从最基础的档位开始）' },
+  ...CEFR_LEVELS.map((c) => ({ value: c, label: c })),
+]
 
 /** 画像挂在会话上：无会话 ID 时本地生成（PUT profile / get_session 两端都会自动建档） */
 function ensureSessionId(): string {
@@ -100,25 +121,36 @@ async function loadProfile() {
 void loadProfile()
 
 // ── 删除当前会话（C4）：级联移除会话与错题；复习进度（全局记忆）保留 ──
+// 弹窗配额只留给 发布 / 删资源包 / 回滚：这里用行内两步确认。
 const sessionDeleting = ref(false)
-async function deleteCurrentSession() {
+const pendingDeleteCount = ref<number | null>(null)
+
+async function askDeleteCurrentSession() {
   const id = store.sessionId
   if (!id) return
   sessionDeleting.value = true
   try {
     const mistakes = await api.listSessionMistakes(id)
-    await ElMessageBox.confirm(
-      `将移除该会话的 ${mistakes.length} 条错题；你的复习进度会保留。`,
-      '删除当前会话',
-      { type: 'warning', confirmButtonText: '删除会话', cancelButtonText: '取消' },
-    )
+    pendingDeleteCount.value = mistakes.length
+  } catch (e) {
+    profileError.value = errMsg(e)
+  } finally {
+    sessionDeleting.value = false
+  }
+}
+
+async function confirmDeleteCurrentSession() {
+  const id = store.sessionId
+  if (!id) return
+  pendingDeleteCount.value = null
+  sessionDeleting.value = true
+  try {
     await api.deleteSession(id)
     store.sessionId = ''
     profileNative.value = ''
     profileCefr.value = ''
-    ElMessage.success('当前会话已删除；复习进度已保留')
+    toast('当前会话已删除；复习进度已保留', 'ok')
   } catch (e) {
-    if (e === 'cancel' || e === 'close') return
     profileError.value = errMsg(e)
   } finally {
     sessionDeleting.value = false
@@ -137,7 +169,7 @@ async function saveProfile() {
     })
     profileNative.value = rec.meta.native_language ?? profileNative.value
     profileCefr.value = rec.meta.cefr ?? profileCefr.value
-    ElMessage.success('档案已保存：AI 讲解会自动贴合你的水平')
+    toast('档案已保存：AI 讲解会自动贴合你的水平', 'ok')
   } catch (e) {
     profileError.value = errMsg(e)
   } finally {
@@ -150,6 +182,7 @@ const hanlpEndpoint = ref('')
 const offlineMode = ref(false)
 const llmBaseUrl = ref('')
 const llmApiKey = ref('')
+const showLlmKey = ref(false)
 const llmModel = ref('')
 const llmTimeout = ref(30)
 /** LLM 提示词模板目录（LLM_PROMPTS_DIR） */
@@ -178,6 +211,7 @@ const l3Enabled = ref(true)
 const embeddingEndpoint = ref('')
 const embeddingModel = ref('')
 const embeddingApiKey = ref('')
+const showEmbKey = ref(false)
 /** 载体（图片 / PDF / Word）审校设置（两端同一份定义：`media-flow`） */
 const mediaEnabled = ref(false)
 const mediaUseStructure = ref(true)
@@ -194,6 +228,42 @@ const mediaWorkdir = ref('')
 const llmModes = ref<AppSettings['llm_modes'] | null>(null)
 /** 当前 LLM 是否已配置（api_key 非空） */
 const llmEnabled = ref(false)
+
+// ── 控件选项（值与提交契约保持原样；label 用词出自 lib/labels） ──
+const mediaModeOptions: { value: string; label: string }[] = [
+  { value: 'simple', label: '简单（零 CLI）' },
+  { value: 'advanced', label: '高级（三家适配器）' },
+]
+const mediaApplyModeOptions: { value: string; label: string }[] = [
+  { value: 'overlay', label: 'Overlay 叠加标注（默认）' },
+  { value: 'comment', label: '批注' },
+  { value: 'in_place', label: '改原文（仅带文字层的载体）' },
+  { value: 'list_only', label: '只出清单' },
+]
+const mediaLevelOptions: { value: number; label: string }[] = [
+  { value: 1, label: modeLabel(1) },
+  { value: 2, label: modeLabel(2) },
+  { value: 3, label: modeLabel(3) },
+]
+const flywheelLangOptions: { value: string; label: string }[] = [
+  { value: 'zh', label: '中文' },
+  { value: 'en', label: '英文' },
+]
+const modelOptions = computed(() => models.value.map((m) => ({ value: m.id, label: m.name })))
+
+/** 数字输入的原生控件值永远是 string：包一层 computed 保持底层 number ref 与保存逻辑不变 */
+function numRef(r: Ref<number>) {
+  return computed({
+    get: () => String(r.value),
+    set: (v: string) => {
+      const n = Number(v)
+      if (v !== '' && Number.isFinite(n)) r.value = n
+    },
+  })
+}
+const llmTimeoutNum = numRef(llmTimeout)
+const l3TimeoutNum = numRef(l3Timeout)
+const l3ThresholdNum = numRef(l3Threshold)
 
 async function load() {
   loading.value = true
@@ -375,9 +445,10 @@ async function save(): Promise<boolean> {
 onMounted(() => {
   // Web 端 / 桌面端均加载设置：桌面端走 Tauri 命令（设置文件 > 环境变量 > 内置默认）
   load()
+  void refreshDeps()
 })
 
-// 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+// 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
 // 「启用决策层」开关与自动保存逻辑移除，decision* 表单值仅随 GET/PUT 透传，
 // 保持服务端状态与设置契约不变；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启。
 /** load() 从服务端回填表单值期间为 true，避免误触发自动保存（如 L3 开关） */
@@ -423,6 +494,88 @@ watch(l3Enabled, async (v, old) => {
   }
 })
 
+// ── 依赖服务（服务端启动自检 + 监督器主动拉起；GET/POST /gec/deps）──
+// 拉不起来的不能静默：逐项展示原因，并提供「拉起服务」/「其他机器地址」两条补救路径
+const depsBusy = ref<Record<string, boolean>>({})
+const depsMsg = ref<Record<string, string>>({})
+const depsAlt = ref<Record<string, string>>({})
+const depsRecheck = ref(false)
+
+const DEP_STATE_TEXT: Record<DepStatus['state'], string> = {
+  ok: '就绪',
+  starting: '拉起中…',
+  failed: '不可用',
+  skipped: '已跳过（资源不足）',
+  off: '未启用 / 未配置',
+  pending: '未探测',
+}
+const DEP_STATE_TONE: Record<DepStatus['state'], 'ok' | 'warn' | 'danger' | 'neutral'> = {
+  ok: 'ok',
+  starting: 'warn',
+  failed: 'danger',
+  skipped: 'warn',
+  off: 'neutral',
+  pending: 'neutral',
+}
+const DEP_DOT_TONE: Record<DepStatus['state'], 'ok' | 'warn' | 'danger' | 'muted'> = {
+  ok: 'ok',
+  starting: 'warn',
+  failed: 'danger',
+  skipped: 'warn',
+  off: 'muted',
+  pending: 'muted',
+}
+
+async function refreshDeps() {
+  await store.loadDeps()
+}
+
+async function recheckDeps() {
+  depsRecheck.value = true
+  try {
+    await api.recheckDeps()
+  } catch (e) {
+    toast(`重新探测失败：${errMsg(e)}`, 'warn')
+  } finally {
+    await refreshDeps()
+    depsRecheck.value = false
+  }
+}
+
+async function startDep(d: DepStatus) {
+  depsBusy.value[d.id] = true
+  depsMsg.value[d.id] = '正在拉起（侧车模型加载可能需要 1–2 分钟）…'
+  try {
+    const item = await api.startDep(d.id)
+    depsMsg.value[d.id] = item.state === 'ok' ? '已就绪' : item.reason || '拉起未完成'
+  } catch (e) {
+    depsMsg.value[d.id] = `拉起失败：${errMsg(e)}`
+  } finally {
+    await refreshDeps()
+    depsBusy.value[d.id] = false
+  }
+}
+
+/** 拉不起来时的另一条路：该服务部署在其他机器 → 保存新地址（设置侧会自动重探） */
+async function saveDepEndpoint(d: DepStatus) {
+  const v = (depsAlt.value[d.id] || '').trim()
+  if (!v) return
+  depsBusy.value[d.id] = true
+  depsMsg.value[d.id] = '地址已保存，正在探测…'
+  try {
+    await api.updateSettings(
+      d.id === 'decision' ? { decision: { endpoint: v } } : { l3: { endpoint: v } },
+    )
+    // 服务端保存后会后台自动重探该项，稍候读快照
+    await new Promise((r) => setTimeout(r, 1500))
+  } catch (e) {
+    depsMsg.value[d.id] = `保存失败：${errMsg(e)}`
+  } finally {
+    await refreshDeps()
+    depsBusy.value[d.id] = false
+  }
+}
+
 // ── L3 训练飞轮（三期闭环）：确认样本积累 → 重训练提醒 → 重训练 → 热切换 ──
 const flywheelLang = ref('zh')
 const flywheelStatus = ref<L3FlywheelStatus | null>(null)
@@ -457,15 +610,15 @@ async function doRetrain() {
       const before = res.before_f1 != null ? res.before_f1.toFixed(3) : '—'
       const after = res.after_f1 != null ? res.after_f1.toFixed(3) : '—'
       retrainMsg.value = `模型已重训练并热切换（dev F1 ${before} → ${after}；合并 ${res.samples?.confirmed ?? 0} 条确认样本）`
-      ElMessage.success(retrainMsg.value)
+      toast(retrainMsg.value, 'ok')
     } else {
       retrainMsg.value = `重训练完成但未切换模型：${res.reason ?? '无法评测'}（保留旧模型）`
-      ElMessage.warning(retrainMsg.value)
+      toast(retrainMsg.value, 'warn')
     }
     await loadFlywheelStatus()
   } catch (e) {
     retrainMsg.value = `重训练失败：${errMsg(e)}`
-    ElMessage.error(retrainMsg.value)
+    toast(retrainMsg.value, 'danger')
   } finally {
     retraining.value = false
     if (retrainTimer) clearTimeout(retrainTimer)
@@ -510,6 +663,15 @@ interface OverviewRow {
   test: SettingsTestResult | null
 }
 
+const serviceColumns: LColumn<OverviewRow>[] = [
+  { key: 'name', label: '服务', width: '150px' },
+  { key: 'kind', label: '类型', width: '90px' },
+  { key: 'state', label: '状态', width: '170px' },
+  { key: 'test', label: '最近测试' },
+]
+const stateTone = (t: OverviewRow['stateType']) =>
+  t === 'success' ? ('ok' as const) : t === 'warning' ? ('warn' as const) : ('neutral' as const)
+
 const serviceOverview = computed<OverviewRow[]>(() => {
   const t = testResults.value
   const row = (
@@ -528,7 +690,7 @@ const serviceOverview = computed<OverviewRow[]>(() => {
       offlineMode.value ? 'info' : hanlpEndpoint.value.trim() ? 'success' : 'warning',
       'hanlp',
     ),
-    // 决策模型（vegaml）已退役出产品路径（EVOLUTION.md §13 #10）：总览不再列示
+    // 决策模型（vegaml）待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：总览不再列示
     row(
       '快速定案（特征模型）',
       '外部服务',
@@ -590,494 +752,558 @@ async function runTest(target: SettingsTestTarget) {
     testing.value[target] = false
   }
 }
+
+function setMediaLevel(v: string | number) {
+  mediaLevel.value = Number(v)
+}
+function setMediaApplyMode(v: string | number) {
+  mediaApplyMode.value = String(v)
+}
+function setLlmModelId(v: string | number) {
+  llmModelId.value = String(v)
+}
+function setProfileCefr(v: string | number) {
+  profileCefr.value = String(v)
+}
 </script>
 
 <template>
   <div class="settings-wrap">
     <!-- 工作场景与角色（能力位）：核心工作区共享，三个扩展按需开启 -->
-    <el-card shadow="never" id="set-caps" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">工作场景与角色</span>
-          <span class="sub">检测工作区对所有人共享；以下扩展按需开启</span>
-        </div>
-      </template>
+    <LSection id="set-caps" class="settings-card" title="工作场景与角色" desc="检测工作区对所有人共享；以下扩展按需开启">
       <div class="cap-row">
         <div>
           <b>语言学习</b>
           <div class="sub">「练习与复习」入口、学习者档案（按母语与语言水平个性化讲解）</div>
         </div>
-        <el-switch :model-value="store.caps.learning" @update:model-value="(v: boolean) => onCapToggle('learning', v)" />
+        <LSwitch :model-value="store.caps.learning" aria-label="语言学习" @update:model-value="(v: boolean) => onCapToggle('learning', v)" />
       </div>
       <div class="cap-row">
         <div>
           <b>编校工作</b>
           <div class="sub">载体审校工作区：图片文字提取 → 检测 → 落点画框 → 回写 / 正误表导出</div>
         </div>
-        <el-switch :model-value="store.caps.proofreading" @update:model-value="(v: boolean) => onCapToggle('proofreading', v)" />
+        <LSwitch :model-value="store.caps.proofreading" aria-label="编校工作" @update:model-value="(v: boolean) => onCapToggle('proofreading', v)" />
       </div>
       <div class="cap-row">
         <div>
           <b>平台运营</b>
           <div class="sub">规则管理、知识维护、进化中心，以及检测能力的高级设置（面向平台维护者）</div>
         </div>
-        <el-switch :model-value="store.caps.ops" @update:model-value="(v: boolean) => onCapToggle('ops', v)" />
+        <LSwitch :model-value="store.caps.ops" aria-label="平台运营" @update:model-value="(v: boolean) => onCapToggle('ops', v)" />
       </div>
       <div v-if="showOpsToken" class="ops-unlock">
-        <el-input
+        <input
           v-model="opsToken"
-          type="password"
-          show-password
+          class="l-input"
+          :type="showOpsKey ? 'text' : 'password'"
           placeholder="运营 token（服务端 GEC_TABLES_UPDATE_TOKEN）"
-          style="max-width: 320px"
         />
-        <el-button type="primary" :loading="opsUnlocking" @click="unlockOps">验证并解锁</el-button>
+        <LButton variant="ghost" size="sm" @click="showOpsKey = !showOpsKey">{{ showOpsKey ? '隐藏' : '显示' }}</LButton>
+        <LButton variant="primary" :loading="opsUnlocking" @click="unlockOps">验证并解锁</LButton>
         <span v-if="opsUnlockError" class="apply-err">{{ opsUnlockError }}</span>
       </div>
       <p class="desc">
         能力位是本机偏好（仅保存在此设备）。web 形态解锁平台运营需 token 验证；
         未解锁时相关写端点本身也受服务端 token 保护。
       </p>
-    </el-card>
+    </LSection>
 
     <!-- 我的档案（学习者画像）：母语 + 自评 CEFR → LLM 讲解自动个性化 -->
-    <el-card shadow="never" id="set-profile" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">我的档案</span>
-          <span class="sub">讲解时会自动考虑你的母语和语言水平：深度与示例自动贴合</span>
-        </div>
-      </template>
-      <el-form label-width="110px" @submit.prevent>
-        <el-form-item label="母语">
-          <el-select
+    <LSection id="set-profile" class="settings-card" title="我的档案" desc="讲解时会自动考虑你的母语和语言水平：深度与示例自动贴合">
+      <div class="field">
+        <span class="field__label">母语</span>
+        <div class="field__ctl">
+          <input
             v-model="profileNative"
-            filterable
-            allow-create
-            default-first-option
-            clearable
+            class="l-input w-280"
+            list="set-native-options"
             placeholder="如：中文（留空 = 不注入）"
-            style="max-width: 280px"
-          >
-            <el-option v-for="n in NATIVE_OPTIONS" :key="n" :label="n" :value="n" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="语言水平">
-          <el-select
-            v-model="profileCefr"
-            clearable
-            placeholder="未评估（讲解默认从最基础的档位开始）"
-            style="max-width: 280px"
-          >
-            <el-option v-for="c in CEFR_LEVELS" :key="c" :label="c" :value="c" />
-          </el-select>
-        </el-form-item>
-      </el-form>
+          />
+          <datalist id="set-native-options">
+            <option v-for="n in NATIVE_OPTIONS" :key="n" :value="n" />
+          </datalist>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">语言水平</span>
+        <div class="field__ctl">
+          <LSelect
+            class="w-280"
+            aria-label="语言水平"
+            :model-value="profileCefr"
+            :options="cefrOptions"
+            @update:model-value="setProfileCefr"
+          />
+        </div>
+      </div>
       <div class="actions">
-        <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存档案</el-button>
-        <el-button
-          type="danger"
-          plain
-          :loading="sessionDeleting"
-          :disabled="!store.sessionId"
-          @click="deleteCurrentSession"
-        >
-          删除当前会话
-        </el-button>
+        <LButton variant="primary" :loading="profileSaving" @click="saveProfile">保存档案</LButton>
+        <!-- 删除会话：行内两步确认（弹窗配额只留给 发布 / 删资源包 / 回滚） -->
+        <template v-if="pendingDeleteCount === null">
+          <LButton
+            variant="danger"
+            :loading="sessionDeleting"
+            :disabled="!store.sessionId"
+            @click="askDeleteCurrentSession"
+          >
+            删除当前会话
+          </LButton>
+        </template>
+        <span v-else class="confirm-inline">
+          将移除该会话的 {{ pendingDeleteCount }} 条错题；你的复习进度会保留。
+          <LButton variant="danger" size="sm" @click="confirmDeleteCurrentSession">删除会话</LButton>
+          <LButton size="sm" @click="pendingDeleteCount = null">取消</LButton>
+        </span>
         <span v-if="profileError" class="apply-err">{{ profileError }}</span>
         <span v-else class="hint">
           档案挂在当前会话（{{ store.sessionId || '保存时自动生成' }}）；
           讲解未指定档位时，自动采用档案里的语言水平
         </span>
       </div>
-    </el-card>
+    </LSection>
 
     <!-- 桌面端：进程内运行（默认离线）；下方表单所有项均可修改（即时生效 + 持久化到本地设置文件） -->
-    <el-card v-if="isTauri" shadow="never" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">桌面端运行方式</span>
-        <el-tag type="success" size="small">进程内 · 可编辑</el-tag>
-        <span class="sub">检测引擎 / 决策表 / 用户档案均在进程内运行（默认离线）</span>
-        </div>
+    <LSection v-if="isTauri" class="settings-card" title="桌面端运行方式" desc="检测引擎 / 决策表 / 用户档案均在进程内运行（默认离线）">
+      <template #actions>
+        <LTag tone="ok">进程内 · 可编辑</LTag>
       </template>
       <p class="desc">
         下方表单中的所有项均可直接修改：保存后即时生效（检测器 / LLM 讲解服务 / 决策表热重载），
         并持久化到本地设置文件（重启后仍生效，无需再设置环境变量或重启应用）。
       </p>
-    </el-card>
+    </LSection>
 
     <!-- 服务总览（T2-3）：配置前先看全景——哪些服务进程内 / 外部、是否已配置、最近测试结论 -->
-    <el-card shadow="never" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">服务总览</span>
-          <span class="sub">配置前先看全景：每行一个服务（类型 / 当前状态 / 最近测试）</span>
-        </div>
-      </template>
-      <el-table :data="serviceOverview" size="small" border>
-        <el-table-column label="服务" prop="name" width="150" />
-        <el-table-column label="类型" prop="kind" width="90" />
-        <el-table-column label="状态" width="170">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.stateType">{{ row.state }}</el-tag>
+    <LSection class="settings-card" title="服务总览" desc="配置前先看全景：每行一个服务（类型 / 当前状态 / 最近测试）">
+      <LTable :columns="serviceColumns" :rows="serviceOverview" compact>
+        <template #col-state="{ row }">
+          <LTag :tone="stateTone(row.stateType)">{{ row.state }}</LTag>
+        </template>
+        <template #col-test="{ row }">
+          <template v-if="row.test">
+            <span :class="row.test.ok ? 'apply-ok' : 'apply-err'">
+              {{ row.test.ok ? '✓ 通过' : '✗ 未通过' }}：{{ row.test.message }}
+            </span>
+            <span class="sub">（{{ row.test.latency_ms }} ms）</span>
           </template>
-        </el-table-column>
-        <el-table-column label="最近测试" min-width="220">
-          <template #default="{ row }">
-            <template v-if="row.test">
-              <span :class="row.test.ok ? 'apply-ok' : 'apply-err'">
-                {{ row.test.ok ? '✓ 通过' : '✗ 未通过' }}：{{ row.test.message }}
-              </span>
-              <span class="sub">（{{ row.test.latency_ms }} ms）</span>
-            </template>
-            <span v-else class="sub">未测试</span>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div class="actions" style="margin-top: 10px">
-        <el-button :loading="testing.all" @click="runTest('all')">测试全部</el-button>
+          <span v-else class="sub">未测试</span>
+        </template>
+      </LTable>
+      <div class="actions actions--mt">
+        <LButton :loading="testing.all" @click="runTest('all')">测试全部</LButton>
         <span class="hint">只读探测，不修改配置；逐项结果也可在各服务卡片内单独测试</span>
       </div>
-    </el-card>
+    </LSection>
 
-    <el-card shadow="never" id="set-nlp" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">文本处理服务（HanLP）</span>
-          <span class="sub">中文 / 英文检测共用的分词与词性标注服务</span>
-        </div>
+    <!-- 依赖服务（启动自检 + 监督器）：拉不起来的不能静默——逐项展示原因，
+         补救两条路：本机可拉起的「拉起服务」；在其他机器部署的填新地址重测 -->
+    <LSection v-if="store.caps.ops && store.deps.length" id="set-deps" class="settings-card"
+      title="依赖服务" desc="服务启动后按资源自动拉起；未能就绪的服务逐项说明原因，等待处理（不会静默缺位）">
+      <template #actions>
+        <LButton variant="ghost" size="sm" :loading="depsRecheck" @click="recheckDeps">全部重新探测</LButton>
       </template>
-      <el-form label-width="110px">
-        <el-form-item label="服务地址">
-          <el-input
-            v-model="hanlpEndpoint"
-            placeholder="http://127.0.0.1:8000"
-            style="width: 420px"
-          />
-        </el-form-item>
-        <el-form-item label="离线模式">
-          <el-switch v-model="offlineMode" />
+      <div v-for="d in store.deps" :key="d.id" class="dep-row">
+        <div class="dep-row__main">
+          <LDot :tone="DEP_DOT_TONE[d.state]" />
+          <span class="dep-row__label">{{ d.label }}</span>
+          <LTag :tone="DEP_STATE_TONE[d.state]">{{ DEP_STATE_TEXT[d.state] }}</LTag>
+          <LTag v-if="d.auto" tone="accent">自动拉起</LTag>
+          <span class="sub">{{ d.endpoint || '未配置' }}</span>
+        </div>
+        <p v-if="d.state !== 'ok' && (d.reason || d.hint)" class="hint">{{ d.reason || d.hint }}</p>
+        <p v-if="depsMsg[d.id]" class="sub">{{ depsMsg[d.id] }}</p>
+        <div v-if="d.managed && (d.state === 'failed' || d.state === 'skipped')" class="actions actions--mt">
+          <LButton size="sm" :disabled="depsBusy[d.id]" @click="startDep(d)">拉起服务</LButton>
+          <span class="hint">本机资源不足或上次拉起失败；若这台机器实在放不下，可部署到其他机器后填地址</span>
+        </div>
+        <div v-if="(d.id === 'decision' || d.id === 'l3') && (d.state === 'failed' || d.state === 'skipped')" class="dep-alt">
+          <LInput v-model="depsAlt[d.id]" :placeholder="`该服务部署在其他机器？填地址（如 http://192.168.1.x:${d.id === 'decision' ? '4804' : '4806'}）`" />
+          <LButton size="sm" :disabled="!((depsAlt[d.id] || '').trim()) || depsBusy[d.id]" @click="saveDepEndpoint(d)">保存其他地址并重测</LButton>
+        </div>
+      </div>
+      <div class="hint">
+        状态来自服务端监督器快照；拉起失败或资源不足时会保留原因供排查（日志见服务端 log/supervisor/）。
+        如果某个服务你计划部署在其他机器上，请填写对应地址——不要让功能静默缺位。
+      </div>
+    </LSection>
+
+    <LSection id="set-nlp" class="settings-card" title="文本处理服务（HanLP）" desc="中文 / 英文检测共用的分词与词性标注服务">
+      <div class="field">
+        <span class="field__label">服务地址</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="hanlpEndpoint" placeholder="http://127.0.0.1:8000" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">离线模式</span>
+        <div class="field__ctl">
+          <LSwitch v-model="offlineMode" aria-label="离线模式" />
           <span class="sub">开启后检测只用本地规则词表，不调用该服务（离线可用）</span>
-        </el-form-item>
-        <el-form-item label="服务测试">
-          <el-button :loading="testing.hanlp" @click="runTest('hanlp')">测试服务</el-button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.hanlp" @click="runTest('hanlp')">测试服务</LButton>
           <span v-if="testResults.hanlp" :class="testResults.hanlp.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.hanlp.message }}
             <span class="sub">（{{ testResults.hanlp.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         保存后即时重建中文 / 英文 / 日文检测器（热更新，无需重启服务）；
         服务地址与离线开关由此界面显式控制，无需再设置 HANLP_ENDPOINT / GEC_OFFLINE 环境变量。
       </div>
-    </el-card>
+    </LSection>
 
-    <!-- 决策模型（vegaml）层已退役出产品路径（EVOLUTION.md §13 #10）：
+    <!-- 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
          设置卡片移除；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启（代码保留）。 -->
 
-    <el-card shadow="never" id="set-embedding" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">知识查询（向量检索）</span>
-          <el-tag :type="embeddingEndpoint ? 'success' : 'info'" size="small">
-            {{ embeddingEndpoint ? '已配置' : '未配置' }}
-          </el-tag>
-          <span class="sub">OpenAI 兼容接口，用于易错词对与错例的智能检索</span>
-        </div>
+    <LSection id="set-embedding" class="settings-card" title="知识查询（向量检索）" desc="OpenAI 兼容接口，用于易错词对与错例的智能检索">
+      <template #actions>
+        <LTag :tone="embeddingEndpoint ? 'ok' : 'neutral'">{{ embeddingEndpoint ? '已配置' : '未配置' }}</LTag>
       </template>
-      <el-form label-width="110px">
-        <el-form-item label="服务地址">
-          <el-input
+      <div class="field">
+        <span class="field__label">服务地址</span>
+        <div class="field__ctl">
+          <LInput
+            class="w-420"
             v-model="embeddingEndpoint"
             placeholder="http://127.0.0.1:8080/v1（留空 = 停用知识查询）"
-            style="width: 420px"
           />
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">API Key</span>
+        <div class="field__ctl">
+          <input
             v-model="embeddingApiKey"
-            type="password"
-            show-password
+            class="l-input w-420"
+            :type="showEmbKey ? 'text' : 'password'"
             placeholder="Bearer token（留空 = 无认证）"
-            style="width: 420px"
           />
-        </el-form-item>
-        <el-form-item label="模型">
-          <el-input v-model="embeddingModel" placeholder="text-embedding-3-small" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="服务测试">
-          <el-button :loading="testing.embedding" @click="runTest('embedding')">测试嵌入服务</el-button>
+          <LButton variant="ghost" size="sm" @click="showEmbKey = !showEmbKey">{{ showEmbKey ? '隐藏' : '显示' }}</LButton>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="embeddingModel" placeholder="text-embedding-3-small" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.embedding" @click="runTest('embedding')">测试嵌入服务</LButton>
           <span v-if="testResults.embedding" :class="testResults.embedding.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.embedding.message }}
             <span class="sub">（{{ testResults.embedding.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         配置后，检测流水线 ②.5 层将使用嵌入向量从学习知识库中召回相似错误模式（top-3，余弦相似度 ≥ 0.7）。
         服务不可用时向量召回静默跳过，不影响其他检测层。
       </div>
-    </el-card>
+    </LSection>
 
     <!-- 编校场景专属：载体审校服务配置（OCR 等） -->
-    <el-card v-if="store.caps.proofreading" shadow="never" id="set-media" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">载体审校（图片 / PDF / Word）</span>
-          <el-tag :type="mediaEnabled ? 'success' : 'info'" size="small">
-            {{ mediaEnabled ? '已开启' : '未开启' }}
-          </el-tag>
-          <span class="sub">副本隔离：只改副本，**永不回写原件**（Web / 桌面同一份设置）</span>
-        </div>
+    <LSection v-if="store.caps.proofreading" id="set-media" class="settings-card" title="载体审校（图片 / PDF / Word）" desc="副本隔离：只改副本，**永不回写原件**（Web / 桌面同一份设置）">
+      <template #actions>
+        <LTag :tone="mediaEnabled ? 'ok' : 'neutral'">{{ mediaEnabled ? '已开启' : '未开启' }}</LTag>
       </template>
-      <el-form label-width="110px">
-        <el-form-item label="总开关">
-          <el-switch v-model="mediaEnabled" active-text="开启载体审校" />
-        </el-form-item>
-        <el-form-item label="工作模式">
-          <el-radio-group v-model="mediaMode">
-            <el-radio value="simple">简单（零 CLI）</el-radio>
-            <el-radio value="advanced">高级（三家适配器）</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="">
+      <div class="field">
+        <span class="field__label">总开关</span>
+        <div class="field__ctl">
+          <LSwitch v-model="mediaEnabled" aria-label="开启载体审校" />
+          <span>开启载体审校</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">工作模式</span>
+        <div class="field__ctl">
+          <LSegmented v-model="mediaMode" :options="mediaModeOptions" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label"></span>
+        <div class="field__ctl">
           <span class="sub">
             简单模式不装任何外部工具：读文本、出清单与正误表照样能用，但载体回写不可用；
             高级模式交给 PhotoCraft / PdfCraft / WordCraft，可回写载体（缺 CLI 时后端会说明原因，不会静默换档）。
           </span>
-        </el-form-item>
-        <el-form-item label="抽取档位">
-          <el-checkbox v-model="mediaUseStructure">A 档 · 结构层（文字层 / docx run，真值）</el-checkbox>
-          <el-checkbox v-model="mediaUseVision">B 档 · 多模态视觉</el-checkbox>
-          <el-checkbox v-model="mediaUseOcr">C 档 · 本地 OCR</el-checkbox>
-        </el-form-item>
-        <el-form-item label="视觉模型">
-          <el-input
-            v-model="mediaVisionModel"
-            placeholder="留空 = 复用 LLM 参数里的模型"
-            style="width: 420px"
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">抽取档位</span>
+        <div class="field__ctl field__ctl--checks">
+          <LCheckbox v-model="mediaUseStructure" label="A 档 · 结构层（文字层 / docx run，真值）" />
+          <LCheckbox v-model="mediaUseVision" label="B 档 · 多模态视觉" />
+          <LCheckbox v-model="mediaUseOcr" label="C 档 · 本地 OCR" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">视觉模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="mediaVisionModel" placeholder="留空 = 复用 LLM 参数里的模型" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">检查模式（默认）</span>
+        <div class="field__ctl">
+          <LSelect
+            class="w-200"
+            aria-label="检查模式（默认）"
+            :model-value="mediaLevel"
+            :options="mediaLevelOptions"
+            @update:model-value="setMediaLevel"
           />
-        </el-form-item>
-        <el-form-item label="检查模式（默认）">
-          <el-select v-model="mediaLevel" style="width: 200px">
-            <el-option :value="1" label="快速检查" />
-            <el-option :value="2" label="标准检查" />
-            <el-option :value="3" label="深度扫描" />
-          </el-select>
-          <el-switch
-            v-model="mediaForceLlm"
-            active-text="强制 LLM 兜底"
-            style="margin-left: 16px"
+          <LSwitch v-model="mediaForceLlm" aria-label="强制 LLM 兜底" />
+          <span>强制 LLM 兜底</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">默认回写</span>
+        <div class="field__ctl">
+          <LSelect
+            class="w-240"
+            aria-label="默认回写"
+            :model-value="mediaApplyMode"
+            :options="mediaApplyModeOptions"
+            @update:model-value="setMediaApplyMode"
           />
-        </el-form-item>
-        <el-form-item label="默认回写">
-          <el-select v-model="mediaApplyMode" style="width: 240px">
-            <el-option value="overlay" label="Overlay 叠加标注（默认）" />
-            <el-option value="comment" label="批注" />
-            <el-option value="in_place" label="改原文（仅带文字层的载体）" />
-            <el-option value="list_only" label="只出清单" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="job 目录">
-          <el-input
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">job 目录</span>
+        <div class="field__ctl">
+          <LInput
+            class="w-420"
             v-model="mediaWorkdir"
             placeholder="留空 = 当前目录下 media-jobs/（改目录需重启）"
-            style="width: 420px"
           />
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         未开启时载体面板不会静默开工：探测卡片会列出缺什么（协作工具 CLI / 视觉档凭据）。
         三家 CLI 路径、视觉上传压缩与超时参数留在设置文件与环境变量里
         （<code>PHOTOCRAFT_CLI</code> / <code>GEC_MEDIA_VISION_MAX_EDGE</code> …）。
       </div>
-    </el-card>
+    </LSection>
 
-    <el-card shadow="never" id="set-llm" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">AI 复查（LLM）</span>
-          <el-tag :type="llmEnabled ? 'success' : 'info'" size="small">
-            {{ llmEnabled ? '已配置' : '未配置' }}
-          </el-tag>
-          <span class="sub">OpenAI 兼容接口，用于智能复核与讲解 / 练习生成</span>
-        </div>
+    <LSection id="set-llm" class="settings-card" title="AI 复查（LLM）" desc="OpenAI 兼容接口，用于智能复核与讲解 / 练习生成">
+      <template #actions>
+        <LTag :tone="llmEnabled ? 'ok' : 'neutral'">{{ llmEnabled ? '已配置' : '未配置' }}</LTag>
       </template>
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-        title="启用后，待检测与讲解的文本全文会发送到下方配置的模型端点——请使用可信服务，勿粘贴机密文本。"
-      />
-      <el-form label-width="110px">
-        <el-form-item label="纠错模型">
-          <el-select v-model="llmModelId" placeholder="选择纠错模型预设" style="width: 420px">
-            <el-option v-for="m in models" :key="m.id" :label="m.name" :value="m.id">
-              <span>{{ m.name }}</span>
-              <el-tag
-                size="small"
-                :type="m.output_format === 'json' ? 'primary' : 'warning'"
-                style="margin-left: 8px"
-              >
-                {{ m.output_format }}
-              </el-tag>
-            </el-option>
-          </el-select>
-          <span class="hint">
+      <div class="banner">
+        启用后，待检测与讲解的文本全文会发送到下方配置的模型端点——请使用可信服务，勿粘贴机密文本。
+      </div>
+      <div class="field">
+        <span class="field__label">纠错模型</span>
+        <div class="field__ctl field__ctl--wrap">
+          <LSelect
+            class="w-420"
+            aria-label="纠错模型"
+            :model-value="llmModelId"
+            :options="modelOptions"
+            @update:model-value="setLlmModelId"
+          />
+          <span class="hint hint--block">
             从 `prompts/models.json` 注册表选择纠错模型预设：
             `generic` 用下方 Base URL / 模型（你的 OpenAI 兼容端点，JSON 输出）；
             `cec4` / `cec3` 用预设的本地 vllm 端点与模型名（纯文本输出，自动适配）。保存后即时生效。
           </span>
-        </el-form-item>
-        <el-form-item label="Base URL">
-          <el-input v-model="llmBaseUrl" placeholder="https://api.openai.com/v1" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">Base URL</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="llmBaseUrl" placeholder="https://api.openai.com/v1" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">API Key</span>
+        <div class="field__ctl">
+          <input
             v-model="llmApiKey"
-            type="password"
-            show-password
+            class="l-input w-420"
+            :type="showLlmKey ? 'text' : 'password'"
             placeholder="sk-…（留空 = 未配置 LLM，讲解回退静态建议）"
-            style="width: 420px"
           />
-        </el-form-item>
-        <el-form-item label="模型">
-          <el-input v-model="llmModel" placeholder="gpt-4o-mini" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="超时（秒）">
-          <el-input-number v-model="llmTimeout" :min="1" :max="600" />
+          <LButton variant="ghost" size="sm" @click="showLlmKey = !showLlmKey">{{ showLlmKey ? '隐藏' : '显示' }}</LButton>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="llmModel" placeholder="gpt-4o-mini" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">超时（秒）</span>
+        <div class="field__ctl">
+          <input v-model="llmTimeoutNum" class="l-input w-120" type="number" min="1" max="600" />
           <span class="hint">连接 / 单次读超时；流式生成只要数据持续到达就不会中断</span>
-        </el-form-item>
-        <el-form-item label="提示词目录">
-          <el-input v-model="llmPromptsDir" placeholder="prompts" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="服务测试">
-          <el-button :loading="testing.llm" @click="runTest('llm')">测试</el-button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">提示词目录</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="llmPromptsDir" placeholder="prompts" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.llm" @click="runTest('llm')">测试</LButton>
           <span v-if="testResults.llm" :class="testResults.llm.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.llm.message }}
             <span class="sub">（{{ testResults.llm.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         LLM 请求模式（固定默认，不可修改）：
-        <el-tag v-if="llmModes" size="small" type="primary">前端：{{ llmModes.frontend }}</el-tag>
-        <el-tag v-if="llmModes" size="small">外部 API：{{ llmModes.external_api }}</el-tag>
+        <LTag tone="accent">前端：{{ llmModes?.frontend }}</LTag>
+        <LTag tone="neutral">外部 API：{{ llmModes?.external_api }}</LTag>
         提示词目录变更时模板库即时重载，无需重启。
       </div>
-    </el-card>
+    </LSection>
 
     <!-- 高级（运营）：L3 特征模型层 -->
-    <el-card v-if="store.caps.ops" shadow="never" id="set-l3" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">快速定案（特征模型）</span>
-          <el-tag :type="l3Enabled ? 'success' : 'info'" size="small">
-            {{ l3Enabled ? '已启用' : '未启用' }}
-          </el-tag>
-          <span class="sub">深度扫描的主力：本地先确认有把握的，AI 只复核拿不准的少数</span>
-        </div>
+    <LSection v-if="store.caps.ops" id="set-l3" class="settings-card" title="快速定案（特征模型）" desc="深度扫描的主力：本地先确认有把握的，AI 只复核拿不准的少数">
+      <template #actions>
+        <LTag :tone="l3Enabled ? 'ok' : 'neutral'">{{ l3Enabled ? '已启用' : '未启用' }}</LTag>
       </template>
-      <el-form label-width="110px">
-        <el-form-item label="启用特征模型">
-          <el-switch v-model="l3Enabled" :loading="l3Applying" />
+      <div class="field">
+        <span class="field__label">启用特征模型</span>
+        <div class="field__ctl">
+          <LSwitch v-model="l3Enabled" :disabled="l3Applying" aria-label="启用特征模型" />
           <span class="sub">
             切换即自动保存（即时生效 + 持久化）；
             开启后 level 3 先跑特征模型（句级特征分类 + 模式化定位 + 机械修正），
             弃权 / 服务不可用时才调用 LLM 兜底
           </span>
-        </el-form-item>
-        <el-form-item v-if="l3ApplyMsg" label=" ">
+        </div>
+      </div>
+      <div v-if="l3ApplyMsg" class="field">
+        <span class="field__label"></span>
+        <div class="field__ctl">
           <span :class="l3ApplyMsg.startsWith('保存失败') ? 'apply-err' : 'apply-ok'">
             {{ l3ApplyMsg }}
           </span>
-        </el-form-item>
-        <el-form-item label="服务地址">
-          <el-input
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务地址</span>
+        <div class="field__ctl">
+          <LInput
+            class="w-420"
             v-model="l3Endpoint"
             placeholder="http://127.0.0.1:4806（留空 = 仅环境变量 GEC_L3_ENDPOINT 可启用）"
-            style="width: 420px"
           />
-        </el-form-item>
-        <el-form-item label="模型">
-          <el-input v-model="l3Model" placeholder="feature-0.1" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="超时（秒）">
-          <el-input-number v-model="l3Timeout" :min="1" :max="120" />
-        </el-form-item>
-        <el-form-item label="弃权阈值">
-          <el-input-number v-model="l3Threshold" :min="0" :max="1" :step="0.05" :precision="2" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="l3Model" placeholder="feature-0.1" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">超时（秒）</span>
+        <div class="field__ctl">
+          <input v-model="l3TimeoutNum" class="l-input w-120" type="number" min="1" max="120" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">弃权阈值</span>
+        <div class="field__ctl">
+          <input v-model="l3ThresholdNum" class="l-input w-120" type="number" min="0" max="1" step="0.05" />
           <span class="sub">把握程度落在某个区间的句子会交给 AI 复核；该值越高，交给 AI 复核的句子越多</span>
-        </el-form-item>
-        <el-form-item label="服务测试">
-          <el-button :loading="testing.l3" @click="runTest('l3')">测试特征服务</el-button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.l3" @click="runTest('l3')">测试特征服务</LButton>
           <span v-if="testResults.l3" :class="testResults.l3.ok ? 'apply-ok' : 'apply-err'">
             {{ testResults.l3.message }}
             <span class="sub">（{{ testResults.l3.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         特征模型（feature-model 服务，gold 数据训练）在 LLM 之前运行：
         高置信检出错误 → 直接产出错误项（source = feature，含机械修正建议）；
         明确无错 → 放行；灰区弃权 / 服务宕机 → 回退 LLM 兜底（纯长尾）。
         保存后即时重建检测器，无需重启。
       </div>
-    </el-card>
+    </LSection>
 
     <!-- L3 训练飞轮（三期闭环）：确认样本积累 → 重训练提醒 → 重训练 → 热切换 -->
-    <el-card v-if="l3Enabled && store.caps.ops" shadow="never" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">快速定案 · 训练飞轮</span>
-          <el-tag v-if="flywheelStatus?.retrain_ready" type="warning" size="small">建议重训练</el-tag>
-          <el-tag v-else type="info" size="small">积累中</el-tag>
-          <span class="sub">你确认采纳的纠错会持续汇入训练集，模型随使用变强</span>
+    <LSection v-if="l3Enabled && store.caps.ops" class="settings-card" title="快速定案 · 训练飞轮" desc="你确认采纳的纠错会持续汇入训练集，模型随使用变强">
+      <template #actions>
+        <LTag v-if="flywheelStatus?.retrain_ready" tone="warn">建议重训练</LTag>
+        <LTag v-else tone="neutral">积累中</LTag>
+      </template>
+      <template v-if="flywheelStatus">
+        <div class="field">
+          <span class="field__label">语言</span>
+          <div class="field__ctl">
+            <LSegmented v-model="flywheelLang" :options="flywheelLangOptions" @update:model-value="loadFlywheelStatus()" />
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">确认样本</span>
+          <div class="field__ctl">
+            <b>{{ flywheelStatus.samples }}</b> 条
+            <span class="sub">（你采纳的纠错 = 正面样本；AI 复查确认没问题的句子 = 反面样本；按文本去重，上限 5000）</span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">当前模型</span>
+          <div class="field__ctl">
+            <template v-if="flywheelStatus.service_available">
+              {{ flywheelStatus.model || '—' }}
+              <span v-if="flywheelStatus.f1 != null" class="sub">（dev F1 {{ flywheelStatus.f1.toFixed(3) }}）</span>
+            </template>
+            <span v-else class="apply-err">feature-model 服务不可达（仅本地样本统计可用）</span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">上次重训练</span>
+          <div class="field__ctl">
+            {{ flywheelStatus.last_retrain_at ?? '从未' }}
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">重训练</span>
+          <div class="field__ctl">
+            <LButton
+              variant="primary"
+              :loading="retraining"
+              :disabled="!flywheelStatus.service_available"
+              @click="doRetrain"
+            >
+              重训练并热切换
+            </LButton>
+            <span class="sub">
+              合并确认样本 → 重训练 → dev 集评测；F1 显著退化（&gt; 0.02）时保留旧模型
+            </span>
+          </div>
+        </div>
+        <div v-if="retrainMsg" class="field">
+          <span class="field__label"></span>
+          <div class="field__ctl">
+            <span :class="retrainMsg.startsWith('重训练失败') ? 'apply-err' : 'apply-ok'">{{ retrainMsg }}</span>
+          </div>
         </div>
       </template>
-      <el-form label-width="110px" v-if="flywheelStatus">
-        <el-form-item label="语言">
-          <el-select v-model="flywheelLang" style="width: 120px" @change="loadFlywheelStatus">
-            <el-option label="中文" value="zh" />
-            <el-option label="英文" value="en" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="确认样本">
-          <b>{{ flywheelStatus.samples }}</b> 条
-          <span class="sub">（你采纳的纠错 = 正面样本；AI 复查确认没问题的句子 = 反面样本；按文本去重，上限 5000）</span>
-        </el-form-item>
-        <el-form-item label="当前模型">
-          <template v-if="flywheelStatus.service_available">
-            {{ flywheelStatus.model || '—' }}
-            <span v-if="flywheelStatus.f1 != null" class="sub">（dev F1 {{ flywheelStatus.f1.toFixed(3) }}）</span>
-          </template>
-          <span v-else class="apply-err">feature-model 服务不可达（仅本地样本统计可用）</span>
-        </el-form-item>
-        <el-form-item label="上次重训练">
-          {{ flywheelStatus.last_retrain_at ?? '从未' }}
-        </el-form-item>
-        <el-form-item label="重训练">
-          <el-button
-            type="primary"
-            :loading="retraining"
-            :disabled="!flywheelStatus.service_available"
-            @click="doRetrain"
-          >
-            重训练并热切换
-          </el-button>
-          <span class="sub">
-            合并确认样本 → 重训练 → dev 集评测；F1 显著退化（&gt; 0.02）时保留旧模型
-          </span>
-        </el-form-item>
-        <el-form-item v-if="retrainMsg" label=" ">
-          <span :class="retrainMsg.startsWith('重训练失败') ? 'apply-err' : 'apply-ok'">{{ retrainMsg }}</span>
-        </el-form-item>
-      </el-form>
-      <div v-else class="hint" style="display: flex; align-items: center; gap: 8px">
-        <el-icon v-if="flywheelLoading" class="is-loading"><Loading /></el-icon>
+      <div v-else class="hint hint--row">
+        <span v-if="flywheelLoading" class="spin" aria-hidden="true"></span>
         飞轮状态不可用（feature-model 服务未启动或加载失败）
       </div>
       <div class="hint">
@@ -1085,62 +1311,65 @@ async function runTest(target: SettingsTestTarget) {
         ② 检测没发现错误（含 AI 复查确认没问题）时的原句自动汇入（反面样本）。
         提醒条件：上次重训练后新增 ≥ 10 条（从未训练过则累计 ≥ 30）且距上次重训练 ≥ 7 天。
       </div>
-    </el-card>
+    </LSection>
 
     <!-- 高级（运营）：目录配置 -->
-    <el-card v-if="store.caps.ops" shadow="never" id="set-dirs" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">数据目录</span>
-          <span class="sub">决策表 / 规则词表目录（保存后即时重载）</span>
+    <LSection v-if="store.caps.ops" id="set-dirs" class="settings-card" title="数据目录" desc="决策表 / 规则词表目录（保存后即时重载）">
+      <div class="field">
+        <span class="field__label">决策表目录</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="tablesDir" placeholder="decision-tables" />
         </div>
-      </template>
-      <el-form label-width="110px">
-        <el-form-item label="决策表目录">
-          <el-input v-model="tablesDir" placeholder="decision-tables" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="词表目录">
-          <el-input v-model="lexiconsDir" placeholder="lexicons" style="width: 420px" />
-        </el-form-item>
-        <el-form-item label="目录测试">
-          <el-button :loading="testing.tables_dir" @click="runTest('tables_dir')">测试决策表目录</el-button>
-          <el-button :loading="testing.lexicons_dir" @click="runTest('lexicons_dir')">测试词表目录</el-button>
-        </el-form-item>
-        <el-form-item v-if="testResults.tables_dir" label=" ">
+      </div>
+      <div class="field">
+        <span class="field__label">词表目录</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="lexiconsDir" placeholder="lexicons" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">目录测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.tables_dir" @click="runTest('tables_dir')">测试决策表目录</LButton>
+          <LButton :loading="testing.lexicons_dir" @click="runTest('lexicons_dir')">测试词表目录</LButton>
+        </div>
+      </div>
+      <div v-if="testResults.tables_dir" class="field">
+        <span class="field__label"></span>
+        <div class="field__ctl">
           <span :class="testResults.tables_dir.ok ? 'apply-ok' : 'apply-err'">
             决策表：{{ testResults.tables_dir.message }}
             <span class="sub">（{{ testResults.tables_dir.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-        <el-form-item v-if="testResults.lexicons_dir" label=" ">
+        </div>
+      </div>
+      <div v-if="testResults.lexicons_dir" class="field">
+        <span class="field__label"></span>
+        <div class="field__ctl">
           <span :class="testResults.lexicons_dir.ok ? 'apply-ok' : 'apply-err'">
             词表：{{ testResults.lexicons_dir.message }}
             <span class="sub">（{{ testResults.lexicons_dir.latency_ms }} ms）</span>
           </span>
-        </el-form-item>
-      </el-form>
+        </div>
+      </div>
       <div class="hint">
         决策表目录扫描 `*_gec_attribution.json`，变更目录后重新加载；
         词表目录（zh/en/ja 共用）存放外置规则词表 `*_gec_lexicon.json`，变更时重建检测器。
       </div>
-    </el-card>
+    </LSection>
 
     <div class="actions">
-      <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
-      <el-button :loading="testing.all" @click="runTest('all')">测试全部</el-button>
+      <LButton variant="primary" :loading="saving" @click="save">保存设置</LButton>
+      <LButton :loading="testing.all" @click="runTest('all')">测试全部</LButton>
       <span v-if="savedMsg" class="saved">{{ savedMsg }}</span>
     </div>
 
     <!-- 测试全部：逐项结果（并行探测全部 7 项配置） -->
-    <el-card v-if="testResults.all" shadow="never" class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span class="card-title">测试结果</span>
-          <el-tag :type="testResults.all.ok ? 'success' : 'danger'" size="small">
-            {{ testResults.all.ok ? '全部通过' : '部分未通过' }}
-          </el-tag>
-          <span class="sub">{{ testResults.all.message }}（总耗时 {{ testResults.all.latency_ms }} ms）</span>
-        </div>
+    <LSection v-if="testResults.all" class="settings-card" title="测试结果" :desc="`${testResults.all.message}（总耗时 ${testResults.all.latency_ms} ms）`">
+      <template #actions>
+        <LTag :tone="testResults.all.ok ? 'ok' : 'danger'">
+          {{ testResults.all.ok ? '全部通过' : '部分未通过' }}
+        </LTag>
       </template>
       <div
         v-for="r in testResults.all.results ?? []"
@@ -1151,39 +1380,93 @@ async function runTest(target: SettingsTestTarget) {
         <b>{{ TEST_LABELS[r.target] ?? r.target }}</b>：{{ r.message }}
         <span class="sub">（{{ r.latency_ms }} ms）</span>
       </div>
-    </el-card>
+    </LSection>
 
     <div v-if="loading" class="loading">
-      <el-icon class="is-loading"><Loading /></el-icon>
+      <span class="spin" aria-hidden="true"></span>
       加载中…
     </div>
-    <el-alert v-else-if="error" type="error" :closable="false" :title="error" />
+    <!-- 错误态带下一步指引：重试 -->
+    <LEmpty v-else-if="error" text="设置加载失败" :hint="`${error}；确认服务端已启动后重试。`">
+      <template #action>
+        <LButton @click="load">重试</LButton>
+      </template>
+    </LEmpty>
   </div>
 </template>
 
 <style scoped>
-.settings-wrap { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
+.settings-wrap { display: flex; flex-direction: column; gap: var(--space-3); max-width: 760px; }
+.settings-wrap .l-section { margin-bottom: 0; }
 /* 锚点直达高亮（PipelineStatus 点击 → 对应卡片滚动定位后短暂高亮） */
 .settings-card.anchor-flash {
   box-shadow: 0 0 0 3px var(--primary-soft), var(--shadow-sm);
   transition: box-shadow 0.3s ease;
 }
-.settings-card :deep(.el-card__header) { padding: 10px 16px; }
-.desc { font-size: 13px; color: var(--text-2); line-height: 1.7; }
-.hint { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.7; margin-top: 6px; }
-.actions { display: flex; align-items: center; gap: 12px; }
-.saved { color: var(--el-color-success); font-size: 13px; }
-.loading { display: flex; align-items: center; gap: 8px; color: var(--el-text-color-secondary); }
-/* 「启用决策层」开关自动保存的结果提示 */
-.apply-ok { color: var(--ok); font-size: 13px; }
-.apply-err { color: var(--danger); font-size: 13px; }
+.field {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-1) 0;
+  font-size: var(--fs-ui);
+}
+.field__label { color: var(--text-2); }
+.field__ctl { display: flex; align-items: center; gap: var(--space-2); min-width: 0; flex-wrap: wrap; }
+.field__ctl--checks { gap: var(--space-4); }
+.field__ctl--wrap { flex-direction: column; align-items: flex-start; }
+.w-120 { width: calc(var(--space-7) * 2 + var(--space-2)); }
+.w-200 { width: calc(var(--space-7) * 4 + var(--space-2)); }
+.w-240 { width: calc(var(--space-7) * 5); }
+.w-280 { width: calc(var(--space-7) * 5 + var(--space-7)); }
+.w-420 { width: 100%; max-width: calc(var(--space-7) * 8 + var(--space-3)); }
+.desc { font-size: var(--fs-ui); color: var(--text-2); line-height: var(--lh-body); }
+.hint { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-body); margin-top: var(--space-1); }
+.hint--block { margin-top: 0; }
+.hint--row { display: flex; align-items: center; gap: var(--space-2); }
+.sub { color: var(--muted); font-size: var(--fs-sm); }
+.actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.actions--mt { margin-top: var(--space-2); }
+.saved { color: var(--ok); font-size: var(--fs-ui); }
+.loading { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--fs-ui); }
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+/* 结果行状态色：红色只用于「未通过 / 失败」 */
+.apply-ok { color: var(--ok); font-size: var(--fs-ui); }
+.apply-err { color: var(--danger); font-size: var(--fs-ui); }
 /* 「测试全部」逐项结果行 */
-.test-line { font-size: 13px; line-height: 1.9; }
+.test-line { font-size: var(--fs-ui); line-height: 1.9; }
 /* 「工作场景与角色」能力位行 */
 .cap-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 18px;
-  padding: 10px 0; border-bottom: 1px dashed var(--el-border-color);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  padding: var(--space-2) 0; border-bottom: 1px dashed var(--border);
 }
 .cap-row:last-of-type { border-bottom: none; }
-.ops-unlock { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.ops-unlock { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.ops-unlock .l-input { max-width: 320px; flex: 1; min-width: 0; }
+.confirm-inline { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--fs-sm); color: var(--text-2); }
+/* 依赖服务状态行（监督器快照） */
+.dep-row { padding: var(--space-2) 0; border-bottom: 1px dashed var(--border); }
+.dep-row:last-of-type { border-bottom: none; }
+.dep-row__main { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.dep-row__label { font-size: var(--fs-ui); font-weight: 600; }
+.dep-alt { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.dep-alt .l-input { max-width: 340px; flex: 1; min-width: 0; }
+.spin {
+  width: var(--space-3); height: var(--space-3); flex: none; display: inline-block;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor; border-radius: 50%;
+  animation: l-spin 0.7s linear infinite;
+}
 </style>

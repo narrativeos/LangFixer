@@ -9,9 +9,10 @@
 //! user 模板含 `{{text}}` 占位符）；响应 content 应为 JSON 数组：
 //! `[{"error_type", "confidence", "original", "correction"?, "message"}]`。
 //! zh_detect v1.2 起 prompt 使用 CEC（ACL 2026）教学错误分类（错别字/词语搭配
-//! 错误/…）；`map_llm_error_type` 在解析边界把教学分类映射为统一内部类型
-//! （spelling/collocation/grammar/punctuation/logic/anomaly），教学分类不进入
-//! 决策表与知识库。
+//! 错误/…）；`map_llm_error_type` 在解析边界把教学分类映射为统一内部类型，
+//! §11.11 分类法 v2 起 CEC 细分不再坠缩（spelling/collocation/pos_error/
+//! word_order/missing_component/redundant_component/conjunction/reference/
+//! logic/punctuation），教学分类不进入决策表与知识库。
 //!
 //! span 映射：提示词要求 `original` 为原文中的**精确片段**，服务端在原文中
 //! 定位片段解析字节偏移（规避 LLM 直接数 CJK 字节偏移的不可靠）；
@@ -22,6 +23,7 @@
 //!
 //! 产出的错误标记 `source = "llm"`（见 [`shared_model::sources`]）。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -65,7 +67,9 @@ pub struct LlmDetectConfig {
     /// 环境变量 `LLM_RETRY_BACKOFF_SECS`（逗号分隔）可覆盖；空表 = 不重试。
     #[serde(default = "default_llm_retry_backoff")]
     pub retry_backoff_secs: Vec<u64>,
-    /// 重试的总等待预算（秒）：排队可能比退避表长得多，预算封顶才不会把请求挂死
+    /// 重试的**挂钟总预算**（秒，含每次请求自身耗时）：排队可能比退避表长得多，
+    /// 预算封顶才不会把请求挂死。只累加睡眠时间的预算对「卡死不回话」的网关
+    /// 形同虚设（每次尝试都烧满超时却不记账——2026-11 演练实测）
     #[serde(default = "default_llm_retry_budget")]
     pub retry_budget_secs: u64,
 }
@@ -74,6 +78,7 @@ fn default_llm_retry_backoff() -> Vec<u64> {
     parse_backoff(std::env::var("LLM_RETRY_BACKOFF_SECS").ok().as_deref())
 }
 
+/// 挂钟总预算缺省 120s：必须落在前端 level ≥ 2 请求超时（180s）之内
 fn default_llm_retry_budget() -> u64 {
     std::env::var("LLM_RETRY_BUDGET_SECS")
         .ok()
@@ -166,7 +171,11 @@ fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
 /// 重试决策（纯函数，便于测）：`Some(等待秒数)` 继续重试，`None` 就此收手
 ///
 /// 网关给了 `retry_after` 就按它等（它知道自己排到哪，猜的退避只会短），
-/// 但总等待不能越过预算——越过就是「一直等下去」，用户只会看到卡死。
+/// 但总耗时不能越过预算——越过就是「一直等下去」，用户只会看到卡死。
+///
+/// `waited` 为**挂钟已耗时**（含每次请求自身烧掉的时间，非纯睡眠）：网关卡死
+/// 不回话时只累加睡眠的预算形同虚设——30s 超时 × 3 次 + 25s 退避实测 115s，
+/// 线上 120s 超时按配置放大到 ~6 分钟，而浏览器 180s 就先掐（2026-11 演练）。
 fn next_wait(
     backoff: &[u64],
     attempt: usize,
@@ -188,22 +197,245 @@ pub struct LlmGecEngine {
     lang: String,
     client: reqwest::Client,
     config: LlmDetectConfig,
+    /// 网关健康熔断（与决策 / L3 / 嵌入客户端同款三态熔断器）。
+    /// api-server 形态下检测引擎**每次现构建**，熔断器必须从外部共享注入
+    /// （`State::llm_breaker`），否则每次请求都是全新实例 = 永不开断。
+    breaker: Arc<crate::circuit::CircuitBreaker>,
 }
 
 impl LlmGecEngine {
     pub fn new(lang: impl Into<String>, config: LlmDetectConfig) -> Self {
+        Self::with_breaker(
+            lang,
+            config,
+            Arc::new(crate::circuit::CircuitBreaker::default()),
+        )
+    }
+
+    /// 注入共享熔断器（api-server / 桌面端进程级单例；测试用独立实例避免串扰）
+    pub fn with_breaker(
+        lang: impl Into<String>,
+        config: LlmDetectConfig,
+        breaker: Arc<crate::circuit::CircuitBreaker>,
+    ) -> Self {
         let timeout = Duration::from_secs(config.timeout_secs.max(1));
-        let client = reqwest::Client::builder()
+        #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(timeout)
-            .read_timeout(timeout)
-            .build()
-            .unwrap_or_default();
+            .read_timeout(timeout);
+        #[cfg(test)]
+        {
+            // 根因：本机系统代理软件会转发到 127.0.0.1 mock 服务的连接，并行连接
+            // 抖动下代理上游竞态随机 RST/FIN，产生 IncompleteMessage 类 flake。
+            // bypass 名单实测对 reqwest 的系统代理读取不生效，故仅测试构建显式
+            // no_proxy；生产与 api-server 行为不变。
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().unwrap_or_default();
         Self {
             lang: lang.into(),
             client,
             config,
+            breaker,
         }
     }
+
+    /// 带「解析失败」标记的单次检测：返回（错误列表，**响应成功但无法解析**）。
+    ///
+    /// 调用方据此把解析失败上报为层状态 `partial`（部分未复查），
+    /// **绝不得**当作「无错误」（审校产品最危险的失败模式：把系统故障
+    /// 伪装成阴性结论）。状态随返回值逐次传递，不在引擎实例上共享。
+    pub async fn detect_tracked(&self, text: &str) -> Result<(Vec<Error>, bool), DetectorError> {
+        self.detect_anchored(text).await
+    }
+}
+
+/// 文档级块并行复查的结果（覆盖率核算的原料）
+#[derive(Debug, Clone, Default)]
+pub struct DocLlmOutcome {
+    /// 已映射回**文档字节偏移**的错误列表（按 span 排序）
+    pub errors: Vec<Error>,
+    /// 总块数
+    pub chunks: usize,
+    /// 网络/服务失败的块数（这些块本轮未复查——覆盖率报告必须如实呈现）
+    pub failed_chunks: usize,
+    /// 响应成功但解析失败的块数（同样属于「未复查」）
+    pub parse_failed_chunks: usize,
+    /// 上下文前缀区双报丢弃数（所有权归上一块，remap_chunk_errors；
+    /// §7 dropped 账本 `out_of_scope` 桶来源；单发路径恒 0）
+    pub prefix_dropped: usize,
+}
+
+impl DocLlmOutcome {
+    /// 实际完成复查的块占比（0.0–1.0）
+    pub fn coverage(&self) -> f64 {
+        if self.chunks == 0 {
+            return 0.0;
+        }
+        let bad = self.failed_chunks + self.parse_failed_chunks;
+        (self.chunks - bad.min(self.chunks)) as f64 / self.chunks as f64
+    }
+}
+
+impl LlmGecEngine {
+    /// 文档级块并行复查（10 万字+ 主线的执行单元）：
+    ///
+    /// - [`crate::docchunk::split_document`] 按所有权切块（每字符恰好归属一块），
+    ///   各块带上下文前缀并行送 LLM（并发 `concurrency`）；
+    /// - span 重映射：完全落在上下文前缀区的错误**丢弃**（归上一块所有，
+    ///   结构上消除双报）；归属区内偏移平移回文档坐标；定位失败落到
+    ///   归属块起点的**零长 span**（不与真实错误冲突、不参与重叠去重，
+    ///   message 已带「未能定位」标注）；
+    /// - 单块失败**不中断整体**：计入 `failed_chunks` / `parse_failed_chunks`；
+    ///   全部块失败才返回 [`Err`]。
+    /// `progress` 为可选段级事件接收器：多块路径下每块复查前后各推
+    /// 一条 [`crate::progress::StageEvent::ChunkBegin`] / ChunkEnd（短文本单块路径不推，
+    /// 整层 Stage 事件已足够）；未注入时零开销。
+    pub async fn detect_document(
+        &self,
+        text: &str,
+        chunk_chars: usize,
+        concurrency: usize,
+        progress: Option<crate::progress::StageSink>,
+    ) -> Result<DocLlmOutcome, DetectorError> {
+        let chunks = crate::docchunk::split_document(text, chunk_chars);
+        if chunks.len() <= 1 {
+            // 短文本（或空文本）：单调用路径
+            let (errors, parse_failed) = self.detect_anchored(text).await?;
+            return Ok(DocLlmOutcome {
+                errors,
+                chunks: 1,
+                failed_chunks: 0,
+                parse_failed_chunks: parse_failed as usize,
+                prefix_dropped: 0,
+            });
+        }
+        use futures_util::StreamExt;
+        let n_chunks = chunks.len();
+        let total = n_chunks as u32;
+        // 每块所有权移入 future（async_trait 装箱要求跨生命周期 Send，
+        // 借用切块数组会触发 HRTB 推断失败）；段级事件随块推（并发交错，
+        // 消费侧按 chunk 序号配对聚合）
+        let mut stream =
+            futures_util::stream::iter(chunks.into_iter().enumerate().map(|(i, c)| {
+                let sink = progress.clone();
+                let chunk_no = i as u32 + 1;
+                async move {
+                    if let Some(s) = &sink {
+                        s(crate::progress::StageEvent::ChunkBegin {
+                            stage: sources::LLM,
+                            chunk: chunk_no,
+                            total,
+                        });
+                    }
+                    let t = std::time::Instant::now();
+                    let r = self.detect_anchored(&c.send).await;
+                    if let Some(s) = &sink {
+                        let ok = matches!(&r, Ok((_, pf)) if !*pf);
+                        s(crate::progress::StageEvent::ChunkEnd {
+                            stage: sources::LLM,
+                            chunk: chunk_no,
+                            total,
+                            ok,
+                            ms: t.elapsed().as_millis() as u64,
+                        });
+                    }
+                    (c, r)
+                }
+            }))
+            .buffer_unordered(concurrency.max(1));
+        let mut out: Vec<Error> = Vec::new();
+        let mut failed = 0usize;
+        let mut parse_failed = 0usize;
+        let mut prefix_dropped = 0usize;
+        let mut first_err: Option<DetectorError> = None;
+        while let Some((c, r)) = stream.next().await {
+            match r {
+                Ok((errors, pf)) => {
+                    if pf {
+                        parse_failed += 1;
+                    }
+                    let n_before = errors.len();
+                    let mapped = remap_chunk_errors(&c, errors);
+                    // 前缀区双报丢弃计数（流循环局部变量，并发安全；
+                    // 不用引擎内原子——跨请求会串账）
+                    prefix_dropped += n_before - mapped.len();
+                    out.extend(mapped);
+                }
+                Err(e) => {
+                    failed += 1;
+                    tracing::warn!(
+                        error = %e,
+                        chunk_owner = ?c.owner,
+                        "文档级复查：块失败（本轮该块未复查，其余块继续）"
+                    );
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        if failed == n_chunks {
+            return Err(first_err.unwrap_or_else(|| {
+                DetectorError::DetectionFailed("文档级复查：全部块失败".into())
+            }));
+        }
+        out.sort_by_key(|e| e.span[0]);
+        Ok(DocLlmOutcome {
+            errors: out,
+            chunks: n_chunks,
+            failed_chunks: failed,
+            parse_failed_chunks: parse_failed,
+            prefix_dropped,
+        })
+    }
+}
+
+impl LlmGecEngine {
+    /// 块级结果缓存指纹（`docjob::chunk_cache` 的 key 成分）：
+    /// 模型名 + 提示词 + 输出格式 + max_tokens——任一变化即整体失效。
+    /// 不含 base_url / api_key：端点漂移（换 mock / 换代理）不应使缓存作废，
+    /// 复用契约是「同一复查函数」而非「同一端点」。
+    pub fn cache_fingerprint(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.config.model.hash(&mut h);
+        self.config.system.hash(&mut h);
+        self.config.user_template.hash(&mut h);
+        self.config.output_format.hash(&mut h);
+        self.config.max_tokens.hash(&mut h);
+        format!("{:016x}", h.finish())
+    }
+}
+
+/// 块结果重映射（所有权图契约，见 [`crate::docchunk`]）：
+/// - 完全落在上下文前缀区 → 丢弃（归上一块所有，结构上消除双报）；
+/// - 归属区内 → 平移回文档字节坐标（钳制在归属区）；
+/// - 定位失败（`[0,0]`）→ 归属块起点零长占位（不参与重叠去重，
+///   message 已带「未能定位」标注）。
+///
+/// `detect_document`（即席全文复查）与 `docjob`（作业编排）共用。
+pub(crate) fn remap_chunk_errors(
+    chunk: &crate::docchunk::DocChunk,
+    errors: Vec<Error>,
+) -> Vec<Error> {
+    let owned_len = chunk.owner[1] - chunk.owner[0];
+    let cp = chunk.context_prefix;
+    errors
+        .into_iter()
+        .filter_map(|mut err| {
+            if err.span == [0, 0] {
+                err.span = [chunk.owner[0], chunk.owner[0]];
+            } else if err.span[1] <= cp {
+                return None;
+            } else {
+                let s = err.span[0].saturating_sub(cp).min(owned_len);
+                let e = err.span[1].saturating_sub(cp).min(owned_len);
+                err.span = [chunk.owner[0] + s, chunk.owner[0] + e];
+            }
+            Some(err)
+        })
+        .collect()
 }
 
 /// reqwest 传输层错误的完整原因链：`Display` 只到「error sending request for url (…)」，
@@ -342,21 +574,27 @@ fn resolve_span(text: &str, original: &str, claimed: &[[usize; 2]]) -> [usize; 2
 /// LLM 输出的 `error_type` → 统一内部错误类型（`shared_model::error_types`）。
 ///
 /// zh_detect v1.2 起 prompt 使用 CEC（ACL 2026）教学分类；本映射只在解析边界
-/// 做一次转换，教学分类不进入决策表 / 知识库：
-/// - 错别字 → spelling；词语搭配错误 → collocation；
-/// - 词性/语序/成分残缺/成分赘余/关联词/指代不明 → grammar；
-/// - 语义逻辑不通 → logic（保持 v1.1 枚举的透传语义）；标点 → punctuation；
-/// - 空 → grammar（兜底）；anomaly 与旧版英文 token（spelling/grammar/…）
-///   及其他未知值原样透传（兼容其他模型的输出）。
+/// 做一次转换，教学分类不进入决策表 / 知识库。**§11.11 分类法 v2：CEC 细分不
+/// 再坠缩进 grammar**——句法细分各自落到一个细类型码（决策表/统计由
+/// [`shared_model::coarse_error_type`] 在查询期回退到粗族，DB 不迁移）：
+/// - 错别字 → spelling；词语搭配错误 → collocation；标点 → punctuation；
+/// - 词性错误 → pos_error；语序错误 → word_order；成分残缺 → missing_component；
+///   成分赘余 → redundant_component；关联词使用错误 → conjunction；
+///   指代不明 → reference；语义逻辑不通 → logic；
+/// - 空 → grammar（坠底）；anomaly 与内部细类型 / 旧版英文 token
+///   （spelling/grammar/…）及其他未知值原样透传（兼容其他模型的输出）。
 fn map_llm_error_type(raw: &str) -> String {
     match raw.trim() {
         "" => error_types::GRAMMAR.to_string(),
         "错别字" => error_types::SPELLING.to_string(),
         "词语搭配错误" => error_types::COLLOCATION.to_string(),
-        "词性错误" | "语序错误" | "成分残缺" | "成分赘余" | "关联词使用错误" | "指代不明" => {
-            error_types::GRAMMAR.to_string()
-        }
-        "语义逻辑不通" => "logic".to_string(),
+        "词性错误" => error_types::POS_ERROR.to_string(),
+        "语序错误" => error_types::WORD_ORDER.to_string(),
+        "成分残缺" => error_types::MISSING_COMPONENT.to_string(),
+        "成分赘余" => error_types::REDUNDANT_COMPONENT.to_string(),
+        "关联词使用错误" => error_types::CONJUNCTION.to_string(),
+        "指代不明" => error_types::REFERENCE.to_string(),
+        "语义逻辑不通" => error_types::LOGIC.to_string(),
         "标点" => error_types::PUNCTUATION.to_string(),
         other => other.to_string(),
     }
@@ -609,12 +847,25 @@ impl GecEngine for LlmGecEngine {
     }
 
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError> {
+        Ok(self.detect_anchored(text).await?.0)
+    }
+}
+
+impl LlmGecEngine {
+    /// 单次检测的解析与锚定核心：返回（错误列表，**响应成功但解析失败**标记）。
+    ///
+    /// 解析失败时列表为空但标记为 `true`——调用方必须把「解析失败」与
+    /// 「模型确认无错」区分开（对外见 [`Self::detect_tracked`]）。
+    pub(crate) async fn detect_anchored(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<Error>, bool), DetectorError> {
         if text.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         // plain 模型（cec3/cec4/自训 COT）：think 块 + 纠正句，走专用适配
         if self.config.output_format == crate::models::OUTPUT_PLAIN {
-            return self.detect_plain(text).await;
+            return Ok((self.detect_plain(text).await?, false));
         }
         let user = self.config.user_template.replace("{{text}}", text);
         // JSON 契约只取最终答案：思考模型（qwen 思考档等）把思考块放在
@@ -623,16 +874,17 @@ impl GecEngine for LlmGecEngine {
             .chat_completion_answer(&self.config.system, &user)
             .await?;
 
-        // 容错解析 JSON 数组；解析失败时告警并返回空（请求已成功，不算服务故障）
+        // 容错解析 JSON 数组；解析失败告警并置标记（请求已成功，不算服务故障，
+        // 但**不得**被上层当作「复查确认干净」）
         let raw = match extract_json_array(&content) {
             Some(r) => r,
             None => {
                 tracing::warn!(
                     model = %self.config.model,
                     content = %content.chars().take(200).collect::<String>(),
-                    "LLM 兜底检测响应无法解析为 JSON 数组，返回空结果"
+                    "LLM 兜底检测响应无法解析为 JSON 数组，本层记 partial"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), true));
             }
         };
         let items: Vec<LlmErrorItem> = match serde_json::from_str(&raw) {
@@ -641,9 +893,9 @@ impl GecEngine for LlmGecEngine {
                 tracing::warn!(
                     model = %self.config.model,
                     error = %e,
-                    "LLM 兜底检测响应 JSON 解析失败，返回空结果"
+                    "LLM 兜底检测响应 JSON 解析失败，本层记 partial"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), true));
             }
         };
 
@@ -653,6 +905,15 @@ impl GecEngine for LlmGecEngine {
         let mut errors = Vec::with_capacity(items.len());
         for it in items {
             if it.original.is_empty() && it.correction.is_none() {
+                continue;
+            }
+            // 结构性拒收「空操作修正」：correction 与 original 无差异
+            // → 不是编辑，属模型过纠正/复读，不进结果（diff 校验的 JSON 契约侧）
+            if it.correction.as_deref() == Some(it.original.as_str()) && !it.original.is_empty() {
+                tracing::debug!(
+                    original = %it.original,
+                    "LLM 报告了与原文无差异的修正（空操作），拒收"
+                );
                 continue;
             }
             let span = resolve_span(text, &it.original, &claimed);
@@ -679,7 +940,7 @@ impl GecEngine for LlmGecEngine {
             e.source = Some(sources::LLM.to_string());
             errors.push(e);
         }
-        Ok(errors)
+        Ok((errors, false))
     }
 }
 
@@ -759,7 +1020,16 @@ impl LlmGecEngine {
         let backoff = &self.config.retry_backoff_secs;
         let budget = self.config.retry_budget_secs;
         let mut attempt = 0usize;
-        let mut waited = 0u64;
+        // 预算与失败提示按**挂钟总时长**计（含每次请求自身烧掉的时间），不是只算睡眠：
+        // 网关卡死不回话时只算睡眠的预算形同虚设——30s 超时 x 3 次 + 25s 退避实测 115s，
+        // 按线上 120s 超时放大到 ~6 分钟，而浏览器 180s 就先掐（2026-11 演练实测）。
+        let started = std::time::Instant::now();
+        // 熔断开断期间毫秒级失败，不再让每次请求都替卡死的网关交一份超时税。
+        if !self.breaker.allow_request() {
+            return Err(DetectorError::ServiceUnavailable(
+                "LLM 网关熔断中（连续失败后的冷却期内不再发起请求，冷却到期自动探测恢复）。规则层结果照常可用，稍后重试即可".to_string(),
+            ));
+        }
         let timeout_hint = format!(
             "（超时上限 {}s：调设置 `llm.timeout_secs` 或环境变量 `LLM_TIMEOUT_SECS`；\
              思考模型整载体检测实测要 60s 以上，默认 30s 必然失败）",
@@ -774,7 +1044,10 @@ impl LlmGecEngine {
                 .send()
                 .await
             {
-                Ok(r) if r.status().is_success() => break r,
+                Ok(r) if r.status().is_success() => {
+                    self.breaker.on_success();
+                    break r;
+                }
                 Ok(r) => {
                     let status = r.status();
                     if !is_queue_status(status) {
@@ -783,7 +1056,16 @@ impl LlmGecEngine {
                         )));
                     }
                     let ra = retry_after_secs(&r);
-                    match next_wait(backoff, attempt, ra, waited, budget) {
+                    self.breaker.on_failure();
+                    let spent = started.elapsed().as_secs();
+                    if spent >= budget.max(1) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、已耗时 {spent}s \\
+                                 越过预算 {budget}s 不再重试（退避表 {backoff:?}；LLM_RETRY_BUDGET_SECS \\
+                                 为含请求耗时的挂钟总预算）"
+                        )));
+                    }
+                    match next_wait(backoff, attempt, ra, spent, budget) {
                         Some(wait) => {
                             tracing::warn!(
                                 status = status.as_u16(),
@@ -792,14 +1074,13 @@ impl LlmGecEngine {
                                 "LLM 服务排队：退避后重试"
                             );
                             tokio::time::sleep(Duration::from_secs(wait)).await;
-                            waited += wait;
                             attempt += 1;
                         }
                         None => {
                             return Err(DetectorError::ServiceUnavailable(format!(
-                                "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、共等待 {waited}s \
-                                 仍未放行（退避表 {backoff:?}、预算 {budget}s：\
-                                 LLM_RETRY_BACKOFF_SECS / LLM_RETRY_BUDGET_SECS 可调）"
+                                "LLM 服务繁忙（HTTP {status}）：已重试 {attempt} 次、已耗时 {spent}s \
+                                 仍未放行（退避表 {backoff:?}、预算 {budget}s：LLM_RETRY_BACKOFF_SECS / \
+                                 LLM_RETRY_BUDGET_SECS 可调；预算为含请求耗时的挂钟总时长）"
                             )));
                         }
                     }
@@ -808,12 +1089,21 @@ impl LlmGecEngine {
                     // 传输层：超时 / 连不上算瞬时（排队时网关也会直接掐连接）；
                     // 其余（DNS、非法 URL…）不重试。
                     let chain = transport_chain(&e);
+                    self.breaker.on_failure();
                     if !(e.is_timeout() || e.is_connect()) {
                         return Err(DetectorError::ServiceUnavailable(format!(
                             "{chain}{timeout_hint}"
                         )));
                     }
-                    match next_wait(backoff, attempt, None, waited, budget) {
+                    // 挂钟已越过预算 → 直接收手：退避表里的 0 间隔（「立即重试」
+                    // 语义）不能成为「预算外再加一次满超时尝试」的后门
+                    let spent = started.elapsed().as_secs();
+                    if spent >= budget.max(1) {
+                        return Err(DetectorError::ServiceUnavailable(format!(
+                            "{chain}{timeout_hint}（已重试 {attempt} 次、已耗时 {spent}s、预算 {budget}s）"
+                        )));
+                    }
+                    match next_wait(backoff, attempt, None, spent, budget) {
                         Some(wait) => {
                             tracing::warn!(
                                 wait_secs = wait,
@@ -822,12 +1112,11 @@ impl LlmGecEngine {
                                 "LLM 传输层瞬时故障：退避后重试"
                             );
                             tokio::time::sleep(Duration::from_secs(wait)).await;
-                            waited += wait;
                             attempt += 1;
                         }
                         None => {
                             return Err(DetectorError::ServiceUnavailable(format!(
-                                "{chain}{timeout_hint}（已重试 {attempt} 次、共等待 {waited}s）"
+                                "{chain}{timeout_hint}（已重试 {attempt} 次、已耗时 {spent}s）"
                             )));
                         }
                     }
@@ -1160,26 +1449,25 @@ mod tests {
 
     #[test]
     fn map_llm_error_type_converts_cec_taxonomy() {
-        // CEC（ACL 2026）教学分类 → 统一内部类型
+        // CEC（ACL 2026）教学分类 → 统一内部类型（§11.11：细分不坠缩）
         assert_eq!(map_llm_error_type("错别字"), "spelling");
         assert_eq!(map_llm_error_type("词语搭配错误"), "collocation");
-        for t in [
-            "词性错误",
-            "语序错误",
-            "成分残缺",
-            "成分赘余",
-            "关联词使用错误",
-            "指代不明",
-        ] {
-            assert_eq!(map_llm_error_type(t), "grammar");
-        }
+        assert_eq!(map_llm_error_type("词性错误"), "pos_error");
+        assert_eq!(map_llm_error_type("语序错误"), "word_order");
+        assert_eq!(map_llm_error_type("成分残缺"), "missing_component");
+        assert_eq!(map_llm_error_type("成分赘余"), "redundant_component");
+        assert_eq!(map_llm_error_type("关联词使用错误"), "conjunction");
+        assert_eq!(map_llm_error_type("指代不明"), "reference");
         assert_eq!(map_llm_error_type("语义逻辑不通"), "logic");
         assert_eq!(map_llm_error_type("标点"), "punctuation");
-        // 空值兜底 grammar；anomaly / 旧版英文 token / 未知值原样透传
+        // 空值坠底 grammar；anomaly / 内部细类型码 / 旧版英文 token /
+        // 未知值原样透传（自训模型直接输出内部码的路径）
         assert_eq!(map_llm_error_type(""), "grammar");
         assert_eq!(map_llm_error_type("anomaly"), "anomaly");
         assert_eq!(map_llm_error_type("spelling"), "spelling");
         assert_eq!(map_llm_error_type("grammar"), "grammar");
+        assert_eq!(map_llm_error_type("extra_char"), "extra_char");
+        assert_eq!(map_llm_error_type("semantic_dup"), "semantic_dup");
         assert_eq!(map_llm_error_type("  错别字  "), "spelling");
         assert_eq!(map_llm_error_type("tense"), "tense");
     }
@@ -1201,7 +1489,7 @@ mod tests {
             .unwrap();
         assert_eq!(errors.len(), 5);
         assert_eq!(errors[0].error_type, "spelling");
-        assert_eq!(errors[1].error_type, "grammar");
+        assert_eq!(errors[1].error_type, "missing_component");
         assert_eq!(errors[2].error_type, "collocation");
         assert_eq!(errors[3].error_type, "punctuation");
         assert_eq!(errors[4].error_type, "logic");
@@ -1554,7 +1842,8 @@ mod tests {
         let err = engine.detect("测试文本").await.unwrap_err().to_string();
         assert!(err.contains("HTTP 503"), "要说清是网关繁忙：{err}");
         assert!(err.contains("已重试 2 次"), "要给出重试了几次：{err}");
-        assert!(err.contains("共等待 1s"), "要给出等了多久：{err}");
+        // 2026-11 起按挂钟报「已耗时」（含尝试本身），不再是纯睡眠「共等待」
+        assert!(err.contains("已耗时 1s"), "要给出这轮烧了多久：{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 3, "退避表用完就收手");
     }
 
@@ -1624,5 +1913,297 @@ mod tests {
                 "{s} 是要人修配置，不是排队"
             );
         }
+    }
+
+    // ── 文档级重构 P0/P1：解析失败显式化、空操作拒收、块并行复查 ──
+
+    /// 动态 mock：按 user 提示词内容决定响应（块并行路径各块响应不同）
+    async fn mock_dynamic_llm_server(respond: fn(&str) -> String) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| async move {
+                let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let user = req["messages"][1]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let resp = serde_json::json!({
+                    "choices": [{ "message": { "content": respond(&user) } }]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn detect_skips_noop_correction() {
+        // correction 与 original 无差异 → 结构性拒收（不是编辑）
+        let endpoint = mock_llm_server(
+            r#"[{"error_type":"错别字","confidence":0.9,"original":"报复","correction":"报复","message":"复读"}]"#,
+        )
+        .await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        assert!(engine.detect("他报复很大。").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn parse_failure_is_visible_not_silent() {
+        // 响应无法解析：结果为空但 detect_tracked 置真（「复查失败」≠「确认干净」）；
+        // 状态随返回值逐次传递，并发调用互不串扰
+        let endpoint = mock_llm_server("抱歉，我无法完成该任务。").await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let (errors, parse_failed) = engine.detect_tracked("正确句子").await.unwrap();
+        assert!(errors.is_empty());
+        assert!(parse_failed, "解析失败必须显式可见");
+        // 下一次调用不继承上次标记（正常响应不置标记）
+        let endpoint = mock_llm_server("[]").await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let (_, parse_failed) = engine.detect_tracked("正确句子").await.unwrap();
+        assert!(!parse_failed);
+    }
+
+    #[tokio::test]
+    async fn detect_document_emits_chunk_events() {
+        // 段级进度事件：多块路径每块恰好一对 ChunkBegin/ChunkEnd（并发交错，
+        // 按序号配对），total 全程一致；单块短文本不推段级事件。
+        let p1 = "第一段是干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p2 = "第二段同样是完全干净的叙述内容，也没有错误。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |_| "[]".to_string();
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        let o = engine
+            .detect_document(&text, 50, 4, Some(sink))
+            .await
+            .unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        let evs = events.lock().unwrap();
+        let total = o.chunks as u32;
+        let mut begins: Vec<u32> = Vec::new();
+        let mut ends: Vec<(u32, bool)> = Vec::new();
+        for e in evs.iter() {
+            match e {
+                crate::progress::StageEvent::ChunkBegin {
+                    stage,
+                    chunk,
+                    total: t,
+                } => {
+                    assert_eq!(*stage, sources::LLM);
+                    assert_eq!(*t, total, "total 字段必须全程一致");
+                    begins.push(*chunk);
+                }
+                crate::progress::StageEvent::ChunkEnd {
+                    stage,
+                    chunk,
+                    total: t,
+                    ok,
+                    ..
+                } => {
+                    assert_eq!(*stage, sources::LLM);
+                    assert_eq!(*t, total);
+                    ends.push((*chunk, *ok));
+                }
+                _ => {}
+            }
+        }
+        begins.sort_unstable();
+        assert_eq!(
+            begins,
+            (1..=total).collect::<Vec<_>>(),
+            "每块恰好一次 begin"
+        );
+        assert_eq!(ends.len(), o.chunks, "每块恰好一次 end");
+        assert!(ends.iter().all(|(_, ok)| *ok), "全部块成功");
+    }
+
+    #[tokio::test]
+    async fn detect_document_remaps_spans_and_ownership() {
+        // 所有权契约：错误只由归属块上报——上下文前缀区的重复上报被丢弃。
+        // 两段文本，错误「甲错」在第一段；mock 对**任何**含第一段的请求都报它，
+        // 于是块 1（归属区）保留、块 2（前缀区）丢弃 → 全文恰好 1 条。
+        let p1 = "第一段里有甲错需要检出，其余文字均为干净的叙述内容填充。".repeat(2);
+        let p2 = "第二段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |user| {
+            if user.contains("第一段") {
+                r#"[{"error_type":"错别字","confidence":0.9,"original":"甲错","correction":"抱负","message":"音近误用"}]"#.to_string()
+            } else {
+                "[]".to_string()
+            }
+        };
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let o = engine.detect_document(&text, 50, 4, None).await.unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        assert_eq!(o.failed_chunks, 0);
+        assert_eq!(o.parse_failed_chunks, 0);
+        assert_eq!(
+            o.errors.len(),
+            1,
+            "所有权去重后恰好一条: {:?}",
+            o.errors.len()
+        );
+        let e = &o.errors[0];
+        let expect = text.find("甲错").unwrap();
+        assert_eq!(
+            e.span,
+            [expect, expect + "甲错".len()],
+            "span 必须是文档字节偏移"
+        );
+        assert_eq!(e.source.as_deref(), Some("llm"));
+        assert!(
+            o.prefix_dropped >= 1,
+            "前缀区双报丢弃必须记账（dropped 账本来源）"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_document_counts_parse_failed_chunks() {
+        // 单块解析失败不中断整体：计入 parse_failed_chunks，coverage 如实下降
+        let p1 = "第一段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+        let p2 = "第二段包含坏块标记，mock 对它返回非 JSON。".repeat(2);
+        let text = format!("{p1}\n{p2}\n");
+        let respond: fn(&str) -> String = |user| {
+            if user.contains("坏块") {
+                "抱歉，这一段我无法处理。".to_string()
+            } else {
+                "[]".to_string()
+            }
+        };
+        let endpoint = mock_dynamic_llm_server(respond).await;
+        let engine = LlmGecEngine::new("zh", config(&endpoint));
+        let o = engine.detect_document(&text, 50, 4, None).await.unwrap();
+        assert!(o.chunks >= 2);
+        assert!(o.parse_failed_chunks >= 1, "解析失败块必须记账");
+        assert!(o.coverage() < 1.0);
+    }
+
+    // ---- 网关熔断 + 挂钟预算（2026-11 演练：网关卡死时 level 3 卡 115s 回 502）----
+
+    #[tokio::test]
+    async fn llm_breaker_opens_and_fails_fast_within_cooldown() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, usize::MAX, "[]").await;
+        let breaker = std::sync::Arc::new(crate::circuit::CircuitBreaker::new(
+            3,
+            Duration::from_secs(3600),
+        ));
+        // 退避表 [0,0,0]：一轮 detect = 首次 + 3 次重试 = 4 次失败尝试。生产时序
+        // （api-server 共享单例）是「单次请求失败即记账」——第 3 次失败落在首轮
+        // detect 的第 3 次重试上，当场开断，那轮不再发出第 5 个请求
+        let mk = || {
+            LlmGecEngine::with_breaker(
+                "zh",
+                config(&base).with_retry(vec![0, 0, 0], 60),
+                breaker.clone(),
+            )
+        };
+        mk().detect("测试文本").await.unwrap_err();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "第 3 次失败即开断（那轮不再发出第 5 个请求）"
+        );
+        assert!(
+            !breaker.allow_request(),
+            "开断须在单次 detect 内触发（重试也记账）"
+        );
+        let t = std::time::Instant::now();
+        let err = LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+            .detect("测试文本")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("熔断"), "{err}");
+        assert!(
+            t.elapsed() < Duration::from_millis(300),
+            "开断期间应毫秒级失败，不再交超时税"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 4, "开断期间不得发出请求");
+    }
+
+    #[tokio::test]
+    async fn llm_breaker_probes_after_cooldown_and_closes_on_success() {
+        use std::sync::atomic::Ordering;
+        let (base, hits) = flaky_llm_server(503, 3, "[]").await;
+        let breaker = std::sync::Arc::new(crate::circuit::CircuitBreaker::new(
+            3,
+            Duration::from_millis(150),
+        ));
+        for _ in 0..3 {
+            LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+                .detect("测试文本")
+                .await
+                .unwrap_err();
+        }
+        tokio::time::sleep(Duration::from_millis(220)).await;
+        LlmGecEngine::with_breaker("zh", config(&base), breaker.clone())
+            .detect("测试文本")
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "冷却到期放行探测，成功即闭合"
+        );
+        LlmGecEngine::with_breaker("zh", config(&base), breaker)
+            .detect("测试文本")
+            .await
+            .unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 5, "闭合后恢复正常放行");
+    }
+
+    #[tokio::test]
+    async fn retry_budget_counts_wall_time_including_attempt_duration() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // 黑洞网关：接受连接但永不回话——每次尝试都烧满超时。只算睡眠的预算
+        // 对此形同虚设（演练实测 30s 超时 x 3 次 + 25s 退避 = 115s）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conns = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = conns.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        // 持有连接不回话（drop 会掐连接 → 变成 Canceled 而不是超时）
+                        held.push(stream);
+                    }
+                    Err(_) => break,
+                }
+            }
+            drop(held);
+        });
+        let cfg = config(&format!("http://{addr}/v1"));
+        let mut cfg = cfg;
+        cfg.timeout_secs = 1;
+        let engine = LlmGecEngine::new("zh", cfg.with_retry(vec![1, 1], 2));
+        let t = std::time::Instant::now();
+        let err = engine.detect("测试文本").await.unwrap_err().to_string();
+        assert!(err.contains("已耗时"), "{err}");
+        assert!(
+            t.elapsed() < Duration::from_secs(6),
+            "挂钟 {:?}：预算 2s + 尾次超时 1s 内必须收手（旧逻辑只算睡眠会跑到 ~5s）",
+            t.elapsed()
+        );
+        // 第 1 次尝试烧满 1s：1+1≤2 放行重试；第 2 次到 2s：2+1>2 截断。
+        // 旧逻辑只算睡眠会在 ~5s 时跑第 3 次——连接数即判据
+        assert_eq!(
+            conns.load(Ordering::SeqCst),
+            2,
+            "预算必须把尝试本身的耗时计进去"
+        );
     }
 }

@@ -13,21 +13,28 @@ pub mod circuit;
 pub mod contribution;
 pub mod decision;
 pub mod detector;
+pub mod docchunk;
+pub mod docjob;
 pub mod embedding;
 pub mod engine;
 pub mod knowledge_recall;
 pub mod l3;
 pub mod language;
 pub mod llm;
+pub mod mask;
 pub mod models;
 pub mod optimization_round;
 pub mod pipeline;
+pub mod progress;
+pub mod quality;
 pub mod reflection;
 pub mod reflection_center;
 pub mod settings_test;
 pub mod statistical;
+pub mod terminology;
 pub mod timings;
 pub mod training_center;
+pub mod triage;
 
 pub use agent::{
     ActionTier, AgentError, AgentRunResult, AgentToolExecutor, ExecutedAction, ManagedTool,
@@ -40,6 +47,11 @@ pub use contribution::{
 };
 pub use decision::{DecideOutcome, DecisionConfig, DecisionGecEngine};
 pub use detector::{DetectorError, GECDetector};
+pub use docchunk::{
+    BoundaryOrigin, DEFAULT_CHUNK_CHARS, DEFAULT_CONTEXT_CHARS, DocChunk, SENTENCE_HARD_CAP,
+    is_sentence, sentence_spans, sentence_spans_with_origin, split_document, unowned_bytes,
+};
+pub use docjob::{DocBudget, DocJob, DocJobProgress, DocJobStore, run_doc_job};
 pub use embedding::{EmbeddingConfig, EmbeddingEngine, cosine_similarity};
 pub use engine::{
     CascadeDetector, CompositeDetector, DetectOutcome, GecEngine, GecEngineKind, LayerReport,
@@ -56,6 +68,8 @@ pub use optimization_round::{
     RoundAction, RoundInput, RoundPlan, no_action_reasons, plan_round, round_report, round_status,
 };
 pub use pipeline::DetectionPipeline;
+pub use progress::{StageEvent, StageSink};
+pub use quality::{ChunkStats, DroppedLedger, QualityReport, SentenceStats};
 pub use reflection::{
     ExampleInfo, KnowledgeInfo, ReflectionContext, ReflectionReport, ReflectionSuggestion,
     RuleDefInfo, normalize_source, reflect_rejection, suggestion_kinds,
@@ -74,3 +88,4 @@ pub use training_center::{
     build_domain_pool, build_llm_training_data, is_model_source, job_kind, job_status,
     plan_from_suggestion,
 };
+pub use triage::{ChunkRisk, ReviewMode, chunk_risk, review_mode};

@@ -66,3 +66,9 @@ dist/
 
 # gate 评测 vendor 服务与模型权重（外部仓库副本，体量 GB 级，不入库）
 decision-model/vendor/
+
+# 本机 dev 实例的密钥 / 隔离库 / 日志（setup.sh local 产出，绝不入库）
+.dev/
+
+# 本机构建开关（清空 beforeBuildCommand 用；仓库内无人引用，勿入库）
+desktop-app/no-prebuild.json

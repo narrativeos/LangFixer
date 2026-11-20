@@ -16,6 +16,13 @@ struct DetectResp {
     decision_abstained: bool,
     #[serde(default)]
     from_history: bool,
+    /// 层级贡献摘要：实检路径才有；缓存命中（LRU）时缺省空
+    #[serde(default)]
+    layers: Vec<serde_json::Value>,
+    #[serde(default)]
+    quality: Option<serde_json::Value>,
+    #[serde(default)]
+    version: Option<serde_json::Value>,
 }
 
 /// 环境变量互斥锁：并行测试会共享进程环境，改 env 的测试必须持锁
@@ -24,8 +31,21 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// 取 env 锁（容忍前序测试 panic 导致的锁污染，避免连锁失败）
 /// 环境变量串行锁的守卫：跨 await 持有是**有意**的（env 是进程级全局，
 /// 须覆盖整个测试过程）；newtype 包装与 MutexGuard 语义等价。
+///
+/// Drop 时统一清理决策层 env（GEC_DEC_*）：决策层默认关、各测试自行 opt-in，
+/// 若残留指向已停 mock 的 endpoint，后续测试的决策层会 unavailable →
+/// quality=degraded → 缓存/历史写入资格门拒写，测试结果随执行顺序漂移。
 #[allow(dead_code)] // 守卫靠析构放锁生效，字段不读——环境串行守卫的固有形态
 struct EnvGuard(std::sync::MutexGuard<'static, ()>);
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var("GEC_DEC_ENABLED");
+            std::env::remove_var("GEC_DEC_ENDPOINT");
+        }
+    }
+}
 
 fn env_guard() -> EnvGuard {
     EnvGuard(ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
@@ -112,7 +132,8 @@ async fn build_server_locked(
         )))
     });
     let state = Arc::new(AppState::from_env(Some(&tables_dir), db_file.as_deref()));
-    let app = routes::router(state).layer(middleware::cors::cors_layer());
+    let app = middleware::auth::with_standalone_tenant(routes::router(state))
+        .layer(middleware::cors::cors_layer());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());
@@ -394,6 +415,48 @@ async fn analyze_one_stop() {
         res.errors.iter().all(|e| e.attribution.is_some()),
         "每个错误都应带归因结果"
     );
+}
+
+#[tokio::test]
+async fn analyze_cache_hit_omits_timings() {
+    let base = start_server().await;
+    let body = serde_json::json!({
+        "lang": "en",
+        "text": "I saw a apple.",
+        "session_id": "cache-timings",
+    });
+    // 首次：实际执行检测，timings 随响应返回
+    let first: serde_json::Value = client()
+        .post(format!("{base}/gec/analyze"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(first.get("timings").is_some(), "实际检测应带 timings");
+    // 二次：LRU/历史命中（结果非本次实检）→ 不得返回 timings/layers，
+    // 否则前端「检测方式」会拿全零计时伪造出 ①规则 0ms / 其余层未运行的假执行轨迹
+    let second: serde_json::Value = client()
+        .post(format!("{base}/gec/analyze"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        second["errors"].as_array().unwrap().len(),
+        first["errors"].as_array().unwrap().len()
+    );
+    assert!(
+        second.get("timings").is_none(),
+        "缓存/历史命中不应返回 timings: {:?}",
+        second.get("timings")
+    );
+    assert!(second.get("layers").is_none(), "缓存命中不应返回 layers");
 }
 
 #[tokio::test]
@@ -1749,6 +1812,220 @@ async fn detect_history_reuse_and_rules_invalidation() {
     let _ = std::fs::remove_dir_all(&lex_dir);
 }
 
+/// 进程内 LRU 缓存同样随参数指纹失效（「命中错误缓存」回归）：
+/// 同实例两次检测同文本 → 第二次命中 LRU（响应不带 layers）；
+/// 禁用一条规则（规则指纹变化）→ 再检测同文本 → 必须 miss 并全新运行；
+/// refresh=true → 指纹未变也显式绕过两层缓存强制实检。
+#[tokio::test]
+async fn detect_lru_cache_invalidated_by_rules_fingerprint() {
+    let _g = env_guard();
+    unsafe {
+        std::env::remove_var("LLM_API_KEY");
+        std::env::remove_var("LLM_BASE_URL");
+        std::env::remove_var("LLM_MODEL");
+        std::env::remove_var("LLM_PROMPTS_DIR");
+        std::env::remove_var("GEC_ENGINE_ZH");
+        std::env::remove_var("GEC_ENGINE_EN");
+        std::env::remove_var("GEC_ENGINE_JA");
+        std::env::remove_var("GEC_STAT_ENDPOINT");
+        std::env::remove_var("GEC_OFFLINE");
+        std::env::set_var("HANLP_ENDPOINT", "http://127.0.0.1:8000");
+        std::env::remove_var("GEC_TABLES_DIR");
+        std::env::remove_var("GEC_SETTINGS_FILE");
+        std::env::remove_var("GEC_LEXICONS_DIR");
+        std::env::remove_var("GEC_TABLES_UPDATE_TOKEN");
+        std::env::remove_var("CORS_ORIGINS");
+    }
+    let db = std::env::temp_dir().join(format!(
+        "langfixer_lru_{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let _ = std::fs::remove_file(&db);
+    let lex_dir = std::env::temp_dir().join(format!(
+        "langfixer_lru_lexicons_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&lex_dir).unwrap();
+    for entry in std::fs::read_dir(lexicons_abs()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), lex_dir.join(entry.file_name())).unwrap();
+        }
+    }
+    let base = build_server_locked(Some(&db), Some(&lex_dir)).await;
+    let c = client();
+    let text = "I saw a apple.";
+    let body = serde_json::json!({ "lang": "en", "text": text });
+
+    // ① 首次：全新运行，实检路径回放 layers
+    let r1: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!r1.from_history, "首次检测必须全新运行");
+    assert!(!r1.errors.is_empty(), "应检测到冠词错误");
+    assert!(
+        !r1.layers.is_empty(),
+        "实检路径应携带层级摘要（layers）作后续判别基准"
+    );
+
+    // ② 第二次：LRU 命中（layers 不回放；from_history 仍为 false）
+    let r2: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!r2.from_history);
+    assert!(
+        r2.layers.is_empty(),
+        "同参数重复检测应命中 LRU（实检基准：layers 为空）"
+    );
+
+    // ③ 规则侧变化（禁用一条 en 规则 → 指纹变化）→ LRU 键必须失效
+    let rules: serde_json::Value = c
+        .get(format!("{base}/gec/rules?lang=en"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rule_id = rules["rules"][0]["id"]
+        .as_str()
+        .expect("en 词表应有规则")
+        .to_string();
+    let status = c
+        .put(format!("{base}/gec/rules/en/toggles"))
+        .json(&serde_json::json!({ "toggles": { rule_id: false } }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert!(status.is_success(), "规则禁用应成功: {status}");
+
+    let r3: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !r3.from_history,
+        "规则侧变化后同文本检测必须全新运行（指纹不匹配）"
+    );
+    assert!(
+        !r3.layers.is_empty(),
+        "指纹变化后不得命中旧 LRU 键：应全新实检并回放 layers（「错误缓存」回归门）"
+    );
+
+    // ④ refresh 显式绕过：指纹不变也强制实检
+    let body_refresh = serde_json::json!({ "lang": "en", "text": text, "refresh": true });
+    let r4: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body_refresh)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !r4.layers.is_empty(),
+        "refresh=true 必须跳过两层缓存读取强制实检"
+    );
+
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_dir_all(&lex_dir);
+}
+
+/// 检测管线 v2 质量自描述：实检响应携 `quality.status=full`（纯规则层，无网络
+/// 降级源）与版本向量（`version.splitter` = 切块器版本）；LRU 命中回放两者均
+/// 不携——回放结果出自既往 full 运行，调用方不得当作本次质量
+#[tokio::test]
+async fn detect_quality_and_version_in_real_run_response() {
+    let _g = env_guard();
+    unsafe {
+        std::env::remove_var("LLM_API_KEY");
+        std::env::remove_var("LLM_BASE_URL");
+        std::env::remove_var("LLM_MODEL");
+        std::env::remove_var("LLM_PROMPTS_DIR");
+        std::env::remove_var("GEC_ENGINE_ZH");
+        std::env::remove_var("GEC_ENGINE_EN");
+        std::env::remove_var("GEC_ENGINE_JA");
+        std::env::remove_var("GEC_STAT_ENDPOINT");
+        std::env::remove_var("GEC_OFFLINE");
+        std::env::set_var("HANLP_ENDPOINT", "http://127.0.0.1:8000");
+        std::env::remove_var("GEC_TABLES_DIR");
+        std::env::remove_var("GEC_SETTINGS_FILE");
+        std::env::remove_var("GEC_LEXICONS_DIR");
+        std::env::remove_var("GEC_TABLES_UPDATE_TOKEN");
+        std::env::remove_var("CORS_ORIGINS");
+    }
+    let db = std::env::temp_dir().join(format!(
+        "langfixer_quality_{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let _ = std::fs::remove_file(&db);
+    let base = build_server_locked(Some(&db), Some(&lexicons_abs())).await;
+    let c = client();
+    let text = "I saw a apple.";
+    let body = serde_json::json!({ "lang": "en", "text": text });
+
+    // ① 实检：quality=full + 版本向量含切块器版本
+    let r1: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!r1.from_history, "首次检测必须全新运行");
+    let q = r1.quality.expect("实检响应必须携 quality（质量自描述）");
+    assert_eq!(q["status"], "full", "纯规则层实检质量应为 full: {q}");
+    assert_eq!(
+        q["coverage"],
+        serde_json::json!(1.0),
+        "实检覆盖率应为 1.0: {q}"
+    );
+    let v = r1.version.expect("实检响应必须携 version（版本向量）");
+    assert_eq!(
+        v["splitter"],
+        shared_model::SPLITTER_VERSION,
+        "版本向量必须含切块器版本"
+    );
+    assert!(v["rules_fingerprint"].is_string(), "版本向量含规则指纹");
+
+    // ② LRU 命中：回放不携 quality/version
+    let r2: DetectResp = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(r2.layers.is_empty(), "同参数重复检测应命中 LRU");
+    assert!(r2.quality.is_none(), "LRU 回放不得携 quality");
+    assert!(r2.version.is_none(), "LRU 回放不得携 version");
+
+    let _ = std::fs::remove_file(&db);
+}
+
 /// 决策模型重训练（版本号变化）→ 同文本历史不再可复用：
 /// v1 服务下首次检测（历史带 model_version=v1）→ v1 服务第二实例复用
 /// → 切换到 v2 服务（模拟重训练后重启）→ 版本不匹配，必须全新运行
@@ -1791,15 +2068,37 @@ async fn detect_history_reuse_and_model_version_invalidation() {
         );
     }
     let base1 = build_server_locked(Some(&db), Some(&lexicons_abs())).await;
-    let r1: DetectResp = c
-        .post(format!("{base1}/gec/detect"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // mock 决策服务在并行负载下 /decide 偶发失败时，实检会降级为 degraded，
+    // 按质量资格规则不落库（防降级扩散）。本测试验证 full 路径：重试至
+    // quality=full（每次重试同为实检，不落库，对历史无副作用）。
+    async fn post_detect(c: &reqwest::Client, base: &str, body: &serde_json::Value) -> DetectResp {
+        c.post(format!("{base}/gec/detect"))
+            .json(body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+    fn quality_full(r: &DetectResp) -> bool {
+        r.quality
+            .as_ref()
+            .and_then(|q| q.get("status"))
+            .and_then(|s| s.as_str())
+            == Some("full")
+    }
+    let mut r1 = post_detect(&c, &base1, &body).await;
+    for _ in 0..5 {
+        if quality_full(&r1) {
+            break;
+        }
+        r1 = post_detect(&c, &base1, &body).await;
+    }
+    assert!(
+        quality_full(&r1),
+        "决策服务稳定后检测质量应为 full（重试未成功）"
+    );
     assert!(!r1.from_history, "首次检测必须是全新运行");
     assert!(!r1.errors.is_empty(), "应检测到冠词错误");
 
@@ -1898,14 +2197,21 @@ async fn send_text(
             rb = rb.json(b);
         }
         match rb.send().await {
-            Ok(r) => match r.text().await {
-                Ok(t) => return t,
-                Err(e) if is_transport_err(&e) && attempt < 2 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
+            Ok(r) => {
+                let st = r.status();
+                match r.text().await {
+                    Ok(t) if t.is_empty() => {
+                        println!("PROBE empty status={st} {url}");
+                        return t;
+                    }
+                    Ok(t) => return t,
+                    Err(e) if is_transport_err(&e) && attempt < 2 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Err(e) => panic!("读取响应失败: {e}"),
                 }
-                Err(e) => panic!("读取响应失败: {e}"),
-            },
+            }
             Err(e) if is_transport_err(&e) && attempt < 2 => {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
@@ -3188,4 +3494,370 @@ async fn session_delete_flow() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+}
+
+// ── 文档级审校作业（doc-jobs：请求变作业，块级 checkpoint/断点续跑）──
+
+/// 未配置 LLM → 文档作业不可用（503，与 explain 兜底一致）
+#[tokio::test]
+async fn doc_jobs_require_llm() {
+    // start_server 内部持锁清除 LLM 配置
+    let base = start_server().await;
+    let res = client()
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({ "lang": "zh", "text": "测试文本。" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// 完整流程：创建（切块）→ 轮询进度 → 聚合结果（所有权去重 + 覆盖率）→ 列表
+#[tokio::test]
+async fn doc_job_flow_chunks_and_aggregates() {
+    let _guard = env_guard();
+    let llm = start_mock_llm_detect().await;
+    unsafe {
+        std::env::set_var("LLM_API_KEY", "sk-test");
+        std::env::set_var("LLM_BASE_URL", &llm);
+        std::env::set_var(
+            "LLM_PROMPTS_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../prompts")
+                .display()
+                .to_string(),
+        );
+    }
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // mock 对任何请求都报「报复→抱负」：所有权去重后聚合结果应恰好 1 条
+    let p1 = "他昨天报复很大，这是第一段的内容，其余文字是干净的填充。".repeat(2);
+    let p2 = "第二段是完全干净的叙述内容，没有任何需要检出的错误。".repeat(2);
+    let text = format!("{p1}\n{p2}\n");
+    let res: serde_json::Value = c
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({
+            "lang": "zh", "text": text, "chunk_target": 60
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = res["job_id"].as_str().unwrap().to_string();
+    assert!(res["chunks"].as_u64().unwrap() >= 2, "应切成多块: {res}");
+    // 轮询到终态
+    let mut status = String::new();
+    for _ in 0..100 {
+        let v: serde_json::Value = c
+            .get(format!("{base}/gec/doc-jobs/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = v["status"].as_str().unwrap().to_string();
+        if status == "done" || status == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(status, "done", "作业应完成");
+    let r: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs/{id}/results"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["complete"].as_bool(), Some(true), "全部块复查完成: {r}");
+    assert_eq!(r["coverage"].as_f64(), Some(1.0));
+    let errors = r["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "上下文前缀命中被所有权去重: {r}");
+    let expect = text.find("报复").unwrap();
+    assert_eq!(errors[0]["span"][0].as_u64(), Some(expect as u64));
+    // 列表可见
+    let l: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs?limit=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        l["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["id"].as_str() == Some(&id))
+    );
+    // SSE 进度流：作业已终态 → 首个业务事件即 `end`
+    let mut resp = c
+        .get(format!("{base}/gec/doc-jobs/{id}/events"))
+        .send()
+        .await
+        .unwrap();
+    let mut buf = String::new();
+    for _ in 0..20 {
+        match resp.chunk().await.unwrap() {
+            Some(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+            None => break,
+        }
+        if buf.contains("event: end") {
+            break;
+        }
+    }
+    assert!(buf.contains("event: end"), "SSE 应发 end 事件: {buf}");
+    assert!(buf.contains("\"coverage\":1"));
+}
+
+#[tokio::test]
+async fn settings_doc_jobs_roundtrip() {
+    let _guard = env_guard();
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // 默认值面
+    let g: serde_json::Value = c
+        .get(format!("{base}/gec/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(g["doc_jobs"]["budget"], "full");
+    assert_eq!(g["doc_jobs"]["cache"], true);
+    assert!(g["doc_jobs"]["chunk_target"].as_u64().unwrap() >= 50);
+    // 部分更新即时生效
+    let res: serde_json::Value = c
+        .put(format!("{base}/gec/settings"))
+        .json(&serde_json::json!({
+            "doc_jobs": { "budget": "economical", "chunk_target": 800, "concurrency": 4 }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(res["doc_jobs"]["budget"], "economical");
+    assert_eq!(res["doc_jobs"]["chunk_target"], 800);
+    assert_eq!(res["doc_jobs"]["concurrency"], 4);
+    let g: serde_json::Value = c
+        .get(format!("{base}/gec/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(g["doc_jobs"]["budget"], "economical");
+    // 非法值 → 400（不能静默接受）
+    for body in [
+        serde_json::json!({ "doc_jobs": { "budget": "cheap" } }),
+        serde_json::json!({ "doc_jobs": { "chunk_target": 10 } }),
+        serde_json::json!({ "doc_jobs": { "concurrency": 0 } }),
+    ] {
+        let status = c
+            .put(format!("{base}/gec/settings"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "非法设置应 400：{body}"
+        );
+    }
+    // 复原默认（设置文件在并行测试间共享）
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({
+            "doc_jobs": { "budget": "full", "chunk_target": 1500, "cache": true, "concurrency": 8 }
+        })),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn doc_job_budget_defaults_from_settings() {
+    let _guard = env_guard();
+    let llm = start_mock_llm_detect().await;
+    unsafe {
+        std::env::set_var("LLM_API_KEY", "sk-test");
+        std::env::set_var("LLM_BASE_URL", &llm);
+        std::env::set_var(
+            "LLM_PROMPTS_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../prompts")
+                .display()
+                .to_string(),
+        );
+    }
+    let base = build_server_locked(None, Some(&lexicons_abs())).await;
+    let c = client();
+    // 设置默认预算为 economical → 创建请求不带 budget 也应继承
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({ "doc_jobs": { "budget": "economical" } })),
+    )
+    .await;
+    // 统计上干净的文本 → 低风险块被跳过（mock 报的错不改变本地风险分）
+    let text = "第一段描述了天气和日程安排，语句通顺且标点规范。\n\
+                第二段记录了会议结论与后续分工，同样没有任何异常信号。\n\
+                第三段是旅行见闻，描述了山川与城市的景色，行文平直。\n\
+                第四段总结了本季度的学习心得，句子长短适中，结构完整。";
+    let res: serde_json::Value = c
+        .post(format!("{base}/gec/doc-jobs"))
+        .json(&serde_json::json!({ "lang": "zh", "text": text, "chunk_target": 60 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = res["job_id"].as_str().unwrap().to_string();
+    let mut status = String::new();
+    for _ in 0..100 {
+        let v: serde_json::Value = c
+            .get(format!("{base}/gec/doc-jobs/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = v["status"].as_str().unwrap().to_string();
+        if status == "done" || status == "cancelled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(status, "done", "作业应完成");
+    let r: serde_json::Value = c
+        .get(format!("{base}/gec/doc-jobs/{id}/results"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        r["progress"]["skipped"].as_u64().unwrap() >= 1,
+        "economical 默认预算应跳过低风险块: {r}"
+    );
+    assert_eq!(r["complete"].as_bool(), Some(false), "有跳过即不完整");
+    assert!(r["coverage"].as_f64().unwrap() < 1.0);
+    // 复原默认
+    send_text(
+        &c,
+        "PUT",
+        &format!("{base}/gec/settings"),
+        Some(&serde_json::json!({ "doc_jobs": { "budget": "full" } })),
+    )
+    .await;
+}
+
+// ── 各层贡献度报告（GET /gec/eval/layers：api-server 直读报告档案，不依赖测评服务）──
+
+#[tokio::test]
+async fn eval_layers_reads_report_archive() {
+    let dir = std::env::temp_dir().join(format!(
+        "langfixer_test_eval_reports_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 有效报告 ×2（故意按 ts 升序写入，端点须按 ts 倒序返回）
+    for (id, ts) in [
+        ("r_old", "2026-11-01T00:00:00Z"),
+        ("r_new", "2026-11-12T00:00:00Z"),
+    ] {
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({
+                "id": id, "ts": ts, "benchmark": "mucgec", "arm": "current",
+                "mode": "capability", "lang": "zh", "beta": 0.5,
+                "layers": {
+                    "rule": { "n_pred": 12, "tp_strict": 9, "p_strict": 0.75,
+                        "r_strict": 0.1, "f_beta": 0.18, "tp_overlap": 10, "r_overlap": 0.11,
+                        "fp_strict": 3, "fp_overlap": 2,
+                        "gate": { "tp": 1, "fp": 0, "fn": 0, "tn": 0,
+                            "precision": 1.0, "recall": 1.0, "f1": 1.0 },
+                        "recall_share": 0.1, "attributed_gold": 9 }
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    // 无效文件：档案辅助件（无 layers）+ 坏 JSON → 按条跳过、不中断整个档案
+    std::fs::write(dir.join("baseline_rules.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(dir.join("broken.json"), "{ not json").unwrap();
+    let _guard = env_guard();
+    unsafe { std::env::set_var("GEC_EVAL_REPORTS_DIR", &dir) };
+    let base = build_server_locked(None, None).await;
+    let body: serde_json::Value = client()
+        .get(format!("{base}/gec/eval/layers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    unsafe { std::env::remove_var("GEC_EVAL_REPORTS_DIR") };
+    assert_eq!(body["skipped"], 2, "辅助件与坏文件按条跳过");
+    let reports = body["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["id"], "r_new", "按 ts 倒序（最新在前）");
+    assert_eq!(reports[1]["id"], "r_old");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F2: 检测失败同样要在 §7 账本留痕——引擎级错误计入 alerts.failure，
+/// 客户端错（语言不支持）留痕为 rejected、不得污染失败告警
+#[tokio::test]
+async fn detect_failure_leaves_summary_row_and_alert() {
+    let base = start_server().await; // 内部持锁并清除 LLM 配置
+    // LLM 未配置 + level 3 → LlmNotConfigured：引擎级失败（503）
+    let status = client()
+        .post(format!("{base}/gec/detect"))
+        .json(&serde_json::json!({ "lang": "zh", "text": "他昨天报复很大。", "level": 3 }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    // 客户端错误：语言不支持（404，路由无 de 引擎）
+    let status = client()
+        .post(format!("{base}/gec/detect"))
+        .json(&serde_json::json!({ "lang": "de", "text": "some text" }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, http::StatusCode::NOT_FOUND);
+    let alerts: serde_json::Value = client()
+        .get(format!("{base}/gec/observability/alerts"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        alerts["failure"]["rows"].as_i64(),
+        Some(1),
+        "仅引擎级失败计入: {alerts}"
+    );
+    assert_eq!(alerts["failure"]["triggered"].as_bool(), Some(true));
 }

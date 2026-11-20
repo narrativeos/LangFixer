@@ -96,10 +96,15 @@ pub async fn test_hanlp(endpoint: &str) -> TestResult {
             started,
         );
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10));
+    #[cfg(test)]
+    {
+        // 健康探测在测试里指向 127.0.0.1 mock，不走系统代理，见 statistical.rs 根因注释
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().unwrap_or_default();
     let url = format!("{}/analyze", endpoint.trim_end_matches('/'));
     let resp = client
         .post(&url)
@@ -147,10 +152,15 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
         return err_result(target, "LLM Base URL 未配置", started);
     }
     // 测试请求用更短的超时（配置超时上限 10 秒），避免慢服务长时间挂起测试
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)))
-        .build()
-        .unwrap_or_default();
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)));
+    #[cfg(test)]
+    {
+        // 同上：测试端点为本机 mock，不走系统代理
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().unwrap_or_default();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": model,
@@ -223,6 +233,15 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
 pub async fn test_decision(config: &DecisionConfig) -> TestResult {
     let target = "decision";
     let started = Instant::now();
+    // 待发布层且未显式开启：该层暂不参与校正，不探测、不报红
+    // （设置页对未启用的服务探测必然报红，与产品现实矛盾）
+    if !config.enabled() {
+        return ok_result(
+            target,
+            "决策模型未启用（待发布：正在寻找更合适的决策模型，找到后上线）",
+            started,
+        );
+    }
     if config.endpoint.trim().is_empty() {
         return err_result(
             target,
@@ -287,10 +306,14 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
 async fn decision_service_health(
     config: &DecisionConfig,
 ) -> (Option<String>, Vec<(String, String)>) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(3));
+    #[cfg(test)]
     {
+        // 同上：测试端点为本机 mock，不走系统代理
+        builder = builder.no_proxy();
+    }
+    let client = match builder.build() {
         Ok(c) => c,
         Err(_) => return (None, Vec::new()),
     };
@@ -320,6 +343,10 @@ async fn decision_service_health(
 pub async fn test_l3(config: &L3FeatureConfig) -> TestResult {
     let target = "l3";
     let started = Instant::now();
+    // 显式关闭时该层不参与校正（回退无条件 LLM），不探测、不报红
+    if !config.enabled() {
+        return ok_result(target, "特征模型未启用（校正由 LLM 复查层直接处理）", started);
+    }
     if config.endpoint.trim().is_empty() {
         return err_result(
             target,
@@ -585,6 +612,7 @@ mod tests {
         });
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -630,6 +658,7 @@ mod tests {
         });
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -660,6 +689,7 @@ mod tests {
         let decision = DecisionConfig {
             endpoint: format!("http://{addr}"),
             model: "my-model".into(),
+            enabled: true, // 探测类用例需显式开启（默认待发布关闭）
             ..Default::default()
         };
         let r = test_decision(&decision).await;
@@ -668,10 +698,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_all_collects_seven_results() {
-        // 全部指向不可用配置（127.0.0.1:9 必然拒绝连接）→ 全部失败
+    async fn disabled_layers_short_circuit_without_probing() {
+        // 待发布/关闭的层不探测：即使地址指向不可用端口也回「未启用」（绿），
+        // 设置页「测试全部」不为不参与产品路径的服务报红
         let decision = DecisionConfig {
             endpoint: "http://127.0.0.1:9".into(),
+            enabled: false,
+            ..Default::default()
+        };
+        let r = test_decision(&decision).await;
+        assert!(r.ok, "message: {}", r.message);
+        assert!(r.message.contains("未启用"), "message: {}", r.message);
+        let l3 = L3FeatureConfig {
+            endpoint: "http://127.0.0.1:9".into(),
+            enabled: false,
+            ..Default::default()
+        };
+        let r = test_l3(&l3).await;
+        assert!(r.ok, "message: {}", r.message);
+        assert!(r.message.contains("未启用"), "message: {}", r.message);
+    }
+
+    #[tokio::test]
+    async fn test_all_collects_seven_results() {
+        // 全部指向不可用配置（127.0.0.1:9 必然拒绝连接）→ 全部失败。
+        // 决策层默认待发布关闭（关闭即短路不探测），此处显式开启才能探测到不可用
+        let decision = DecisionConfig {
+            endpoint: "http://127.0.0.1:9".into(),
+            enabled: true,
             ..Default::default()
         };
         let l3 = L3FeatureConfig {

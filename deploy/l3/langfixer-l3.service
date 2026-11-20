@@ -1,0 +1,23 @@
+[Unit]
+# L3 特征模型服务（feature-model/server.py，127.0.0.1:4806）
+# 安装：拷到 /etc/systemd/system/，docker build -t langfixer-l3:1 deploy/l3，
+# 代码/模型/数据在 /srv/langfixer/feature-model（见 EVOLUTION.md §8 2026-11-13）
+Description=LangFixer L3 feature-model service (:4806)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=3
+ExecStartPre=-/usr/bin/docker rm -f langfixer-l3
+ExecStart=/usr/bin/docker run --rm --name langfixer-l3 \
+  -p 127.0.0.1:4806:4806 \
+  -e L3_HOST=0.0.0.0 -e L3_PORT=4806 \
+  -e L3_MODELS_DIR=/app/models -e L3_DATA_DIR=/app/l3_data \
+  -e GEC_LEXICON_DIR=/lexicons \
+  -v /srv/langfixer/feature-model:/app \
+  -v /srv/langfixer/lexicons:/lexicons:ro \
+  -w /app langfixer-l3:1 python server.py
+
+[Install]
+WantedBy=multi-user.target

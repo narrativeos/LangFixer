@@ -12,6 +12,13 @@ import type {
   DecisionTableView,
   DetectResponse,
   DetectTimings,
+  DetectProgress,
+  DocChunkRow,
+  DocJobCreated,
+  DocJobDetail,
+  DocJobListItem,
+  DocJobProgress,
+  DocJobResults,
   ErrorItem,
   ExampleList,
   ExplainResponse,
@@ -46,6 +53,8 @@ import type {
   RulePlan,
   RulesResponse,
   SettingsTestResult,
+  DepStatus,
+  DepsSnapshot,
   SettingsTestTarget,
   SessionAnalysis,
   SessionMeta,
@@ -57,6 +66,7 @@ import type {
   ValidateResponse,
   EvalRunRequest,
   EvalJob,
+  EvalLayersResponse,
   EvalReport,
   EvalReportSummary,
   ReflectRunRequest,
@@ -82,9 +92,29 @@ import type {
   MediaProbes,
   MediaReportBody,
   MediaReportResult,
+  ObservabilityAlerts,
+  ObservabilityDayRow,
 } from '../types'
 
 const http = axios.create({ baseURL: '/', timeout: 60000 })
+
+/** 业务端点回 401 + login_required（登录门 / 会话失效）：广播回门禁事件。
+ *  whoami 设计上匿名也回 200，不经过这里。 */
+http.interceptors.response.use(
+  (r) => r,
+  (e: unknown) => {
+    const resp = (e as { response?: { status?: number; data?: { login_required?: boolean } } })
+      ?.response
+    if (
+      resp?.status === 401 &&
+      resp.data?.login_required &&
+      typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new Event('langfixer:locked'))
+    }
+    return Promise.reject(e)
+  },
+)
 
 /** responseType: 'blob' 时错误响应体也是 Blob → 读回文本还原为常规 Error（保留服务端错误消息） */
 async function normalizeBlobError(e: unknown): Promise<unknown> {
@@ -163,7 +193,7 @@ const tauri = (
   typeof window !== 'undefined' ? (window as unknown as { __TAURI_INTERNALS__?: TauriInternals }) : undefined
 )?.__TAURI_INTERNALS__
 const inTauri = !!tauri
-/** 是否运行在 Tauri 桌面端（前端自适应布局 / 面板分支用） */
+/** 是否运行在 Tauri 桌面端（前端自适应布局 / 面板分支用；store 据此选进度事件通道：事件订阅 vs 轮询） */
 export const isTauri = inTauri
 
 /** 订阅 Tauri 事件（原生菜单栏 menu-action / 窗口拖放 tauri://drag-drop）。
@@ -247,15 +277,155 @@ function toHistoryListItem(h: HistoryDetail): HistoryListItem {
   }
 }
 
+/** 验证机制身份视图（GET /auth/whoami）：门禁页与面板收口都读它 */
+export interface Whoami {
+  /** 网关形态（`LANGFIXER_GATEWAY=1`）；单机形态 false */
+  gateway: boolean
+  /** 超管（超管密钥或其会话） */
+  admin: boolean
+  /** 当前评审令牌 id（超管 / 未登录为 null） */
+  token_id: string | null
+  /** 凭证已验证：false 时产品界面不展示（先过门禁页） */
+  authenticated: boolean
+  /** 产品界面是否需要验证：网关形态恒真；单机形态看登录门是否开启（默认开启） */
+  locked: boolean
+  /** 服务端接受用户名密码登录（内建 admin 账号）；门禁页据此展示账号表单 */
+  password_login?: boolean
+  /** 超管密钥来源：`env` = `LANGFIXER_ADMIN_TOKEN` 持有；`generated` = 安装时生成落 gw_meta。
+   *  仅对已验证的超管回（匿名探测不带此字段），桌面端 invoke 亦不带 */
+  admin_token_source?: 'env' | 'generated'
+  /** 当前超管密钥指纹（SHA-256 前 8 位 hex），用于核对「这台实例活的是哪把」，非密钥本身 */
+  admin_token_fp?: string | null
+}
+
 export const api = {
-  /** GET /gec/languages — 语言 / 引擎元信息（桌面端：invoke('languages')）
-   *  前端语言切换器据此展示真实引擎信息 */
+  // ── 验证机制：token 门禁 / 免注册会话 / 管理面密钥 ──────────────────────
+  /** GET /auth/whoami — 身份探测（未登录也回 200，供门禁页判断，不抛 401）；
+   *  桌面端 invoke 不走 HTTP、无门禁，恒为已验证超管 */
+  whoami(): Promise<Whoami> {
+    if (inTauri)
+      return Promise.resolve({
+        gateway: false,
+        admin: true,
+        token_id: null,
+        authenticated: true,
+        locked: false,
+      })
+    return http.get<Whoami>('/auth/whoami').then((r) => r.data)
+  },
+
+  /** POST /auth/session — 一枚密钥（评审或超管）换短时效会话 cookie（body `{"token":...}`） */
+  login(token: string): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
+    return http.post('/auth/session', { token }).then((r) => r.data)
+  },
+
+  /** POST /auth/session — 用户名密码登录（单机形态登录门的内建 admin 账号） */
+  loginPassword(
+    username: string,
+    password: string,
+  ): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
+    return http.post('/auth/session', { username, password }).then((r) => r.data)
+  },
+
+  /** POST /auth/password — 改管理员密码（需已验证的管理员登录态） */
+  changePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无密码体系'))
+    return http.post('/auth/password', { old_password: oldPassword, new_password: newPassword }).then((r) => r.data)
+  },
+
+  /** POST /auth/logout — 结束当前会话（服务端即刻失效） */
+  logout(): Promise<void> {
+    if (inTauri) return Promise.resolve()
+    return http.post('/auth/logout').then(() => undefined)
+  },
+
+  /** GET /admin/tokens — 密钥清单 + 用量（仅超管；明文不回）。
+   *  用量取自日账 `gw_usage`：`used_retained` 是**保留期内**累计（旧账由清理任务删除） */
+  adminTokens(): Promise<
+    {
+      id: string
+      label: string
+      quota_chars: number
+      revoked: boolean
+      used_today: number
+      used_retained: number
+      days_used: number
+      last_day: number | null
+      /** 调用级日志口径（含被拒请求）；老服务端无此字段 */
+      calls_today?: number
+      calls_retained?: number
+    }[]
+  > {
+    return http
+      .get<{
+        tokens: {
+          id: string
+          label: string
+          quota_chars: number
+          revoked: boolean
+          used_today: number
+          used_retained: number
+          days_used: number
+          last_day: number | null
+          calls_today?: number
+          calls_retained?: number
+        }[];
+      }>('/admin/tokens')
+      .then((r) => r.data.tokens)
+  },
+
+  /** GET /admin/stats — 概览：密钥数 / 在途会话 / 用量与调用合计 / 保留天数 */
+  adminStats(): Promise<{
+    tokens_total: number
+    tokens_active: number
+    active_sessions: number
+    chars_today: number
+    chars_retained: number
+    calls_today?: number
+    calls_retained?: number
+    retention_days: number
+  }> {
+    return http
+      .get<{
+        tokens_total: number
+        tokens_active: number
+        active_sessions: number
+        chars_today: number
+        chars_retained: number
+        calls_today?: number
+        calls_retained?: number
+        retention_days: number
+      }>('/admin/stats')
+      .then((r) => r.data)
+  },
+
+  /** POST /admin/tokens — 签发一枚评审密钥（明文只在这一次响应里出现） */
+  adminIssueToken(label: string, quotaChars: number): Promise<{ id: string; token: string }> {
+    return http
+      .post<{ id: string; token: string }>('/admin/tokens', {
+        label,
+        quota_chars: quotaChars,
+      })
+      .then((r) => r.data)
+  },
+
+  /** POST /admin/tokens/:id/revoke — 吊销（在途会话即刻失效） */
+  adminRevokeToken(id: string): Promise<void> {
+    return http
+      .post(`/admin/tokens/${encodeURIComponent(id)}/revoke`)
+      .then(() => undefined)
+  },
+
+
   listLanguages(): Promise<LanguageInfo[]> {
     if (inTauri) return tauri!.invoke('languages').then((r) => r as LanguageInfo[])
     return http.get<LanguageInfo[]>('/gec/languages').then((r) => r.data)
   },
 
-  /** POST /gec/detect（桌面端：invoke detect）；支持可选 category 过滤 + 漏报强制兜底（forceLlm）；
+  /** POST /gec/detect（桌面端：invoke detect）；支持可选 category 过滤 + 漏报强制兜底（forceLlm）
+   *  + 忽略缓存重检（refresh：跳过服务端 LRU / 历史复用，强制实检）；
    *  Web 端支持 signal 取消；level>=2 或 forceLlm 时超时放宽到 180s（LLM 兜底常超 60s） */
   detect(
     lang: string,
@@ -263,7 +433,7 @@ export const api = {
     category?: string,
     level?: number,
     forceLlm?: boolean,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; progressId?: string; refresh?: boolean },
   ): Promise<DetectResponse> {
     if (inTauri)
       return tauri!
@@ -273,15 +443,35 @@ export const api = {
           category: category ?? null,
           level: level ?? null,
           forceLlm: forceLlm ?? false,
+          refresh: opts?.refresh ?? false,
+          progressId: opts?.progressId ?? null,
         })
         .then((r) => r as DetectResponse)
     const url = category ? `/gec/detect?category=${encodeURIComponent(category)}` : '/gec/detect'
     return http
       .post<DetectResponse>(
         url,
-        { lang, text, level: level ?? 1, force_llm: forceLlm ?? false },
-        { signal: opts?.signal, timeout: forceLlm || (level ?? 1) >= 2 ? 180_000 : 60_000 },
+        {
+          lang,
+          text,
+          level: level ?? 1,
+          force_llm: forceLlm ?? false,
+          ...(opts?.refresh ? { refresh: true } : {}),
+        },
+        {
+          signal: opts?.signal,
+          timeout: forceLlm || (level ?? 1) >= 2 ? 180_000 : 60_000,
+          ...(opts?.progressId ? { headers: { 'X-Progress-Id': opts.progressId } } : {}),
+        },
       )
+      .then((r) => r.data)
+  },
+
+  /** GET /gec/detect/progress?id= —— 检测阶段事件快照（仅 Web；桌面端经 detect:stage 事件直达）。
+   *  found=false 表示后端尚未登记（POST 刚发出）或条目已回收，继续轮询即可 */
+  detectProgress(id: string): Promise<DetectProgress> {
+    return http
+      .get<DetectProgress>('/gec/detect/progress', { params: { id }, timeout: 5_000 })
       .then((r) => r.data)
   },
 
@@ -682,7 +872,7 @@ export const api = {
     text: string,
     sessionId?: string,
     level?: number,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; progressId?: string },
   ): Promise<AnalyzeResult> {
     if (inTauri)
       return tauri!
@@ -692,6 +882,7 @@ export const api = {
           sessionId: sessionId ?? null,
           level: level ?? null,
           forceLlm: false,
+          progressId: opts?.progressId ?? null,
         })
         .then((r) => r as AnalyzeResult)
     return http
@@ -703,7 +894,11 @@ export const api = {
           session_id: sessionId ?? null,
           level: level ?? 1,
         },
-        { signal: opts?.signal, timeout: (level ?? 1) >= 2 ? 180_000 : 60_000 },
+        {
+          signal: opts?.signal,
+          timeout: (level ?? 1) >= 2 ? 180_000 : 60_000,
+          ...(opts?.progressId ? { headers: { 'X-Progress-Id': opts.progressId } } : {}),
+        },
       )
       .then((r) => r.data)
   },
@@ -992,6 +1187,27 @@ export const api = {
       .then((r) => r.data)
   },
 
+  /** GET /gec/deps — 依赖服务状态快照（服务端启动自检 + 主动拉起结果）；
+   *  桌面端引擎进程内运行、无独立依赖服务，回退空快照 */
+  listDeps(): Promise<DepsSnapshot> {
+    if (inTauri)
+      return Promise.resolve({ updated_at: '', items: [] } as DepsSnapshot)
+    return http.get<DepsSnapshot>('/gec/deps').then((r) => r.data)
+  },
+
+  /** POST /gec/deps/start — 拉起单个本机可管依赖（decision / l3 / char_gate）；
+   *  侧车加载 torch 模型可达分钟级，超时放宽到 10 分钟 */
+  startDep(id: string): Promise<DepStatus> {
+    return http
+      .post<DepStatus>('/gec/deps/start', { id }, { timeout: 600000 })
+      .then((r) => r.data)
+  },
+
+  /** POST /gec/deps/recheck — 重新探测（可指定单项 id；不拉起、不改配置） */
+  recheckDeps(id?: string): Promise<DepsSnapshot> {
+    return http.post<DepsSnapshot>('/gec/deps/recheck', { id: id ?? null }).then((r) => r.data)
+  },
+
   /** POST /gec/explain — LLM 个性化讲解
    *  未配置 LLM_API_KEY 时服务端返回 503，此处 resolve(null)，调用方回退静态建议；
    *  桌面端走 invoke('explain')（未配置 LLM 时同样 resolve(null)） */
@@ -1011,6 +1227,35 @@ export const api = {
     } catch (e) {
       // 服务端 ApiError::ServiceUnavailable → 503（LLM 未配置）
       if (axios.isAxiosError(e) && e.response?.status === 503) return null
+      throw e
+    }
+  },
+
+  /** POST /gec/recheck — 对全文中某一句做定向 LLM 复查（「待复查」条目的 LLM 复查按钮）。
+   *  span 为该句在 text 中的字节区间（与 ErrorItem.span 同语义）。
+   *  失败（未配置 / 网关报错）抛错并携带服务端原因，由调用方展示并可重试；
+   *  桌面端走 invoke('recheck')，参数名 camelCase，返回 JSON 字符串。 */
+  async llmRecheck(
+    lang: string,
+    text: string,
+    span: [number, number],
+  ): Promise<ErrorItem[]> {
+    if (inTauri) {
+      const raw = await tauri!.invoke('recheck', { lang, text, span })
+      return JSON.parse(raw as string) as ErrorItem[]
+    }
+    try {
+      const r = await http.post<{ errors: ErrorItem[] }>(
+        '/gec/recheck',
+        { lang, text, span },
+        { timeout: 120000 },
+      )
+      return r.data.errors
+    } catch (e) {
+      // 服务端 ApiError 体是 { error: 人话原因 }；axios 自带的 message 只有状态码，
+      // 换成 body 里的原因供 store 展示（如「AI 复查未配置…」）
+      const body = (e as { response?: { data?: { error?: string } } })?.response?.data
+      if (body?.error) throw new Error(body.error)
       throw e
     }
   },
@@ -1248,6 +1493,14 @@ export const api = {
     return http.get<EvalReport>(`/gec/eval/report/${id}`).then((r) => r.data)
   },
 
+  /** GET /gec/eval/layers — 各层贡献度报告（服务端直读报告档案，不需测评服务；
+   *  桌面端不随包分发评测档案，明确报不支持而非静默空列表） */
+  getEvalLayers(): Promise<EvalLayersResponse> {
+    if (inTauri)
+      return Promise.reject(new Error('桌面端不分发评测报告档案；请在 Web / 网关形态查看各层贡献度'))
+    return http.get<EvalLayersResponse>('/gec/eval/layers').then((r) => r.data)
+  },
+
   // ─────────────────────────── 反思中心（P1） ───────────────────────────
 
   /** POST /gec/reflect/run — 生成反思报告（反馈聚合 + 测评证据 → 报告 + 建议队列） */
@@ -1433,6 +1686,20 @@ export const api = {
   roundReport(id: number): Promise<RoundReport> {
     if (inTauri) return tauri!.invoke('round_report', { id }).then((r) => r as RoundReport)
     return http.get<RoundReport>(`/gec/round/${id}/report`).then((r) => r.data)
+  },
+
+  // ── §7 可观测性：request_summary 账本只读面（纯 GET，无副作用） ──────────────
+
+  /** GET /gec/observability/alerts — 24h 窗口两路告警（完整性 / 质量） */
+  observabilityAlerts(): Promise<ObservabilityAlerts> {
+    return http.get<ObservabilityAlerts>('/gec/observability/alerts').then((r) => r.data)
+  },
+
+  /** GET /gec/observability/summary?days=N — day × 规则指纹聚合看板数据 */
+  observabilitySummary(days: number): Promise<ObservabilityDayRow[]> {
+    return http
+      .get<ObservabilityDayRow[]>(`/gec/observability/summary?days=${days}`)
+      .then((r) => r.data)
   },
 
   // ── 载体（图片）审校：MULTIMODAL.md §7 面板 / §8 设置 ──────────────────────
@@ -1646,6 +1913,45 @@ export const api = {
     a.click()
     URL.revokeObjectURL(url)
     return { filename, size_bytes: (resp.data as Blob).size }
+  },
+
+  // ── 文档级审校作业（doc-detect-flow）──────────────────────────
+  // 说明：桌面端 Tauri 命令镜像暂未提供，统一走内嵌 api-server HTTP
+
+  docJobCreate(body: {
+    lang: string
+    text: string
+    budget?: 'full' | 'economical'
+    cache?: boolean
+  }): Promise<DocJobCreated> {
+    return http.post<DocJobCreated>('/gec/doc-jobs', body, { timeout: 120000 }).then((r) => r.data)
+  },
+  docJobList(limit = 20): Promise<{ jobs: DocJobListItem[] }> {
+    return http
+      .get<{ jobs: DocJobListItem[] }>('/gec/doc-jobs', { params: { limit } })
+      .then((r) => r.data)
+  },
+  docJobGet(id: string): Promise<DocJobDetail> {
+    return http.get<DocJobDetail>(`/gec/doc-jobs/${encodeURIComponent(id)}`).then((r) => r.data)
+  },
+  docJobResults(id: string): Promise<DocJobResults> {
+    return http
+      .get<DocJobResults>(`/gec/doc-jobs/${encodeURIComponent(id)}/results`)
+      .then((r) => r.data)
+  },
+  docJobCancel(id: string): Promise<{ ok: boolean }> {
+    return http
+      .post<{ ok: boolean }>(`/gec/doc-jobs/${encodeURIComponent(id)}/cancel`)
+      .then((r) => r.data)
+  },
+  docJobRetry(id: string): Promise<{ ok: boolean; reset_chunks: number }> {
+    return http
+      .post<{ ok: boolean; reset_chunks: number }>(`/gec/doc-jobs/${encodeURIComponent(id)}/retry`)
+      .then((r) => r.data)
+  },
+  /** SSE 进度流 URL（EventSource 直连；断线自动重连由调用方处理） */
+  docJobEventsUrl(id: string): string {
+    return `/gec/doc-jobs/${encodeURIComponent(id)}/events`
   },
 }
 

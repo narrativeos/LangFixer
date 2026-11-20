@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useGecStore } from '../stores/gec'
+import { LEmpty } from '../ui'
 import type { ErrorItem } from '../types'
 
 const store = useGecStore()
@@ -8,7 +9,7 @@ const store = useGecStore()
 /** 预览片段：纯文本 或 带高亮标记的片段（对应 store.errors 下标） */
 interface Segment {
   text: string
-  mark?: { index: number; category: string; correction: string | null }
+  mark?: { index: number; category: string; confidence: number; correction: string | null }
 }
 
 /** 将待检测文本切分为「普通文本 / 高亮片段」序列。
@@ -20,7 +21,7 @@ const segments = computed<Segment[]>(() => {
   if (store.errors.length === 0) return [{ text }]
 
   const stale = store.resultsStale
-  const marks: { start: number; end: number; index: number; category: string; correction: string | null }[] = []
+  const marks: { start: number; end: number; index: number; category: string; confidence: number; correction: string | null }[] = []
   store.errors.forEach((e: ErrorItem, i: number) => {
     let start = e.span?.[0] ?? -1
     let end = e.span?.[1] ?? -1
@@ -31,7 +32,14 @@ const segments = computed<Segment[]>(() => {
       start = idx
       end = idx + e.original.length
     }
-    marks.push({ start, end, index: i, category: e.category || 'other', correction: e.correction })
+    marks.push({
+      start,
+      end,
+      index: i,
+      category: e.category || 'other',
+      confidence: e.confidence ?? 1,
+      correction: e.correction,
+    })
   })
   if (marks.length === 0) return [{ text }]
 
@@ -49,37 +57,43 @@ const segments = computed<Segment[]>(() => {
 })
 
 const hasMarks = computed(() => store.errors.length > 0)
+
+/** 类型定线型由 cat-* 类给出;置信定浓度(ui.css m-low/m-mid) */
+function confClass(c: number): string {
+  if (c < 0.5) return 'm-low'
+  if (c < 0.8) return 'm-mid'
+  return ''
+}
+
+const legend: { cat: string; label: string }[] = [
+  { cat: 'spelling', label: '拼写' },
+  { cat: 'grammar', label: '语法' },
+  { cat: 'punctuation', label: '标点' },
+  { cat: 'style', label: '风格' },
+]
 </script>
 
 <template>
-  <el-card shadow="never" class="preview-card">
-    <template #header>
-      <div class="card-header">
-        <span class="card-title">内容预览</span>
-        <span class="sub">检测后高亮相关内容，点击片段定位右侧错误</span>
-        <span class="spacer"></span>
-        <el-tag v-if="store.resultsStale" type="warning" size="small" round>结果已过期</el-tag>
-        <el-tag v-if="hasMarks" type="danger" size="small" round>
-          {{ store.errors.length }} 处错误
-        </el-tag>
-      </div>
-    </template>
-
+  <div class="preview-panel">
     <div v-if="!store.text" class="preview-empty">
-      <el-empty description="在左侧输入或粘贴待检测文本，此处实时预览" :image-size="72" />
+      <LEmpty text="还没有文本" hint="切到「编辑」输入或粘贴待检测文本，这里会展示带标记的校样。" />
     </div>
     <template v-else>
-      <div v-if="hasMarks" class="preview-legend">
-        <span class="lg"><i class="sw sw-grammar"></i>语法</span>
-        <span class="lg"><i class="sw sw-spelling"></i>拼写</span>
-        <span class="lg"><i class="sw sw-typography"></i>标点</span>
-        <span class="lg"><i class="sw sw-style"></i>风格</span>
+      <div class="preview-legend" aria-hidden="false">
+        <span v-for="l in legend" :key="l.cat" class="lg">
+          <mark class="l-canvas-text" :class="`cat-${l.cat}`">{{ l.label }}</mark>
+        </span>
+        <span v-if="hasMarks" class="lg-count">{{ store.errors.length }} 处错误</span>
       </div>
-      <div class="preview-text">
+      <div class="l-canvas-text preview-text" :class="{ 'is-stale': store.resultsStale }">
         <template v-for="(seg, i) in segments" :key="i">
           <mark
             v-if="seg.mark"
-            :class="['hl', 'hl-' + seg.mark.category, { stale: store.resultsStale }]"
+            :class="[
+              `cat-${seg.mark.category}`,
+              confClass(seg.mark.confidence),
+              { 'is-stale': store.resultsStale },
+            ]"
             :title="seg.mark.correction ? '建议修正：' + seg.mark.correction : '错误位置'"
             role="button"
             tabindex="0"
@@ -90,14 +104,46 @@ const hasMarks = computed(() => store.errors.length > 0)
         </template>
       </div>
     </template>
-  </el-card>
+  </div>
 </template>
 
 <style scoped>
-/* 结果过期：高亮降饱和 + 虚线下划线，提示标记基于修改前文本 */
-.preview-text mark.stale {
-  background: var(--surface-2);
-  color: var(--text-2);
-  box-shadow: inset 0 -2px 0 0 var(--border-strong);
+.preview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  flex: 1;
+}
+.preview-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.lg {
+  display: inline-flex;
+  align-items: center;
+}
+.lg-count {
+  margin-left: auto;
+  color: var(--danger);
+  font-weight: 600;
+}
+.preview-text {
+  padding: var(--space-2) 0;
+  min-height: 40vh;
+}
+html.desktop .preview-text {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 结果过期：标记整体降浓度,提示基于修改前文本 */
+.preview-text mark.is-stale {
+  opacity: 0.45;
+  text-decoration-style: dotted;
 }
 </style>

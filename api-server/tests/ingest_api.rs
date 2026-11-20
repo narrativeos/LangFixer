@@ -49,7 +49,8 @@ async fn build_server() -> (String, Arc<AppState>, std::path::PathBuf) {
     }
     let db_file = root.join("langfixer.db");
     let state = Arc::new(AppState::from_env(Some(&tables_dir), Some(&db_file)));
-    let app = routes::router(state.clone()).layer(middleware::cors::cors_layer());
+    let app = middleware::auth::with_standalone_tenant(routes::router(state.clone()))
+        .layer(middleware::cors::cors_layer());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());

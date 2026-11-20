@@ -8,8 +8,10 @@
  * - 「进化中心」是干什么的
  *
  * 首次进入检测视图时弹出三步引导（localStorage 记录，关闭后不再出现）。
+ * 产品引导对话框属弹窗配额内（LDialog / 原生 dialog），内部不再嵌套任何对话框。
  */
 import { ref, watch } from 'vue'
+import { LButton, LCheckbox, LDialog } from '../ui'
 import { useGecStore } from '../stores/gec'
 
 const props = defineProps<{ visible: boolean }>()
@@ -27,6 +29,9 @@ watch(
 )
 
 function finish() {
+  // 幂等：footer 与 Esc/遮罩关闭都汇到这里，done 只发一次
+  if (!shown.value) return
+  shown.value = false
   // 工作场景落位（能力位）：引导只覆盖学习 / 编校；运营不在引导中出现
   store.setCap('learning', scenarioLearning.value)
   store.setCap('proofreading', scenarioProofreading.value)
@@ -36,6 +41,10 @@ function finish() {
 // 首次引导的场景选择：默认取当前能力位（重复打开引导时不改已保存偏好）
 const scenarioLearning = ref(store.caps.learning)
 const scenarioProofreading = ref(store.caps.proofreading)
+
+function onVisible(v: boolean) {
+  if (!v) finish()
+}
 
 function goSettings() {
   store.requestNav('settings')
@@ -48,13 +57,7 @@ function goEvolution() {
 </script>
 
 <template>
-  <el-dialog
-    v-model="shown"
-    title="欢迎使用 LangFixer"
-    width="620px"
-    :close-on-click-modal="false"
-    :before-close="() => finish()"
-  >
+  <LDialog :visible="shown" title="欢迎使用 LangFixer" width="620px" @update:visible="onVisible">
     <p class="onboard-lead">
       多语言语法错误检测 × ZEN 决策表教育归因。三步上手：
     </p>
@@ -63,7 +66,7 @@ function goEvolution() {
         <b>开始检测</b>
         <span>
           在左侧「文本输入」粘贴或输入待检测文本，点
-          <el-button size="small" type="primary" plain>检测 + 归因</el-button>
+          <LButton size="sm" variant="primary">检测 + 归因</LButton>
           —— 中列实时高亮错误位置，右列查看检测结果与教育归因（错误为什么发生）。
         </span>
       </li>
@@ -71,7 +74,7 @@ function goEvolution() {
         <b>按需增强能力</b>
         <span>
           顶部「检测服务」显示各项检测能力的可用情况。想启用 AI 复查 / 快速定案，去
-          <el-button size="small" @click="goSettings">设置</el-button>
+          <LButton size="sm" @click="goSettings">设置</LButton>
           配置对应服务（可先点「测试全部」检查连通性）。不配置也不影响基础检测——本地检查始终可用。
           注意：启用 AI 复查后，检测的文本会发送给你配置的 AI 服务，请使用可信的服务。
         </span>
@@ -80,7 +83,7 @@ function goEvolution() {
         <b>让系统自我改进</b>
         <span v-if="store.caps.ops">
           使用「检测」积累的反馈可汇入
-          <el-button size="small" @click="goEvolution">进化中心</el-button>
+          <LButton size="sm" @click="goEvolution">进化中心</LButton>
           ：测评（量化能力）→ 反思（发现问题与建议）→ 训练（应用改进）→ 贡献与轮次（验证效果）。
         </span>
         <span v-else>
@@ -93,23 +96,54 @@ function goEvolution() {
       <b>我的工作场景</b>
       <span class="sub">（之后可在「设置 → 工作场景与角色」调整）</span>
       <div class="onboard-scenario-opts">
-        <el-checkbox v-model="scenarioLearning">学习语言（练习与复习、个性化讲解）</el-checkbox>
-        <el-checkbox v-model="scenarioProofreading">做编校工作（载体审校、正误表导出）</el-checkbox>
+        <LCheckbox v-model="scenarioLearning" label="学习语言（练习与复习、个性化讲解）" />
+        <LCheckbox v-model="scenarioProofreading" label="做编校工作（载体审校、正误表导出）" />
       </div>
     </div>
     <template #footer>
-      <el-button type="primary" @click="finish">开始使用</el-button>
+      <LButton variant="primary" @click="finish">开始使用</LButton>
     </template>
-  </el-dialog>
+  </LDialog>
 </template>
 
 <style scoped>
-.onboard-lead { margin: 0 0 10px; color: var(--el-text-color-regular); }
-.onboard-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 12px; }
-.onboard-steps li { display: flex; gap: 8px; line-height: 1.7; font-size: 13.5px; }
-.onboard-steps li > b { flex-shrink: 0; }
-.onboard-steps li > span { color: var(--el-text-color-regular); }
-.onboard-scenario { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--el-border-color); font-size: 13.5px; }
-.onboard-scenario .sub { color: var(--el-text-color-secondary); font-size: 12px; }
-.onboard-scenario-opts { display: flex; gap: 18px; margin-top: 6px; }
+.onboard-lead {
+  margin: 0 0 var(--space-3);
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+}
+.onboard-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.onboard-steps li {
+  display: flex;
+  gap: var(--space-2);
+  line-height: var(--lh-body);
+  font-size: var(--fs-ui);
+}
+.onboard-steps li > b {
+  flex-shrink: 0;
+}
+.onboard-steps li > span {
+  color: var(--text-2);
+}
+.onboard-scenario {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+  font-size: var(--fs-ui);
+}
+.onboard-scenario .sub {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.onboard-scenario-opts {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-1);
+}
 </style>

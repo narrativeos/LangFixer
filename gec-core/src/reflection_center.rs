@@ -283,10 +283,15 @@ pub async fn fetch_eval_evidence(
     lang: &str,
     report_id: Option<&str>,
 ) -> Option<EvalEvidence> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10));
+    #[cfg(test)]
+    {
+        // mock 全在 127.0.0.1，不走系统代理，见 statistical.rs 根因注释
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().ok()?;
     let list: serde_json::Value = client
         .get(format!("{endpoint}/eval/reports"))
         .send()

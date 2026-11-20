@@ -4,6 +4,7 @@ import {
   confBand,
   consensusText,
   instanceContext,
+  isVerdictOnly,
 } from './errorDisplay'
 import type { ErrorItem } from '../types'
 
@@ -51,6 +52,21 @@ describe('instanceContext', () => {
   })
   it('span 越界回落 original（不抛错）', () => {
     expect(instanceContext('abc', mk({ span: [1, 99], original: '??' }))).toBe('??')
+  })
+})
+
+describe('isVerdictOnly', () => {
+  it('决策来源且无改正 → 句级怀疑（待复查）', () => {
+    expect(isVerdictOnly(mk({ source: 'decision', correction: null }))).toBe(true)
+    expect(isVerdictOnly(mk({ source: 'decision', correction: '' }))).toBe(true)
+  })
+  it('决策来源但带改正（如 LLM 合流后）→ 不是句级怀疑', () => {
+    expect(isVerdictOnly(mk({ source: 'decision', correction: '改正' }))).toBe(false)
+  })
+  it('非决策来源不进此分支', () => {
+    expect(isVerdictOnly(mk({ source: 'rule', correction: null }))).toBe(false)
+    expect(isVerdictOnly(mk({ source: 'llm', correction: null }))).toBe(false)
+    expect(isVerdictOnly(mk({ source: undefined, correction: null }))).toBe(false)
   })
 })
 

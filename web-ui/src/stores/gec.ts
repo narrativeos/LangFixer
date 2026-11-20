@@ -1,17 +1,33 @@
 import { errMsg, isCancelError } from '../lib/err'
+import { isVerdictOnly } from '../lib/errorDisplay'
 import { applyCorrections } from '../lib/correct'
 import { loadCaps, saveCaps, type Caps } from '../lib/caps'
+import {
+  applyStageEvents,
+  markStagesCanceled,
+  stageViewsFromTimings,
+  type StageView,
+} from '../lib/pipeline'
 import { defineStore } from 'pinia'
-import { api } from '../api/client'
+import { api, isTauri } from '../api/client'
 import type {
   AnalyzedError,
   DecisionTableMeta,
+  DepStatus,
   DetectTimings,
   LayerReport,
+  QualityReport,
   ErrorItem,
   ExplainResponse,
   LanguageInfo,
+  StageEvent,
 } from '../types'
+
+/** 分阶段进度条：Web 端轮询定时器 + 在飞标记（模块级，不响应式） */
+let progressTimer: number | undefined
+let progressPolling = false
+/** 轮询发起序号：后发结果覆盖先发（响应乱序时陈旧快照不得落库） */
+let pollSeq = 0
 
 export interface LlmExplainState {
   loading: boolean
@@ -84,6 +100,9 @@ export const useGecStore = defineStore('gec', {
     llmConfirmedClean: false,
     /** 本次检测的层级贡献摘要（ResultsPanel「检测路径」；未实际检测时为 null） */
     layers: null as LayerReport[] | null,
+    /** 本次检测结果质量自描述（partial/degraded 时 ResultsPanel 展示徽标；
+     *  缓存/历史回放与旧服务端为 null；仅 full 的结果会进后端缓存/历史） */
+    quality: null as QualityReport | null,
     tables: [] as DecisionTableMeta[],
     activeLang: 'zh',
     tableDraft: '',
@@ -101,9 +120,11 @@ export const useGecStore = defineStore('gec', {
     targetLanguage: '',
     /** 分类过滤（纯前端展示过滤，作用于检测结果列表；空 = 不过滤；不再作为检测参数下发） */
     categoryFilter: '',
+    /** 细分类型过滤（error_type 维度，分类过滤之下的第二级；空 = 不过滤） */
+    typeFilter: '',
     /** 检查模式（内部 level，对用户展示为 快速检查/标准检查/深度扫描）：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底；L3 未启用时回退决策模型弃权语义）；3 = + 强制 LLM */
     level: draft.level ?? 1,
-    /** 决策模型（vegaml）层启用状态——该层已退役出产品路径（EVOLUTION.md §13 #10）；
+    /** 决策模型（vegaml）层启用状态——该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）；
      *  仅当实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启时为 true（来自 GET /gec/settings 的 decision.enabled；
      *  P0.5 起默认关闭，opt-in；与检测页「标准检查」对齐：L3 未启用时其弃权兜底依赖它） */
     decisionEnabled: false,
@@ -111,6 +132,13 @@ export const useGecStore = defineStore('gec', {
     llmEnabled: false,
     /** 嵌入引擎已配置（来自 GET /gec/settings 的 embedding.endpoint；未配置时 ②.5 知识向量召回静默跳过） */
     embeddingConfigured: false,
+    /** 依赖服务状态快照（GET /gec/deps；运营台「依赖服务」卡片与状态条 chip 用；
+     *  桌面端 / 网关受限形态为空数组） */
+    deps: [] as DepStatus[],
+    /** 拉起中轮询定时器：启动监督是异步的，快照里有 starting 就隔几秒重拉直到落定，
+     *  否则登录后状态条会停在「拉起中」，直到进一次设置页才刷新 */
+    depsPollTimer: null as ReturnType<typeof setTimeout> | null,
+    depsPollTries: 0,
     /** L3 特征模型层已启用（来自 GET /gec/settings 的 l3.enabled；三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
      *  服务端默认开启，旧设置文件缺失该字段时按开启处理） */
     l3Enabled: true,
@@ -130,6 +158,24 @@ export const useGecStore = defineStore('gec', {
     /** 本次检测各阶段计时（detect / detectLlm / analyze 成功后保存；
      *  ResultsPanel 据此渲染「本次管线」摘要：哪些层实际跑了 / 各层耗时） */
     timings: null as DetectTimings | null,
+    /** 分阶段进度条实时状态（header 下方 StageProgress 组件数据面）：
+     *  beginDetect 起新 id + 开始跟踪；finishDetect 收尾；Web 端轮询 / 桌面端事件推送 */
+    progress: {
+      id: '',
+      active: false,
+      stages: [] as StageView[],
+      events: [] as StageEvent[],
+      finished: false,
+      /** 检测被取消 / 出错且未收到 End 事件 */
+      canceled: false,
+      /** 缓存 / 历史命中：无阶段事件，瞬时返回 */
+      instant: false,
+      totalMs: null as number | null,
+      startedAt: 0,
+      /** 发起时的检查模式（StageProgress 据此区分 LLM 层语义：标准模式是
+       *  可选增强层，深度扫描是必需层）；0 = 尚未发起 */
+      level: 0,
+    },
     llm: {
       loading: false,
       explanation: '',
@@ -137,6 +183,16 @@ export const useGecStore = defineStore('gec', {
       meta: null,
       fallback: false,
     } as LlmExplainState,
+    /** 句级「待复查」条目的 LLM 复查状态（key = errors 下标）：
+     *  loading 进行中 / clean 已复查无错 / error 失败原因可重试；
+     *  复查有发现时条目合流成可操作项，该键移除（其余键随 splice 平移） */
+    verdictRecheck: {} as Record<
+      number,
+      { state: 'loading' | 'clean' | 'error'; msg?: string }
+    >,
+    /** 「复查全部」批量态（ErrorList 汇总条按钮）：running = 串行批量在飞；
+     *  done/total = 已送检句数 / 发起时待送句数（按钮进度文案用） */
+    recheckAll: { running: false, done: 0, total: 0 },
     /** 结果快照：检测成功时的 text / lang（resultsStale 判定基准；null = 尚无结果） */
     resultText: null as string | null,
     resultLang: '',
@@ -188,6 +244,26 @@ export const useGecStore = defineStore('gec', {
         // 拉取失败时保持空列表，Editor 会回退到默认文案
       }
     },
+    /** 拉取依赖服务状态快照（GET /gec/deps；失败静默，面板下次进入时重拉） */
+    async loadDeps() {
+      try {
+        this.deps = (await api.listDeps()).items
+      } catch {
+        // 后端不支持 /gec/deps（旧版）时保持空，面板与 chip 不渲染
+      }
+      // 有服务在拉起中：隔 4s 重拉直到落定（封顶 150 次≈ 10 分钟，防服务卡在拉起态时无限轮询）
+      if (this.depsPollTimer) clearTimeout(this.depsPollTimer)
+      this.depsPollTimer = null
+      if (this.deps.some((d) => d.state === 'starting') && this.depsPollTries < 150) {
+        this.depsPollTries += 1
+        this.depsPollTimer = setTimeout(() => {
+          this.depsPollTimer = null
+          void this.loadDeps()
+        }, 4000)
+      } else if (!this.deps.some((d) => d.state === 'starting')) {
+        this.depsPollTries = 0
+      }
+    },
     /** 拉取设置并同步检测管线各层启用状态（「检查模式」状态标签 + 检测管线提示用） */
     async loadSettings() {
       try {
@@ -221,6 +297,7 @@ export const useGecStore = defineStore('gec', {
       this.analyzed = []
       this.timings = null
       this.layers = null
+      this.quality = null
       this.detectCompleted = false
       this.fromHistory = false
       this.decisionAbstained = false
@@ -228,33 +305,207 @@ export const useGecStore = defineStore('gec', {
       this.focusErrorIndex = -1
       this.resultText = null
       this.resultLang = ''
+      this.verdictRecheck = {}
+      this.recheckAll = { running: false, done: 0, total: 0 }
       this.resetLlm()
+    },
+    /** 「待复查」句级条目的 LLM 复查（ErrorList 卡片按钮）：对该句字节区间做
+     *  定向 LLM 复查。有发现 → 替换该 verdict 项成具体可操作条目（共识 =
+     *  决策模型 + AI 复查）；无发现 → 标「已复查·无错」（大概率是句级误报，
+     *  放弃即反馈数据）；失败 → 展示原因可重试 */
+    async recheckVerdict(i: number) {
+      const e = this.errors[i]
+      if (!e) return
+      // 批量「复查全部」在飞时拒绝单句复查：两路并发 splice/键平移会互相错位
+      if (this.recheckAll.running) return
+      // 检测后文本被编辑过：span 坐标已失效，拒绝而非错检
+      if (this.resultsStale) {
+        this.verdictRecheck[i] = {
+          state: 'error',
+          msg: '检测后文本已编辑，句子定位已失效，请重新检测',
+        }
+        return
+      }
+      this.verdictRecheck[i] = { state: 'loading' }
+      try {
+        const found = await api.llmRecheck(this.lang, this.resultText ?? this.text, [
+          e.span[0],
+          e.span[1],
+        ])
+        if (found.length === 0) {
+          this.verdictRecheck[i] = { state: 'clean' }
+          return
+        }
+        const merged = found.map((f) => ({
+          ...f,
+          source: 'llm',
+          // verdict 项来自决策模型的句级判断，复查层再确认 → 多层共识
+          also_found_by: Array.from(new Set(['decision', ...(f.also_found_by ?? [])])),
+        }))
+        this.errors.splice(i, 1, ...merged)
+        // analyzed 里的 error 是另一份引用（analyze 流），必须同步 splice，
+        // 否则归因面 / 采纳与检测结果错位
+        if (this.analyzed.length > 0) {
+          this.analyzed.splice(i, 1, ...merged.map((error) => ({ error, attribution: null })))
+        }
+        // 本条退出复查面；后续键随 splice 平移，避免错位到其他卡片
+        const shift = merged.length - 1
+        const remapped: Record<number, { state: 'loading' | 'clean' | 'error'; msg?: string }> = {}
+        for (const [k, v] of Object.entries(this.verdictRecheck)) {
+          const ki = Number(k)
+          if (ki === i) continue
+          remapped[ki > i ? ki + shift : ki] = v
+        }
+        this.verdictRecheck = remapped
+      } catch (err) {
+        this.verdictRecheck[i] = { state: 'error', msg: errMsg(err) }
+      }
+    },
+    /** 「复查全部」（ErrorList 汇总条）：把所有还没有复查记录的句级「待复查」
+     *  条目逐句送 LLM 复查。串行执行且每轮现取 store.errors 下标——合流后的
+     *  splice 键平移即时生效，无需预先快照；已有记录（loading/clean/error）的
+     *  句子不重复送，失败即停（失败条目卡片上有「重试复查」，其余无记录的
+     *  句子再点一次即可继续）；标准模式拿不准的句子多时免逐条点选 */
+    async recheckAllVerdicts() {
+      if (this.recheckAll.running) return
+      // 单句复查在飞：其合流与本批并发会错位，等它落定后再发起
+      if (Object.values(this.verdictRecheck).some((v) => v.state === 'loading')) return
+      const total = this.errors.filter((e, i) => isVerdictOnly(e) && !this.verdictRecheck[i]).length
+      this.recheckAll = { running: true, done: 0, total }
+      try {
+        for (let guard = 0; guard <= total; guard++) {
+          if (this.resultsStale) break
+          const i = this.errors.findIndex(
+            (e, idx) => isVerdictOnly(e) && !this.verdictRecheck[idx],
+          )
+          if (i < 0) break
+          await this.recheckVerdict(i)
+          this.recheckAll.done += 1
+          // 失败即停：多为 LLM 不可用/限流，连送只会刷一片同样的错
+          if (this.verdictRecheck[i]?.state === 'error') break
+        }
+      } finally {
+        this.recheckAll.running = false
+      }
     },
     /** 三个检测动作的统一入口：重置状态 + 启动中止控制器 */
     beginDetect(kind: 'analyze' | 'detect' | 'detectLlm') {
       this.loading = true
       this.detectKind = kind
-      this.lastDetectKind = kind
       this.errorMsg = ''
       this.clearResults()
       detectController = new AbortController()
+      // 新检测：生成本次进度 id（随 X-Progress-Id / invoke 参数下发，事件按此过滤）
+      this.progress = {
+        id: `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        active: true,
+        stages: [],
+        events: [],
+        finished: false,
+        canceled: false,
+        instant: false,
+        totalMs: null,
+        startedAt: Date.now(),
+        level: this.level,
+      }
+      this.startProgressTracking()
     },
     finishDetect() {
+      this.stopProgressTracking()
+      if (!this.progress.finished) {
+        // 未收到 End（取消 / 出错）：未落定阶段标为已中断
+        this.progress.finished = true
+        this.progress.canceled = true
+        this.progress.totalMs = Math.max(0, Date.now() - this.progress.startedAt)
+        this.progress.stages = markStagesCanceled(this.progress.stages)
+      }
+      this.progress.active = false
       this.loading = false
       this.detectKind = null
       detectController = null
+    },
+    /** 检测成功收尾：若事件滞后于响应（或桌面端事件丢失），用 timings 合成完成视图 */
+    settleProgress(timings?: DetectTimings | null, fromHistory?: boolean) {
+      const p = this.progress
+      if (!p.active) return
+      if (fromHistory && p.stages.length === 0) p.instant = true
+      if (!p.finished) {
+        p.finished = true
+        p.totalMs = timings?.total_ms ?? Math.max(0, Date.now() - p.startedAt)
+        if (p.stages.length === 0 && timings && !fromHistory) p.stages = stageViewsFromTimings(timings)
+      }
+    },
+    /** 主动收起进度摘要（组件不再自动淡出；保留给后续手动入口，新检测也会直接重建条目） */
+    dismissProgress() {
+      this.progress.active = false
+      this.progress.finished = false
+      this.progress.id = ''
+    },
+    startProgressTracking() {
+      this.stopProgressTracking()
+      // Web 端：轻量轮询事件快照（180ms）；桌面端事件经 detect:stage 直达，无需轮询
+      if (isTauri) return
+      progressTimer = window.setInterval(() => {
+        if (this.progress.active) void this.pollProgress()
+      }, 180)
+    },
+    stopProgressTracking() {
+      if (progressTimer !== undefined) {
+        clearInterval(progressTimer)
+        progressTimer = undefined
+      }
+    },
+    async pollProgress(force = false) {
+      const p = this.progress
+      if (!p.id) return
+      if (!force && progressPolling) return
+      const seq = ++pollSeq
+      progressPolling = true
+      try {
+        const r = await api.detectProgress(p.id)
+        // 更新一轮已发起 / 新一轮检测已接管 / 本次已取消落定：陈旧响应不得落库，
+        // 否则在途轮询会把已标「中断」的阶段复活成进行中
+        if (seq !== pollSeq || this.progress.id !== p.id || this.progress.canceled) return
+        // 事件快照落库：数据流视图（applyFlowEvents）与层视图同源派生，不另设状态
+        this.progress.events = r.events
+        const v = applyStageEvents(r.events)
+        if (v.stages.length || !this.progress.finished) this.progress.stages = v.stages
+        if (r.finished || v.finished) {
+          this.progress.finished = true
+          if (v.totalMs != null) this.progress.totalMs = v.totalMs
+          if (r.events.length === 0) this.progress.instant = true
+        }
+      } catch {
+        /* 轮询瞬时失败：下个 tick 重试 */
+      } finally {
+        progressPolling = false
+      }
+    },
+    /** 桌面端 detect:stage 事件入口（App.vue 订阅后转发；按本次 id 过滤） */
+    onStageEvent(payload: unknown) {
+      const p = payload as { progress_id?: string; event?: StageEvent }
+      if (!p?.event || p.progress_id !== this.progress.id || !this.progress.active) return
+      this.progress.events.push(p.event)
+      const v = applyStageEvents(this.progress.events)
+      this.progress.stages = v.stages
+      if (v.finished) {
+        this.progress.finished = true
+        this.progress.totalMs = v.totalMs
+      }
     },
     /** 检测成功后快照结果基准（resultsStale 判定用） */
     snapshotResult() {
       this.resultText = this.text
       this.resultLang = this.lang
     },
-    async detect() {
+    async detect(opts?: { refresh?: boolean }) {
       this.beginDetect('detect')
       try {
         // 分类过滤为前端展示层行为（ErrorList 即时过滤），不再下发 category 参数
         const res = await api.detect(this.lang, this.text, undefined, this.level, false, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
+          refresh: opts?.refresh,
         })
         if (detectController?.signal.aborted) return // 已取消：结果到达也直接丢弃
         this.errors = res.errors
@@ -262,7 +513,11 @@ export const useGecStore = defineStore('gec', {
         this.fromHistory = !!res.from_history
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings, res.from_history)
+        // 最后一批阶段事件（知识召回→End）可能晚于响应前的最后一次轮询：补拉一次
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -280,13 +535,17 @@ export const useGecStore = defineStore('gec', {
         // 分类过滤为前端展示层行为（ErrorList 即时过滤），不再下发 category 参数
         const res = await api.detect(this.lang, this.text, undefined, this.level, true, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
         })
         if (detectController?.signal.aborted) return
         this.errors = res.errors
         this.decisionAbstained = !!res.decision_abstained
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings)
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -310,6 +569,7 @@ export const useGecStore = defineStore('gec', {
       try {
         const res = await api.analyze(this.lang, this.text, sessionId, this.level, {
           signal: detectController?.signal,
+          progressId: this.progress.id,
         })
         if (detectController?.signal.aborted) return
         this.analyzed = res.errors
@@ -318,7 +578,10 @@ export const useGecStore = defineStore('gec', {
         this.fromHistory = !!res.from_history
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
+        this.quality = res.quality ?? null
         this.timings = res.timings ?? null
+        this.settleProgress(res.timings, res.from_history)
+        if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true
         this.resultsVersion += 1
@@ -329,6 +592,7 @@ export const useGecStore = defineStore('gec', {
         this.finishDetect()
       }
     },
+    /** 检测后自动反馈 */
     /** 取消进行中的检测：Web 端中止请求；桌面端 invoke 无法中断 → 语义为「结果到达后丢弃」 */
     cancelDetect() {
       detectController?.abort()

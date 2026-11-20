@@ -13,6 +13,22 @@ export const ERROR_TYPE_LABELS: Record<string, string> = {
   collocation: '搭配不当',
   punctuation: '标点错误',
   anomaly: '文本污染',
+  // zh 分类法 v2（EVOLUTION.md §11.11 T 族细类型）
+  extra_char: '多字',
+  missing_char: '少字',
+  pos_error: '词性误用',
+  missing_component: '成分残缺',
+  redundant_component: '成分赘余',
+  blend: '句式杂糅',
+  conjunction: '关联词误用',
+  reference: '指代不明',
+  logic: '语义逻辑不通',
+  semantic_dup: '语义重复',
+  numeral: '数字差错',
+  quantity_unit: '量和单位',
+  serial_no: '序号检查',
+  // zh/ja 共用：中文 T 族「语序不当」与日文语序错误同一码（此前误归在日文块下）
+  word_order: '语序错误',
   // 英文管线
   article: '冠词错误',
   agreement: '一致错误',
@@ -32,7 +48,6 @@ export const ERROR_TYPE_LABELS: Record<string, string> = {
   particle: '助词错误',
   conjugation: '活用错误',
   honorific: '敬语错误',
-  word_order: '语序错误',
   // 兜底类别
   other: '其他',
 }
@@ -47,7 +62,9 @@ export const LAYER_STATUS_LABELS: Record<string, string> = {
   decided: '定案',
   abstained: '弃权',
   unavailable: '不可用已回退',
-  skipped: '未触发',
+  // skipped = 被评估但未执行（如标准模式下 LLM 门控未触发）；与 unavailable
+  // （服务失败已回退）语义不同，说「跳过」避免用户把两者混读成故障
+  skipped: '跳过',
 }
 
 export function layerStatusLabel(status: string): string {
@@ -55,14 +72,31 @@ export function layerStatusLabel(status: string): string {
 }
 
 /**
+ * 检查模式人话名（level → 展示名，唯一源）：内部 level 是实现细节，
+ * 界面统一说 快速检查/标准检查/深度扫描；描述性后缀（「（推荐）」等）留在各组件。
+ * 历史上四处硬编码已漂移风险，收敛至此（EVOLUTION 评审建议）。
+ */
+export const MODE_LABELS: Record<number, string> = {
+  1: '快速检查',
+  2: '标准检查',
+  3: '深度扫描',
+}
+export function modeLabel(level: number): string {
+  if (level >= 3) return MODE_LABELS[3]
+  if (level <= 1) return MODE_LABELS[1]
+  return MODE_LABELS[level]
+}
+
+/**
  * 层级人话词表（UX_REVIEW 原则 2「术语说人话」+ 桌面 HIG 渐进披露）：
  * 主界面（检测路径 / 历史详情 / 管线摘要）统一用它；内部键名（rule/feature/llm…）
  * 与引擎名只出现在 tooltip、设置页与运营页。一个概念一个名字：
- * decision/feature 同为「快速定案」，rule/statistical 同为「本地检查」。
+ * decision 是句级判断的「决策模型」，feature 是定案门控的「快速定案」，
+ * 两者职责不同不可同词；rule/statistical 同为「本地检查」。
  */
 export const PLAIN_LAYER_LABELS: Record<string, string> = {
   rule: '本地检查',
-  decision: '快速定案',
+  decision: '决策模型',
   knowledge: '知识查询',
   feature: '快速定案',
   llm: 'AI 复查',

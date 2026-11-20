@@ -1,0 +1,54 @@
+# 统一换行策略：仓库内存 LF，签出也用 LF。
+# 覆盖 Windows 上系统级 core.autocrlf=true，避免整文件 diff 与
+# "LF will be replaced by CRLF" 警告。
+* text=auto eol=lf
+
+# 源码与配置（显式声明，防止被误判为二进制）
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.lock      text eol=lf
+*.json      text eol=lf
+*.jsonl     text eol=lf
+*.ts        text eol=lf
+*.vue       text eol=lf
+*.css       text eol=lf
+*.js        text eol=lf
+*.html      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.py        text eol=lf
+*.txt       text eol=lf
+
+# Shell 脚本必须是 LF（CRLF 会让 bash 报 \r）
+*.sh        text eol=lf
+scripts/**  text eol=lf
+
+# 二进制：不做任何转换
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.bmp       binary
+*.ico       binary
+*.icns      binary
+*.pdf       binary
+*.docx      binary
+*.xlsx      binary
+*.pptx      binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary
+*.zip       binary
+*.gz        binary
+*.zst       binary
+*.safetensors binary
+*.gguf      binary
+*.bin       binary
+*.node      binary
+*.dll       binary
+*.exe       binary
+*.so        binary
+*.dylib     binary

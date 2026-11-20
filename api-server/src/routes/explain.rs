@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Json, State};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
+use shared_model::coarse_error_type;
 
 use crate::routes::ApiError;
 use crate::state::AppState;
@@ -61,11 +62,13 @@ fn session_context(
             let distribution = if record.error_type_counts.is_empty() {
                 None
             } else {
-                let mut items: Vec<(String, u32)> = record
-                    .error_type_counts
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect();
+                // zh 细粒度类型查询期按粗族聚合（§11.11 兼容，与错题本统计同口径）
+                let mut merged: std::collections::HashMap<String, u32> =
+                    std::collections::HashMap::new();
+                for (k, v) in &record.error_type_counts {
+                    *merged.entry(coarse_error_type(k).to_string()).or_insert(0) += *v;
+                }
+                let mut items: Vec<(String, u32)> = merged.into_iter().collect();
                 items.sort_by_key(|a| std::cmp::Reverse(a.1));
                 Some(
                     items

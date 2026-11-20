@@ -11,9 +11,10 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::{AuthContext, GatewayConfig};
 use crate::routes::ApiError;
 use crate::settings::AppSettings;
 use crate::state::AppState;
@@ -143,8 +144,8 @@ pub struct SettingsResponse {
     pub tables_dir: String,
     /// 规则词表目录（等价环境变量 `GEC_LEXICONS_DIR`；zh/en/ja 共用）
     pub lexicons_dir: String,
-    /// 决策模型（vegaml）层参数（已退役出产品路径：界面不再提供入口，
-    /// 字段保留透传以维持契约；实验路径经设置文件 / `GEC_DEC_ENABLED` 开启）
+    /// 决策模型（vegaml）层参数（**待发布**：线不放弃、待更合适的决策模型，界面
+    /// 不提供入口，字段保留透传以维持契约；实验路径经设置文件 / `GEC_DEC_ENABLED` 开启）
     pub decision: DecisionSettingsView,
     /// L3 特征模型层参数（三期：level 3 先跑特征模型，LLM 收缩到纯长尾）
     pub l3: L3SettingsView,
@@ -156,6 +157,8 @@ pub struct SettingsResponse {
     pub knowledge_enabled: bool,
     /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
     pub media: media_flow::settings::MediaSettings,
+    /// 文档级审校作业设置（块大小 / 并发 / 缓存 / 默认预算）
+    pub doc_jobs: crate::settings::DocJobSettings,
     /// 可用纠错模型预设列表（选择器；仅含 enabled 条目）
     pub models: Vec<ModelView>,
 }
@@ -185,6 +188,18 @@ pub struct UpdateSettingsRequest {
     pub knowledge_enabled: Option<bool>,
     /// 载体（图片 / PDF / Word）审校设置（部分更新；两端同构）
     pub media: Option<UpdateMediaRequest>,
+    /// 文档级审校作业设置（部分更新）
+    pub doc_jobs: Option<UpdateDocJobRequest>,
+}
+
+/// 文档级审校作业设置更新（字段均可缺省 = 保持不变）
+#[derive(Deserialize, Default)]
+pub struct UpdateDocJobRequest {
+    pub chunk_target: Option<usize>,
+    pub concurrency: Option<usize>,
+    pub cache: Option<bool>,
+    /// `full` | `economical`
+    pub budget: Option<String>,
 }
 
 /// 载体审校设置更新（字段均可缺省 = 保持不变）
@@ -283,6 +298,7 @@ fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsR
         llm_model_id: s.llm_model_id.clone(),
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
+        doc_jobs: s.doc_jobs.clone(),
         models: registry
             .enabled()
             .iter()
@@ -296,18 +312,63 @@ fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsR
     }
 }
 
-/// GET /gec/settings — 当前设置
-pub async fn get(State(state): State<Arc<AppState>>) -> Json<SettingsResponse> {
+/// GET /gec/settings — 当前设置（网关形态下非超管看不到 LLM/embedding 密钥明文）
+pub async fn get(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Json<SettingsResponse> {
     let s = state.settings.read().unwrap();
     let registry = state.model_registry.read().unwrap();
-    Json(to_response(&s, &registry))
+    let mut resp = to_response(&s, &registry);
+    if ctx.gateway && !ctx.admin {
+        mask_secrets(&mut resp);
+    }
+    Json(resp)
+}
+
+/// 非超管读设置时密钥字段只回掩码（put 未提供该字段即保持原值，故编辑走「留空不改」）
+fn mask_secrets(resp: &mut SettingsResponse) {
+    for key in [&mut resp.llm.api_key, &mut resp.embedding.api_key] {
+        if !key.is_empty() {
+            *key = "***".to_owned();
+        }
+    }
+}
+
+/// 设置写入守卫。
+/// - 网关形态：仅超级管理员密钥（或其会话）可改；
+/// - 单机形态：owner 激活（超管密钥首次登录）前本机即用户、零变化；激活后要求已验证凭证。
+fn guard_settings_write(ctx: &AuthContext, cfg: &GatewayConfig) -> Result<(), ApiError> {
+    if ctx.gateway {
+        if !ctx.admin {
+            return Err(ApiError::Forbidden(
+                "配置需要超级管理员密钥登录后修改".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let claimed = cfg
+        .store
+        .meta_get(crate::auth::META_OWNER_CLAIMED)
+        .ok()
+        .flatten()
+        .is_some();
+    if claimed && !ctx.authed {
+        return Err(ApiError::Unauthorized(
+            "本机设置已被超级管理员锁定，请先在验证页登录".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// PUT /gec/settings — 更新设置（即时生效 + 持久化）
 pub async fn put(
     State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthContext>,
+    Extension(cfg): Extension<Arc<GatewayConfig>>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> Result<Json<SettingsResponse>, ApiError> {
+    guard_settings_write(&ctx, &cfg)?;
     let mut next = state.settings.read().unwrap().clone();
     if let Some(endpoint) = req.hanlp_endpoint.clone() {
         if endpoint.trim().is_empty() {
@@ -466,7 +527,61 @@ pub async fn put(
             next.media.min_confidence = v.clamp(0.0, 1.0);
         }
     }
+    if let Some(doc_jobs) = &req.doc_jobs {
+        if let Some(v) = doc_jobs.chunk_target {
+            if !(50..=20000).contains(&v) {
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.chunk_target 应为 50-20000".into(),
+                ));
+            }
+            next.doc_jobs.chunk_target = v;
+        }
+        if let Some(v) = doc_jobs.concurrency {
+            if !(1..=64).contains(&v) {
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.concurrency 应为 1-64".into(),
+                ));
+            }
+            next.doc_jobs.concurrency = v;
+        }
+        if let Some(v) = doc_jobs.cache {
+            next.doc_jobs.cache = v;
+        }
+        if let Some(v) = &doc_jobs.budget {
+            let v = v.trim().to_ascii_lowercase();
+            if !matches!(v.as_str(), "full" | "economical") {
+                return Err(ApiError::BadRequest(
+                    "doc_jobs.budget 无效（应为 full = 全量深度复查 / economical = 低风险块跳过）"
+                        .into(),
+                ));
+            }
+            next.doc_jobs.budget = v;
+        }
+    }
     state.apply_settings(next.clone());
+    // 依赖监督联动：配置变更后后台重新探测对应服务（用户改完地址保存即见新状态，无需手动重测）
+    {
+        let touched: Vec<&'static str> = [
+            (req.decision.is_some(), "decision"),
+            (req.l3.is_some(), "l3"),
+            (req.hanlp_endpoint.is_some(), "hanlp"),
+            (req.llm.is_some(), "llm"),
+            (req.embedding.is_some(), "embedding"),
+            (req.offline_mode.is_some(), "hanlp"),
+        ]
+        .into_iter()
+        .filter(|(hit, _)| *hit)
+        .map(|(_, id)| id)
+        .collect();
+        if !touched.is_empty() {
+            let st = state.clone();
+            tokio::spawn(async move {
+                for id in touched {
+                    crate::deps::recheck(&st, id).await;
+                }
+            });
+        }
+    }
     let registry = state.model_registry.read().unwrap();
     Ok(Json(to_response(&next, &registry)))
 }
@@ -483,8 +598,12 @@ pub async fn put(
 /// - `all`：并行执行以上全部，`results` 返回逐项结果
 pub async fn test(
     State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthContext>,
+    Extension(cfg): Extension<Arc<GatewayConfig>>,
     Json(req): Json<TestSettingsRequest>,
 ) -> Result<Json<SettingsTestResponse>, ApiError> {
+    // 探测会用服务器侧密钥发起外呼，口径与设置写入一致（配置面仅超管）
+    guard_settings_write(&ctx, &cfg)?;
     let s = state.settings.read().unwrap().clone();
     let t = req.target.trim().to_lowercase();
     // (单项/汇总结果, `all` 时的逐项结果)

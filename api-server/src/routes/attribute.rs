@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Json, State};
-use shared_model::{AttributionContext, AttributionResult};
+use shared_model::{AttributionContext, AttributionResult, coarse_error_type};
 
 use crate::routes::ApiError;
 use crate::state::AppState;
@@ -18,6 +18,11 @@ pub async fn attribute(
         .tables
         .get(&ctx.lang)
         .ok_or_else(|| ApiError::NotFound(format!("语言 {} 无决策表", ctx.lang)))?;
+    // zh 细粒度类型在决策表按粗族回退（§11.11，同 analyze 路由）；en/ja 原样
+    let mut ctx = ctx;
+    if ctx.lang == "zh" {
+        ctx.error_type = coarse_error_type(&ctx.error_type).to_string();
+    }
     let mut result = engine.attribute(&ctx).await?;
     // 知识库富化（知识层开关关闭——测评消融臂——时跳过）
     if state.settings.read().unwrap().knowledge_enabled {

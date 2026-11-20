@@ -61,7 +61,74 @@ export interface DetectTimings {
   total_ms: number
 }
 
+/** 检测管线阶段事件（与 gec-core `progress::StageEvent` 序列化格式对齐；分阶段进度条数据面） */
+export type StageEvent =
+  | { kind: 'start'; stages: string[] }
+  | { kind: 'stage'; stage: string; status: 'ran' | 'partial' | 'unavailable' | 'skipped'; ms: number | null }
+  | { kind: 'chunk_begin'; stage: string; chunk: number; total: number }
+  | {
+      kind: 'chunk_end'
+      stage: string
+      chunk: number
+      total: number
+      ok: boolean
+      ms: number
+    }
+  | {
+      /** 句表（块矩阵数据面）：全文一次性切句结果；origins 与 spans 等长同序，
+       *  标注每个右边界的切分来源（块矩阵视图的块行标签） */
+      kind: 'units'
+      spans: [number, number][]
+      origins: ('punct' | 'marker' | 'pause' | 'fallback')[]
+    }
+  | { kind: 'end'; total_ms: number }
+
+/** GET /gec/detect/progress 响应：事件快照；found=false = 后端尚未登记 / 条目已回收 */
+export interface DetectProgress {
+  found: boolean
+  finished: boolean
+  events: StageEvent[]
+}
+
 /** 检测响应（API / Tauri 返回；含决策模型弃权信号 + 各阶段计时） */
+/** 检测结果质量自描述（与 gec-core `QualityReport` 对齐；回放结果不返回） */
+export interface QualityReport {
+  /** "full" | "partial" | "degraded" */
+  status: string
+  /** 已复查块 / 总块（全文路径恒 1；缺省 = 未核算） */
+  coverage?: number
+  /** 所有权图空洞字节（必须恒 0；异常即完整性回归告警） */
+  unowned_chars: number
+  /** 降级原因（如 "decision_unavailable" / "llm_partial" / "coverage:0.85"） */
+  degraded_reasons?: string[]
+}
+
+/** 段级（预算块）执行摘要（与 gec-core `ChunkStats` 对齐；回放不返回） */
+export interface ChunkStats {
+  /** "single"（全文单发）| "chunked"（预算块） */
+  mode: string
+  total: number
+  done: number
+  /** 网络/服务失败的块数（未复查） */
+  failed: number
+  /** 响应成功但解析失败的块数（同样未复查） */
+  parse_failed: number
+}
+
+/** 句级执行摘要（与 gec-core `SentenceStats` 对齐；回放不返回） */
+export interface SentenceStats {
+  total: number
+  /** 已被某复查层覆盖的句数 */
+  reviewed: number
+}
+
+/** 检测时版本向量（仅实际检测返回；与后端 version JSON 对齐） */
+export interface DetectVersion {
+  rules_fingerprint: string
+  model_version?: string | null
+  splitter: string
+}
+
 export interface DetectResponse {
   errors: ErrorItem[]
   /** 决策模型是否弃权（仅决策层启用时有意义） */
@@ -74,6 +141,14 @@ export interface DetectResponse {
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */
   layers?: LayerReport[]
+  /** 结果质量自描述（回放 / 旧服务端无；quality ≠ full 时前端展示徽标） */
+  quality?: QualityReport
+  /** 切块账本（回放不返回） */
+  chunks?: ChunkStats
+  /** 句级账本（回放不返回） */
+  sentences?: SentenceStats
+  /** 检测时版本向量（规则指纹 / 决策模型 / 切块器；仅实际检测返回） */
+  version?: DetectVersion
 }
 
 /** 检测 + 归因一站式响应（含决策模型弃权信号 + 各阶段计时） */
@@ -91,6 +166,14 @@ export interface AnalyzeResult {
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */
   layers?: LayerReport[]
+  /** 结果质量自描述（回放 / 旧服务端无） */
+  quality?: QualityReport
+  /** 切块账本（回放不返回） */
+  chunks?: ChunkStats
+  /** 句级账本（回放不返回） */
+  sentences?: SentenceStats
+  /** 检测时版本向量（仅实际检测返回） */
+  version?: DetectVersion
 }
 
 export interface RuleInfo {
@@ -714,7 +797,7 @@ export interface DecisionSettings {
   timeout_secs: number
   /** 弃权阈值：has_error_prob 低于该值视为无错误 */
   abstain_threshold: number
-  /** true = 决策层已启用。该层已退役出产品路径（EVOLUTION.md §13 #10）：默认 false，
+  /** true = 决策层已启用。该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：默认 false，
    *  仅实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启；设置界面不再提供入口 */
   enabled: boolean
 }
@@ -892,6 +975,28 @@ export interface SettingsTestResult {
   latency_ms: number
   /** target = "all" 时：全部项目的逐项结果 */
   results?: SettingsTestResult[]
+}
+
+/** 依赖服务单项状态（GET /gec/deps；监督器探测 + 主动拉起结果） */
+export interface DepStatus {
+  id: string
+  label: string
+  endpoint: string
+  /** pending 未探测 | ok 就绪 | starting 拉起中 | failed 不可用 | skipped 可选服务资源不足跳过 | off 设置关闭/未配置 */
+  state: 'pending' | 'ok' | 'starting' | 'failed' | 'skipped' | 'off'
+  /** 本机可拉起（loopback 地址 + 服务目录与 venv 存在） */
+  managed: boolean
+  /** 由监督器拉起（区别于外部已在跑） */
+  auto: boolean
+  reason?: string | null
+  /** 拉不起来时的补救指引（是否有其他机器/资源可部署） */
+  hint?: string | null
+  latency_ms: number
+}
+
+export interface DepsSnapshot {
+  updated_at: string
+  items: DepStatus[]
 }
 
 export const ATTRIBUTION_LABELS: Record<string, string> = {
@@ -1144,6 +1249,7 @@ export interface EvalJob {
     llm_enabled?: boolean
     decision_enabled?: boolean
     l3_enabled?: boolean
+    knowledge_enabled?: boolean
     embedding_configured?: boolean
   } | null
   progress: { done: number; total: number }
@@ -1213,6 +1319,14 @@ export interface EvalReportSummary {
   p_strict?: number
   r_strict?: number
   llm_reach?: number
+}
+
+/** GET /gec/eval/layers 响应（各层贡献度报告：api-server 直读报告档案，
+ *  不依赖 Python 测评服务；`skipped` = 档案内非报告 / 损坏文件的跳过条数） */
+export interface EvalLayersResponse {
+  dir: string
+  reports: EvalReport[]
+  skipped: number
 }
 
 // ─────────────────────────── 反思中心（P1） ───────────────────────────
@@ -1731,5 +1845,101 @@ export interface MediaReportResult {
   rows: Record<string, unknown>[]
   paths: { json: string; markdown: string; html: string; docx?: string | null }
   warnings: string[]
+}
+
+// ── 文档级审校作业（10 万字+，doc-detect-flow）────────────────────
+
+/** 作业块级进度（`DocJobProgress`） */
+export interface DocJobProgress {
+  total: number
+  done: number
+  cached: number
+  skipped: number
+  failed: number
+  parse_failed: number
+  pending: number
+}
+
+/** 作业列表行 */
+export interface DocJobListItem {
+  id: string
+  lang: string
+  status: 'created' | 'running' | 'done' | 'cancelled'
+  created_at: string
+  progress: DocJobProgress
+  coverage: number
+}
+
+/** GET /gec/doc-jobs/:id 详情 */
+export interface DocJobDetail extends DocJobListItem {
+  text_chars: number
+  chunk_target: number
+  cancelling: boolean
+}
+
+/** 单块状态行（结果端点） */
+export interface DocChunkRow {
+  index: number
+  owner: [number, number]
+  status: 'pending' | 'done' | 'cached' | 'skipped' | 'failed' | 'parse_failed'
+  error: string | null
+  risk: number
+}
+
+/** GET /gec/doc-jobs/:id/results */
+export interface DocJobResults {
+  errors: ErrorItem[]
+  progress: DocJobProgress
+  coverage: number
+  complete: boolean
+  chunks: DocChunkRow[]
+}
+
+/** POST /gec/doc-jobs 响应 */
+export interface DocJobCreated {
+  job_id: string
+  chunks: number
+  status: string
+}
+
+// ── §7 可观测性（DETECT_PIPELINE.md）：request_summary 账本只读面 ────────────
+
+/** dropped 账本四桶（丢弃的检出，按归属原因分） */
+export interface ObservabilityDropped {
+  ownership: number
+  pii_mask: number
+  out_of_range: number
+  out_of_scope: number
+}
+
+/** GET /gec/observability/alerts — 24h 窗口两路告警 */
+export interface ObservabilityAlerts {
+  window_hours: number
+  integrity: { lossy_rows: number; triggered: boolean }
+  quality: {
+    analyze_rows: number
+    fallback_sum: number
+    error_sum: number
+    fallback_ratio: number
+    partial_empty_runs: number
+    triggered: boolean
+  }
+}
+
+/** GET /gec/observability/summary 单行：day × 规则指纹聚合 */
+export interface ObservabilityDayRow {
+  day: string
+  rules_fingerprint: string
+  requests: number
+  coverage_avg: number | null
+  sentences_reviewed_rate: number | null
+  unavailable_rate: number
+  cache_hit_rate: number
+  history_reuse_rate: number
+  dropped: ObservabilityDropped
+  /** 段级完成块数 ≈ LLM 出站调用数（预算层执行代理指标） */
+  llm_calls: number
+  chunks_total: number
+  p95_total_ms: number | null
 }
 

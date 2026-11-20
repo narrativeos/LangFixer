@@ -14,6 +14,18 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, sources};
 use crate::table::DecisionTableMeta;
 
+/// 句级切分器版本（版本向量的 `splitter` 成分）。
+///
+/// 当前实现为标点切句（句末标点串 。！？；!?; 与带守卫的英文句号、空行分段，
+/// 软换行不断句；见 `gec_core::docchunk::sentence_spans`）；
+/// 切换切句器（如接入 HanLP）或改变边界规则都必须递增此版本，使句级层的
+/// 缓存键 / 历史复用自动漂移（Detect Pipeline v2 §3.1：句级分块的确定性只随本
+/// 版本变）。punct-v2：英文句号作边界（小数/省略号/文件名守卫）、引号收尾归句、
+/// 软换行不断句、空行分段（此前 punct-v1 仅 。！？；!?; 与每个换行）；
+/// punct-v3：超长无标点段（>200 字）自动断句——分句线索优先（篇章标记 >
+/// 语气词/冒号/换行 > 顿逗）+ 字数兜底，确定性边界（见 docchunk::auto_break）。
+pub const SPLITTER_VERSION: &str = "punct-v3";
+
 /// 检测参数快照（存入历史 `params_json`；重复检测复用历史的比对依据）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectParams {
@@ -41,6 +53,10 @@ pub struct DetectParams {
     /// 规则侧版本指纹（[`rules_fingerprint`]；旧记录缺省为空 = 不可复用）
     #[serde(default)]
     pub rules_fingerprint: String,
+    /// 句级切分器版本（[`SPLITTER_VERSION`]；旧记录缺省为空 = 不可复用，
+    /// 与 `rules_fingerprint` 同一保守口径）
+    #[serde(default)]
+    pub splitter: String,
 }
 
 /// 稳定的 64 位 FNV-1a 哈希。
@@ -145,7 +161,7 @@ pub fn rules_fingerprint(
 /// 1. `params_json` 非空且可解析（旧记录一律不可复用，保守）；
 /// 2. 存储文本与当前文本一致（`text_hash` 命中后的精确校验，防哈希碰撞）；
 /// 3. 参数逐项一致（level / force_llm / category / decision_enabled / l3_enabled /
-///    llm_configured / **决策模型版本号** / rules_fingerprint）；
+///    llm_configured / **决策模型版本号** / rules_fingerprint / **splitter**）；
 /// 4. **不含 LLM**：该记录本身是 level 1 且非强制运行，且结果中无
 ///    `source == "llm"` 的错误（双保险；LLM 结果非确定性，一律实时重跑）。
 pub fn history_reusable(
@@ -170,6 +186,7 @@ pub fn history_reusable(
         || stored.llm_configured != current.llm_configured
         || stored.model_version != current.model_version
         || stored.rules_fingerprint != current.rules_fingerprint
+        || stored.splitter != current.splitter
     {
         return false;
     }
@@ -199,6 +216,7 @@ mod tests {
             llm_model: None,
             model_version: None,
             rules_fingerprint: "f1".into(),
+            splitter: SPLITTER_VERSION.into(),
         }
     }
 
@@ -405,6 +423,19 @@ mod tests {
         let mut v2 = test_params();
         v2.model_version = Some("v2".into());
         serde_json::to_string(&v2).unwrap()
+    }
+
+    #[test]
+    fn history_reusable_splitter_gate() {
+        // 切分器版本漂移（如 punct-v1 → hanlp-v1）→ 旧历史不再可复用
+        let p = test_params();
+        let json = serde_json::to_string(&p).unwrap();
+        let mut other = test_params();
+        other.splitter = "hanlp-v1".into();
+        assert!(!history_reusable(&json, "文本A", "[]", &other, "文本A"));
+        // 旧记录（无 splitter 字段 → 空串）与当前版本不匹配（保守不复用）
+        let old_json = r#"{"level":1,"force_llm":false,"category":null,"decision_enabled":true,"l3_enabled":true,"llm_configured":false,"llm_model":null,"rules_fingerprint":"f1"}"#;
+        assert!(!history_reusable(old_json, "文本A", "[]", &p, "文本A"));
     }
 
     #[test]

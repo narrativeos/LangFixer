@@ -4,6 +4,338 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **依赖服务监督器（`api-server/src/deps.rs` + `routes/deps.rs`）**：api-server 启动即自检六项依赖
+  （decision:4804 / l3:4806 / char_gate:4811 / hanlp / LLM 网关 / 嵌入），本机可管服务在
+  loopback 地址 + 仓内 venv + 资源门槛（decision/l3 300MB、char_gate 2048MB，可用内存读
+  /proc/meminfo 或 vm_stat）满足时主动拉起（日志 `log/supervisor/`，子进程不随 api-server 退出被杀）；
+  拉不起来不静默放弃：`GET /gec/deps` 状态面逐项给出原因 + 「是否有其他机器可部署」提示，
+  运营台「设置 → 依赖服务」卡片提供「拉起服务」/「保存其他机器地址并重测」两条补救路径，
+  应用启动 toast 与检测服务状态条 chip 同步点名未就绪项；`POST /gec/deps/start|recheck`（ops 面，
+  token 防线）；PUT 设置改动相关端点后台自动重探。实机重启验证 6/6 全 ok（decision/l3/char_gate 均
+  auto 拉起）。途中修复两处 spawn 坑：posix_spawn 下相对程序路径在切 current_dir 后才解析致 ENOENT；
+  canonicalize 解析 venv python 符号链（→homebrew）破坏 pyvenv.cfg 探测致子进程丢 site-packages
+  （改绝对不解析符号链）。
+- **label-adjudicate 公网发布（token 分发模式）**：登录支持 `--token-db` 直连网关
+  auth.db（sha256 校验 access_tokens，吊销即断，HMAC cookie `lf_adj` 12h），
+  一人一枚评审令牌；公网实例跑在 47.94.172.217（systemd
+  langfixer-adjudicate.service，quorum=2），经 Caddy `handle_path /adjudicate/*`
+  挂到 https://langfixer.jiulu.ltd/adjudicate/；serve.py 兼容服务器 CPython 3.6.8。
+- **label-adjudicate 多人协作产品化（`tools/label-adjudicate/`）**：登录页+房间口令
+  （HMAC 签名 cookie）、裁决逐条署名 `who`（旧 journal 无署名归房主）、每人一票
+  同名重裁覆盖自己、条目软领取防冲突、`--quorum K` 多数票共识门槛（平票→存疑，
+  默认 1 保持旧行为）、crew 审计面板；judge.py report 新增裁决人两两人人一致率
+  （逐位/采纳方向）并改比人工共识。v2.3 抽检自此双裁定账，单人裁决不再单独过闸门。
+- **label-judge 裁判口径 v2→v3（`tools/label-judge/`，未提交工具首次入账）**：
+  SuperVL 二审裁判 prompt 对齐人工金标口径（判修正本身而非原文是否必错）+〖〗就地
+  定位被标记范围+空 fix 显式注明删除；auto 桶 58 条人工交集上 一致率 50.0%→74.1%→75.9%，
+  误拦（裁reject/人adopt）18→5→4，**误放行（裁adopt/人reject）三版始终为 0**。
+- **router_ev 归因终版定账（`tools/tonight-queue/`，EVOLUTION §11.14 补七）**：
+  train LLM 缓存扩容夜跑把 p̂ 测量面从 611 行补到 5,068/5,070（99.96%，缓存
+  5,657 行；`.expand` 自包含落盘经两次中断零丢失）；`_v3` 终版重赛：真 p̂
+  锚点 router_ev 55.2% PASS / uniform-p 对照 54.6% → p̂ 分化增益 0→**+0.6pp**，
+  计数头 +10.0pp 仍为主体；p̂(word_order)=0.541 显著低于先验 0.916 →
+  **wo_exempt 退役判定坐实**；v2.3 rollout 收账（共识 9,202/新增 6,733/
+  漏标 22,313）入 `~/tmp/dataset_v23/`。
+- **ZEN 轨迹表 v2 冲突谓词（`tools/zen-trajectory/`，EVOLUTION §11.14 补六）**：
+  table.json v2 四冲突谓词（straddle_pair/num_same_unit_diff/year_pair/
+  conj_pair_break 整句 scope）+ 双锚定引擎（error-anchored/standalone）；
+  三段校验定案：冲突谓词不获得独立路由通道（gold 锚定对 clean 基线无 lift、
+  打扰 9.64%/4.75% 超 ≤2% 闸门；仅 year_pair 10× lift 但召回 0.4%），
+  present 证据口径保留且逐位不变；已入 §13 否定表 #13。
+- **ZEN 轨迹表首版（`tools/zen-trajectory/`，EVOLUTION §11.14 补五）**：声明式
+  判定表（四族 ±6 窗口谓词→consistency/cohesion 通道）+ 在场命中账引擎，
+  逐条轨迹账落盘；must 桶可达性与补二实验2 逐位一致（52.3%/42.4%）；
+  v2 冲突谓词已在表内挂账。
+- **规则臂前置扣除入账（EVOLUTION §11.14 补四）**：`rule_offline.py` 单一
+  台账复刻（含 punct 文档风格门，语料毒账 7,587→1,219，punct 通道精度
+  0.03%→9.5%）+ `rule_probe.py` 离线 EV（recall 0.3%/precision 10.5%，定案
+  打扰 6.4/万字）；cycle2-matrix 分臂（whitelist/yield 只出自 llm 臂；dev 库
+  规则臂反馈 6 条首次入账）；eval `--rule-subtract` 残差曲线：扣除仅 0.2%，
+  规则臂价值定调=免费定案+事实核查挂钩而非预算节省。
+- **路由第四臂 router_ev（方案 A′ 落地，EVOLUTION §11.14 补三）**：每型 Poisson
+  计数头（蒸馏 gold_counts 型多重集）× p̂(t) 求和打分；缓存口径锚点总体
+  **PASS**（54.6% vs router 44.6/histgb 40.9/random 48.6，非 oracle 首次）；
+  gold_types.py --counts-out 同扫描产出计数+spans；p̂ 测量面待 train 缓存扩容。
+- **分型分层三空白量化实验与方案定案（EVOLUTION §11.14 补二）**：①句内同族多
+  错 61.3%（≥2 错句内，10 型口径）→ 型头定为每型期望计数头 A′+稀型先验 C，
+  非 presence 二值；②must 桶 consistency/cohesion 的 ±6 窗口规则可达性
+  42–52%（span 内仅 17.7%）→ ZEN 轨迹表谓词定为 ±6 窗口式；③规则臂同词典
+  离线复刻实测 recall 0.3%/precision 11.1%，punct 子通道语料毒（需文档标点风
+  格门）→ 规则臂定位坐实为前置扣除层+高敏感事实核查挂钩，EV(t) 以实测小值
+  入收益矩阵。
+- **Cycle 2 收益矩阵消费端（`tools/cycle2-matrix/matrix.py`）**：写侧三本账
+  早已在产（detect_history.errors_json 检出+来源层、layers_json 路由决策账、
+  feedback_log 全层采纳/拒绝留痕），零 Rust 改动；消费端 join 成按型收益矩阵
+  （precision=adopt/(adopt+reject)、yield=每千句复查换回的真修正、复查句
+  ran/backfill/skip 三口径不双计、feedback 无外键按 original+14 天窗回指且
+  命中/落空两列并报）；达门槛型输出 `--hit-types` 串回喂路由，报告文案内化
+  §13 #12（低 precision 型不降级，出口是预算权重/型头）；错题本
+  error_book.jsonl=被拒 LLM 检出含原句（负例蒸馏原料）。e2e 合成库验证通过；
+  dev 实库 llm 侧反馈 0 条、矩阵全薄——机件等账，账等生产使用。周期表
+  Cycle 2 行改「机件就位」（§11.12 补六）。
+- **gold 侧型标签（`tools/true-gold/gold_types.py` + `router_labels.py
+  --gold-types`）**：补四处方落地——text→v2 型码两通道并集（datasets 行级
+  error_type 与 eval 侧同源映射 ∪ true_gold 编辑级六类经 v22 行 join；
+  cohesion→logic、consistency→reference、fact 不映射）。池 train label=1
+  join 命中 4,400/4,870（90.3%），纯 word_order 110 句从此可见。实验结论：
+  全量 wo 降级两口径 −1.1~−1.5pp 判死（§13 #12）；型标签价值在
+  error_types 坐标系（4,400 行带型，蒸馏/收益矩阵输入）而非降级。
+  同时从 982 行缓存唯一反解出补四实际白名单（含 word_order/reference）。
+- **规则通道（rule-channel）**：true-gold 规则候选的消费端四件——
+  规则族谓词（标点惯例自适应/叠用/严式时间/地名共现）、量化器（族×
+  候选召回/点火/已标免问/纯打扰每万字）、运行时命中即问
+  （adjudicate.py --check）、用户判断回写同一本 gold journal（--record，
+  merge 重跑自动吸收）。量化结论：静态规则对 mark 桶只回收 0.6%
+  （主体是漏字/搭配/语序类，规则结构上够不着），定位调整为未来文本
+  的高敏感事实核查要点（打扰 ≤31/万字）；mark 主体留给 rollout 与
+  知识源通道。e2e：命中→回写→merge 吸收（2,386→2,387）验证通过。
+- **v2 级 true gold 合并器**（`tools/true-gold/merge.py`）：true gold =
+  共识 ∪ 已采纳模型新增 ∪ 金集真错，噪声/reject 进 excluded，门控未见
+  进规则通道（rule-candidates 带 ctx，运行时命中由用户判断，判断回流
+  同一本 gold journal）。裁决 journal 为空时出按桶默认版，抽检推进后
+  重跑收紧。首跑：标签行 12,542（共识 10,156 + 金集真错 2,386），
+  gold 字符覆盖 20,053/38,924 = 51.5%，零重叠；两本 journal 响应性
+  e2e 验证通过。类型分布（typo 5,994/grammar 3,495/cohesion 324/
+  consistency 205/punct 99/fact 39）即 route_label 重生成的输入。
+- **merge 前置复读拦截 dup_artifact + 抽检后 gold 重建重跑**（§S）：
+  五桶各抽 58 条全部未过 2% 门禁（auto_real 3.4 / auto_noise 25.9 /
+  label auto 6.9 / must 17.2 / audit 20.7），不整桶采信；adopt 131 进
+  gold。v2.2 插入残片复读定性为渲染归一化缺陷（抽检 reject 主因），
+  以「fix 前缀==span 左侧邻接 ∥ 后缀==右侧邻接」规则入 merge 前置：首跑
+  拦 1,060（人工 adopt 覆盖 2 均为 fix 尾字 off-by-one 真错；单字动词 AA
+  重叠「讲讲」类守卫豁免）；标签行 12,686（共识 10,156 + 采纳 131 + 金集
+  真错 2,399），pending 7,376→6,176，coverage 51.55%。
+  重跑 gold_types+labels+eval：两锚点 44.6/64.1 与补五逐位相同——gold
+  重建改资产与坐标系，不动 anchors（决策面输入未变），§13 #12 再确认。
+- **金集灰区裁决页（gold-adjudicate）**：对 v2.2 未命中的 21,257 个
+  gold 字符（`~/tmp/grey_zone/`）尽量自动裁决：回退（v2.1 已给 fix）
+  2,386 默认真错带旧 fix/type；两轮均问均否 8,649 默认噪声（采纳走
+  ≥58/≤2% 抽检门）；门控未见 10,222 不硬判，默认标记导出为规则候选
+  （`action=rule-candidate`，后续落规则引擎由用户运行时命中判断）。
+  裁决 journal 落盘续跑，快捷键 R/N/M，批量按桶默认判。
+  顺手修了 dump_grey.py 的引用错位（多 edit 行内 gold a/b 误取循环变量，
+  影响 8,985 条记录，已重生成分区不变）。
+- **裁决页泛化支持 dataset_v2x 队列**（v2.2 rollout 收尾）：
+  `tools/label-adjudicate/serve.py` 数据装载从 `*_v21.jsonl` 泛化为
+  `*_v2*.jsonl`（排除 review_queue），版本从文件名尾缀识别并映射
+  `REPORT_REF` 逐条口径参照（v21: 12,970/12,789；v22: 7,376/10,156），
+  默认 `--data-dir` 切到 `~/tmp/dataset_v22`。v22 队列端到端验证：
+  total_new 7,376、labels 17,532、行计数不一致 0，分档 auto 934 /
+  must 849 / audit 5,593；v22 无 fix==原文 缺陷，预筛信号仅剩
+  lex_ok 115 / lex_blind 62（v21 各信号兼容性回归通过）。
+- **路由三臂评测 harness**（EVOLUTION.md §11.12，分支 feat/router-harness）：
+  `feature-model/router_labels.py` 在 jev zh_v2 池上产句级路由标签（格式对齐
+  池行，配方 = gold∪LLM∪lexical∪采样地板并集，§11.10）；
+  `feature-model/eval_router_arms.py` 三臂等调用率曲线（histgb 代理/random/
+  router）+ §11.11 类型分层判定（薄金标只报数不裁决、skipped≠covered）。
+  首跑总体 PASS（锚点 63.1%：router 65.2% ≥ histgb 64.7% ≥ random 64.0%），
+  优势幅度待 LLM 臂直跑补边际收益维度；gold 集与池的结构性污染以
+  「默认仅池外行」口径披露。
+- **路由 harness 非 oracle 口径与 LLM 臂直跑机件**（EVOLUTION.md §11.12 补）：
+  `router_labels.py --llm-run` 支持并发（`--llm-workers`）与检出缓存断点续跑，
+  失败行不再伪装成已查实干净；`eval_router_arms.py --llm-run-gold` 在池外
+  gold 行分层抽样直跑 LLM 臂落盘检出，`--only-cached` 只在已查实行上出
+  公平曲线。实测（398 已查实行）：总体 FAIL（random 48.6% > router 42.5%），
+  定量实证「gold 存在性代理标签缺 LLM 边际收益维度」（LLM 对 word_order
+  检出召回仅 41.7%，路由预算被低收益句占住）。llm_hit 入标签重赛后：oracle
+  总体 PASS 幅度拓宽（锚点 65.4%）；cache 口径仍 FAIL 但 ≤20% 预算段转为
+  压倒领先，处方指向按型条件化路由（收益矩阵 P(LLM 检出|型)，§11.12 补二）；
+  池臂跑满后另实：原始 llm_hit 信号饱和（82% 行非空），需∩gold 背书再入标签
+  （§11.12 补三）。
+
+- **route_label v2 机件：按型背书白名单 + word_order 降级**（EVOLUTION.md
+  §11.12 补四；均默认关不改旧配方）：`router_labels.py --hit-types` 仅白内
+  检出入 llm_review（白名单由 gold 侧按型精确率定，punctuation 类 14% 滤除），
+  `--wo-exempt` 纯 word_order 检出型 gold 句降 rule_decide（高精确 81% 低召回
+  42%→规则/专项侧）。按型收益矩阵首批成表；标签配方迭代使 cache 口径锚点
+  41.7%→45.7%（对 random 差距 −6.9→−2.9pp），oracle 同步创新高 65.6%，
+  按型条件化方向被数据连续验证。
+
+- **模型新增标注分档抽检裁决页**（tools/label-adjudicate，dataset_v21 的 12,970
+  条待抽检队列）：启动时按**逐条口径**从 `*_v21.jsonl` 现算队列（复现更正后
+  12,970 新增 / 12,789 共识 / 25,759 合计；旧行级 `model_new` 与旧队列是累计
+  口径 9,285，只对照不信任）；分档 auto=标点 / must=fact·consistency·cohesion
+  / audit=typo·grammar，门槛每桶 ≥58 条抽检且放弃率 ≤2% 才整桶升级；裁决
+  journal 追加落盘可续跑，导出已采纳 ndjson。
+
+- **裁决页自动预筛信号**（tools/label-adjudicate）：每条新增标注按词表/
+  模式打信号（判无错误入 no_error 403 / 删除意图 del_intent 228 / fix==原文
+  矛盾 noop_contra 1,404 / 词表背书 lex_ok 193 / 词典矛盾 lex_contra 0 / 标点
+  盲点 lex_blind 335 / 无信号 10,407），支持按信号筛选 + 当前筛选集批量
+  裁决；fix==原文三档批量采纳一律服务端跳过，导出时对已采纳的
+  del_intent 归一为 delete（fix 置空）、其余矛盾档标 manual 待修。由此
+  暴露 rollout 解析缺陷约 2,035 条：模型 why 已给出实质修正或删除意图，
+  但归一化后的 fix 仍等于原片段（v2.2 需在归一处修正）。
+
+- **检测结果支持按细分类型二次筛选**（web-ui，分型架构的界面投影）：汇总
+  分类（5 大类）之下新增「细分类型」过滤行（error_type 维度，17 类 T 族），
+  与分类过滤级联（换分类自动清类型过滤、新检测重置）；批量采纳作用域
+  文案同步；层显示词表收敛单源（errorDisplay.SOURCE_LABELS 改为复用
+  labels.ts 人话表，消除双头维护漂移风险；word_order 注释归位 zh/ja 共用）；
+  检查模式名收敛 labels.ts `modeLabel` 单源（原 Editor/HistoryPanel/
+  MediaWorkspace/SettingsPanel 四处硬编码，描述性后缀仍在各组件）。
+
+- **zh 错误分类法 v2 落地：LLM 细类型不再坍缩**（EVOLUTION.md §11.11）：
+  `map_llm_error_type` 按 CEC 细分一对一映射（词性/语序/成分残缺/赘余/
+  关联词/指代→各自细类型码，语义逻辑不通转正为 `logic` 常量），
+  `error_types` 补 11 个细类型常量；兼容不迁 DB：新函数
+  `coarse_error_type` 查询期粗族回退——归因决策表（analyze/attribute 按
+  zh 门控，ja 表 `word_order` 命中行不受影响）、错误画像统计
+  （type_distribution/habitual）与会话分布按粗族聚合，行级数据保留细类型；
+  W3C issue_type 推导补细类型分支；前端 `ERROR_TYPE_LABELS` 补 T 族与数字
+  通道展示词。
+
+- **zh 数字/量值/序号三条规则通道**（分类法 v2 首批，EVOLUTION.md §11.11）：
+  新规则 `ZH_NUMERAL`（万万并置/阿拉伯-汉字数字混写，GB/T 15835—2011）、
+  `ZH_QUANTITY_UNIT`（数值区间单侧缺单位、中外单位并注，GB 3101/GB/T 1.1）、
+  `ZH_SERIAL_NO`（行首序号与「第X章/节/条」同上下文 run 跳号/重号），token/
+  离线双路径；lexicon 新增 `numeric` 分类，`error_types` 新常量 `numeral`/
+  `quantity_unit`/`serial_no`；停用/白名单经中央过滤自动继承。
+- **各层贡献度报告界面**（参赛需求「展示各层在评测报告中的贡献」）：新端点
+  `GET /gec/eval/layers` 由 api-server 直读报告档案（`GEC_EVAL_REPORTS_DIR` >
+  `datasets/eval_reports` > `src/datasets/eval_reports`，坏文件按条跳过），不依赖
+  Python 测评服务——生产评测实例未起也能看；已入评审密钥 fail-closed 白名单
+  （只读质量透明面，评测**发起**仍属运营面）。前端新「各层贡献」视图
+  （LayerContributions）：报告选择 + 两报告 Δ 对比、层级贡献表（预测 / 严格
+  P·R·Fβ / 自定案金标 / 召回份额条）、config 开关 chips 与级联漏斗；网关形态
+  全员可见（评委可达），单机仅运营位显示入口。
+- **L3 特征模型公网上线**（EVOLUTION.md §8「2026-11-13 · L3 特征模型公网上线」）：
+  公网实例 4806 服务当日从无到有——sklearn 句级模型（45.8 万句训练特征，dev
+  F1 0.549）+ docker（python:3.12-slim）+ systemd `langfixer-l3`，`l3.enabled`  开回 true；level 2 恢复「规则 + L3 门控 + LLM 长尾」的真实三级形态。
+- **level 3 不得被 L3 门控终结全文 LLM**（L3 上线当日公网实测抓到）：③-F 定案
+  分支把 level 3 的 `need_llm` 也置 false，深度扫描退化为门控臂——内置示例
+  3 例有 2 例被句级「判定无错」放行（门控 R≈0.45），「漏报兜底」名存实亡。
+  level 3 定案错误照合并，但全文 LLM 无条件保留；level 2 放行语义不变。
+  反转 `cascade_level3_l3_*_skips_llm` 两用例并改名固化。
+- **质量指标定版**（EVOLUTION.md §8「2026-11-12 · 质量指标定版」）：capability
+  全集两份报告（mucgec 1137 句 / jfleg 1501 句，seed 42，按 gold 全集行数收敛，
+  网关健康门下 `llm_ran` 100%）。句级门控 mucgec P/R **0.975/0.850**、jfleg
+  **0.954/0.944**；编辑级严格 Fβ 0.0134 / 0.1038（generic 臂支配，与 §8 P0 的
+  cec3 微调臂不可横向比；3090 新 gec 模型出来后补对比版）。报告
+  `20261112T223729Z_{mucgec,jfleg}_current_capability` 随本条入库。
+- **调用级日志（`gw_call_log`）**：网关形态下每个经过鉴权门的请求记一行
+  （`ts / token_id / endpoint / status / latency_ms`）——「谁在几点调了哪个端点、
+  被拒的 401/403 尝试」从此可查（D1 遗留项落地）。立场与红线：
+  ① **放行与拒绝都记**，核验成功的评审令牌即使越权被拒也记本人，不洗成匿名；
+  ② **只存路径**——query string 可能含用户文本（`?text=`）、请求体更是绝不落，
+  header 不落；`token_id` 是身份不是凭证；③ 单机形态**不落**（零新增写盘，不把
+  私人使用记成「调用」）；④ 记账失败只 warn，日志是运维资料不是事务参与方；
+  ⑤ 保留期与日账同源（retention timer 一并删超期行）。读端点：`/admin/stats` 带
+  `calls_today / calls_retained`（进行中的请求完成后才入账，读到的永远是此前全部），
+  `/admin/tokens` 逐令牌带同口径计数；「密钥分发」界面加「调用次数」列与概览合计。
+  验收 `api-server/tests/gateway_call_log.rs`（放行/拒绝/越权逐行对齐 + query 不落 +
+  合计与逐行一致）。`docs/GATEWAY_AUTH.md` D1 段与 `deploy/gateway/langfixer-retention.sh`
+  同步。
+
+### 修复
+
+- **设置页「测试全部」报红两条——待发布层探测 + L3 关闭门控语义缺口**（11-13 走查
+  发现）：① 快速定案层当前**待发布**（`enabled=false`，11-13 定位：线不放弃，待
+  更合适的决策模型；见 EVOLUTION §13 #10），`settings_test` 不看
+  开关直接探测，公网部署必然报红——disabled 层现短路回「未启用」（绿）不探测；
+  ② L3 生产开关开而 4806 服务从未部署到公网实例，这条红属实；处理时牵出**文档与
+  代码矛盾**：`l3.rs` enabled 字段口径「显式关闭 → 回退无条件 LLM」，但 engine 的
+  level 2 门控在 L3 未挂载分支 `None => false` 关门——旧路径「服务不可用」是
+  fail-open 让 LLM 全文复查，直接翻开关会让 level 2 静默退化为纯规则（决策层已
+  退役，弃权触发不复存在）。`CascadeDetector::l3_disabled` 区分**显式关闭**（开闸
+  回退无条件 LLM）与**从未配置 L3**（保持决策弃权门控旧语义）两态，补两用例。
+  公网实例已 `PUT /gec/settings` 关 `l3.enabled`（4806 未部署、3090 模型未出，
+  与关闸前 fail-open 行为一致）；gec 模型出来后随 4806 服务部署原位打开。
+- **jfleg 的 strict 命中恒为 0——量具坐标系错位**（11-12 定版抓到：4489 条预测、
+  0 条严格命中，中文链路数字却正常）：JFLEG gold 按 `make_gold.py` 明文口径「S/D
+  span 含尾随空白、插入锚点取下词起点」，而生产侧 LLM 句级 diff 的预测 span 词界
+  精确（gold `[56,64]` vs 预测 `[56,63]`），strict 键 (op, ref, span) 永远差一个
+  空白位——英文数字是量具问题，不是检测能力。`eval_server.norm_span` 把严格键与
+  重叠判定归一到同一空白不敏感坐标（中文恒等变换，zh 全集数字与修复前逐位一致）；
+  selftest 补英文坐标系用例。修复后 jfleg 严格 P/R/Fβ = 0.1559/0.0444/0.1038。
+- **评审密钥可以改写共享规则库、重训模型、起长跑**（网关形态可达面没收住，11-12
+  评委体验走查发现）：`/gec/l3/retrain`、`/gec/agent/run`（带自主档写工具）、
+  `/gec/eval/run`、`/gec/llm-feedback`（`adopt` → `adopt_as_rule`）、
+  `/gec/ops/unlock`（无 `GEC_TABLES_UPDATE_TOKEN` 时直接 `unlocked:true`）对评审身份
+  全部敞开——参赛密钥是全体评委共享的一枚，一次误触就是全体评委的现场。改为鉴权门
+  上的 **fail-closed 白名单**（`review_denied`）：只放行「检测 + 本人历史 + 只读说明」，
+  其余 403 + 说明文案；界面同步收起评审身份下必然 403 的「测试全部」。立场与 MCP
+  写档工具改提案信封一致：**共享身份不得改写共享状态**。验收
+  `api-server/tests/gateway_review_surface.rs`，口径见 `docs/GATEWAY_AUTH.md` D2。
+- **不挂鉴权门装配 `routes::router` 时，业务端点一律 500**（`Missing request
+  extension: Tenant / AuthContext / Arc<GatewayConfig>`）：这三样由 `gate` 注入，
+  生产 `main.rs` 恒挂门所以线上无恙，但集成测试与「把 api-server 当库用」的宿主
+  绕开门装配就全线报错——`api-server` 测试套件因此已经红了很久（`tests/api.rs`
+  51 项里 32 项失败，症状是空响应体 / 500，很容易被误读成业务坏了）。新增
+  `middleware::auth::with_standalone_tenant()`（注入与门在单机形态等价的三件扩展，
+  配 `GatewayConfig::standalone()` + 内存令牌库，不落 `auth.db`），13 个测试装配点
+  统一改走它。现在 `-p api-server` 全套绿。
+- **LLM 网关失败演练暴露的三个坑**（2026-11 演练，隔离实例黑洞网关实测）：
+  ① **卡死网关把整次 level 3 检测挂 6 分钟**——重试预算原来只累加退避睡眠，
+  每次尝试自身烧满超时不记账：30s 超时 × 3 次尝试 + 25s 退避实测 115s，按线上
+  120s 超时放大 ~6'25"，浏览器 180s 先掐。`LLM_RETRY_BUDGET_SECS` 改**挂钟总预算**
+  语义（含尝试耗时），挂钟越过预算直接收手，退避表 0 间隔不再是「预算外再加一次
+  满超时尝试」的后门；② **LLM 层运行时失败把整次 detect 打回 502**——level 3 /
+  force_llm 的全文 LLM 兜底失败（超时、排队耗尽、熔断开断）现**降级保留规则层
+  结果**，层级摘要记 `llm: unavailable`（前端已有「不可用已回退」映射，零改动；
+  与定向复查、L3 失败同一先例）。未配置 LLM 仍明确报错——那是配置问题不是运行时
+  故障；③ **LLM 聊天客户端没有熔断**（决策 / L3 / 嵌入客户端早有，LLM 漏了）——
+  接入同款三态熔断器（连续失败 3 次开断 30s，冷却到期自动探测恢复）；api-server
+  形态 LLM 引擎每次现构建，故熔断器进程级共享注入（`State::llm_breaker`），桌面端
+  同理（`llm_breaker()` 单例）。演练对账：加固前卡死网关 level 3 = **115.2s→502**、
+  连不上 = 25.3s→502；加固后 = **200**（规则结果保留 + `llm: unavailable`），
+  熔断开启后第 2 次请求起 0.1-4s 级失败不再逐个用户交超时税；level 1 路径
+  （评审常规路径）始终不受波及（0.26s）。重试错误文案「共等待 Ns」改「已耗时
+  Ns」（挂钟口径）。回归测试 4 条：熔断开断/冷却探测/挂钟预算/level 3 降级。
+- **登录后 whoami 的可选字段在界面上消失**（`web-ui/src/lib/auth.ts`）：`loginWithKey` 用
+  逐字段字面量重建身份视图，后端每加一个可选字段就在这条路径上被静默丢掉（`?token=` 直链登录后
+  「密钥分发」看不到密钥来源与指纹，而同一页面直接 `fetch('/auth/whoami')` 带着它们）。
+  现抽出纯函数 `mergeIdentity(prev, me, login?)`，字段只在一处列举；来源与指纹只取本次 whoami
+  （换实例不得留上一台的指纹），`signOut` 一并清掉。`web-ui/src/lib/auth.test.ts` 锁住语义。
+
+### 新增
+
+- **显式轮换超级管理员密钥**（`POST /admin/admin-token/rotate`）：换钥匙从此是一个动作，
+  不是重启或改文件的副作用。body 必须 `{"confirm":"ROTATE"}`（缺失或别的值 → 400）；
+  密钥来自 `gw_meta`（安装生成）时 200，新明文只在这一次响应出现，旧密钥与其超管会话
+  （`gw_sessions.token_id='~admin'`）即刻失效，评审密钥不受影响，重启复用新值；
+  密钥来自 `LANGFIXER_ADMIN_TOKEN` 时 **409** 并给出改 env 的流程——**故意不做**「库里换一把、
+  env 那把仍然赢」的分裂行为。顺序是先落库再换内存摘要（`AdminCred` 摘要改内部可变并随
+  `Clone` 共享，故已注入各路由的句柄同一时刻认新钥匙），库写失败回 500 且密钥未变更；
+  日志只记指纹。`whoami` 对**已验证的超管**额外回 `admin_token_source`（`env`/`generated`）与
+  `admin_token_fp`（SHA-256 前 8 位，核对用，非密钥），匿名探测与桌面端 invoke 不带这两个字段；
+  「密钥分发」界面据此显示「这把由谁持有 · 指纹 xxxx」。env 与 `gw_meta` 同时有值时启动
+  `WARN` 指明库里那枚不会被使用。`docs/GATEWAY_AUTH.md`「轮换超级管理员密钥」按来源写清泄露处置。
+  HTTP 层验收：`api-server/tests/gateway_admin_api.rs`（confirm 必填 / 旧钥匙与旧会话即刻失效 /
+  评审密钥不受波及 / env 模式 409 且不写库 / 评审密钥 403 / 匿名看不到来源）
+- **根目录部署脚本 `./setup.sh` / `./update.sh`**（共用件 `scripts/deploy-common.sh`；约定见
+  `deploy/gateway/README.md`「日常就用两条命令」）：都带 `local|server`，首次安装与日常更新各一条，
+  幂等——已存在的密钥、`langfixer.env`、systemd 单元一律不覆盖。`update.sh server` 一次跑完
+  「铺源码 → 服务器后台编译 release（期间服务不动）→ 换二进制并留 `api-server.prev` → 重启 →
+  探活 → 铺前端 dist（`index.html` 用 `mv` 原子替换）→ 同步运行时资产」，探活不过**自动回滚**
+  二进制并重启。探活不是只看 200：绕开 Caddy 直连网关读 `whoami`、无凭证打管理面应 401、
+  带超管密钥真实跑一次 `detect`。`--dry-run` 只报差异不动手，`--no-web` / `--no-assets` 缩范围。
+  运行时资产（`decision-tables` / `lexicons` / `prompts`）铺之前先按 git 清单比指纹再留档——规则
+  开关与决策表 PUT 会被服务**写回**这些 JSON，无脑覆盖等于静默抹掉运维在界面上做的改动；自上次
+  部署被删除的文件按 git diff 清理，`lexicons/.lexicon-seed.lock` 这类未跟踪锁文件不碰。三条红线：
+  脚本只报密钥来源与指纹、绝不打印明文（首装那一次例外）；脚本永不换钥匙（`systemctl restart`
+  永远复用同一把）；密钥文件、数据库与 `langfixer-settings.json` 永不出现在任何同步路径里。
+  本机实例强制 `.dev/{auth.db,core.db}` 隔离库（缺省会落仓库根的真实产品库，而
+  `DELETE /gec/history` 是真删）；4805 已被旧 Vite 占用时沿用不重复起（Vite 会静默换端口到 4806，
+  反代与文档全都对不上）。两个已踩过的坑写进 README：编译判据只用日志哨兵（`pgrep`/`pkill -f
+  "cargo build --release"` 会匹配到执行它的命令自身），铺源码与启动编译必须分两步（`git archive |
+  ssh 'tar -x && cargo build &'` 会把整条管道一起后台化，tar 被截断）
+
+### 修复
+
+- **嵌入服务「Model not exist.」**（`gec-core/src/embedding.rs`）：`.json()` 之后又 `.header("Content-Type", "application/json")` 走的是 reqwest 的**追加**语义，请求实际带两个同名 `content-type`。宽松服务端容忍，严格的 OpenAI 兼容网关（实测阿里云 DashScope compatible-mode）把请求体判成无效并回 `400 {"error":{"message":"Model not exist.","code":"model_not_found"}}`——与模型名无关，配置怎么改都失败。现由 `.json()` 单独设置该头，并补 mock 严格网关回归测试（`embed_sends_exactly_one_content_type`，同名头多于一个即判 400）；`embed` / `embed_batch` 两条路径同修
+
+### 新增
+
+- **密钥分发界面用量统计**：`GET /admin/tokens` 一条 SQL 带出每枚密钥的日账读数（`used_today` / `used_retained` / `days_used` / `last_day`），`GET /admin/stats` 增 `chars_today` / `chars_retained` / `retention_days`；「接入 → 密钥分发」表格加「今日用量」（含配额进度条与今日剩）与「累计 / 最近」两列，摘要行显示在途会话与保留期内合计字符数。口径如实标注为**保留期内**累计——日账跟检测文本一起按 `LANGFIXER_RETENTION_DAYS`（默认 7 天）清理，不是历史总量；调用级日志（谁何时调了哪个端点）仍未做，`docs/GATEWAY_AUTH.md` 记录了两档补法
+- **验证机制（D4，`docs/GATEWAY_AUTH.md`）**：超管密钥装完即有——env 未设 `LANGFIXER_ADMIN_TOKEN` 时首次启动自动生成 `lf_<40hex>` 落 auth.db `gw_meta`（重启复用不漂移，明文只在生成那一次的启动日志出现一次；env 设了以 env 为准，设了但 <32 字符仍按配置错误拒绝启动）。界面按 `GET /auth/whoami` 的 `locked` 决定是否门禁（网关形态恒锁；单机形态看 owner 是否已认领），未验证前产品界面整体不渲染，密钥只进 `sessionStorage`、`?token=` 直链登录后即从地址栏剥掉。单机「零变化」口径收窄为：业务端点与桌面端 `invoke` 零变化，仅设置写入在 owner 认领后要求登录态（认领入口在「接入」页）。网关形态配置写入与探测仅超管可达（其余 403），非超管读设置时 LLM / embedding 密钥回 `***`。管理界面「接入 + 密钥分发」把一枚密钥变成两种分发形态——Web 直链与 MCP 配置 JSON（同一密钥、同一份配额）；普通密钥用户只能导出自己这一枚，签发与吊销只对超管开放
+- **评测通道 owner 隔离与配额（D2）**：网关形态下会话首次使用即绑定评审账号（跨账号 403），检测历史按账号伪会话 `s_gw:<token>` 归户（列表过滤 / 详情与删除跨账号 404），detect / analyze 按字符数日配额计量（越线 429，`quota_chars=0` 只记账）；清空全部 / 按语言批删 / 全局错题本等跨账号端点网关形态一律 403；网关形态跳过历史复用与进程级缓存保证每账号归属完整。单机形态全部行为零变化
+- **MCP 面（`POST /mcp`，`docs/GATEWAY_AUTH.md`）**：JSON-RPC 2.0 无状态形态（initialize / tools/list / tools/call / ping），工具集 = proofread / explain 检测管线 + agent 工具集全量；与 web 面同一道 gate、同一套 token、同一本字符配额账。网关形态只读工具直执行、写档一律返回提案不执行（executed:false + [confirm-required]，与 web 侧 Confirm gate 同源叙事）；单机形态全部直执行
+- **评测通道（网关形态）身份层**（`docs/GATEWAY_AUTH.md`）：`LANGFIXER_GATEWAY=1` 启用，单机形态行为零变化。评审令牌（明文一次、摘要入库、吊销连会话即断）+ 免注册会话 cookie + 管理面 `/admin/tokens|stats`；超级管理员令牌只来自 `.env`（`LANGFIXER_ADMIN_TOKEN`，≥32 字符，内存留摘要、不落库、不发 cookie、独占 admin 面）。为 web 与 MCP 共用一套 token 的接入形态打好同一身份底座
+- **评测通道部署件**（`deploy/gateway/`）：systemd 服务 + 每日数据保留清理 timer（默认 7 天删除检测文本与配额日账，收敛已吊销令牌会话归属）+ Caddy 站点片段与部署 runbook；服务器形态 api-server 绑 docker 网桥宿主侧地址（`LANGFIXER_BIND=172.18.0.1:4801`），公网入口只由 Caddy(443) 持有，源码/env/数据库放 web 根之外
+
 ## [v1.1.0] - 2026-11-08
 
 桌面端从「能跑」走到「像一台 Mac 应用」：自动更新按发布源烧入更新端点，原生菜单栏 /

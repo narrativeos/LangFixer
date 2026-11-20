@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMergedGroups, buildSoloGroups, summarizeCategories } from './errorGroups'
+import { buildMergedGroups, buildSoloGroups, summarizeCategories, summarizeTypes } from './errorGroups'
 import type { ErrorItem } from '../types'
 
 function mk(over: Partial<ErrorItem>): ErrorItem {
@@ -19,6 +19,22 @@ describe('summarizeCategories', () => {
   it('缺省 category 归入 other', () => {
     const m = summarizeCategories([mk({}), mk({ category: 'grammar' })])
     expect(m).toEqual({ other: 1, grammar: 1 })
+  })
+})
+
+describe('summarizeTypes', () => {
+  it('按 error_type 计数，条数降序、同数码位序', () => {
+    const s = summarizeTypes([
+      mk({ error_type: 'punctuation' }),
+      mk({ error_type: 'collocation' }),
+      mk({ error_type: 'collocation' }),
+      mk({ error_type: 'logic' }),
+    ])
+    expect(s).toEqual([
+      { key: 'collocation', count: 2 },
+      { key: 'logic', count: 1 },
+      { key: 'punctuation', count: 1 },
+    ])
   })
 })
 

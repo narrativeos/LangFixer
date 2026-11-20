@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<!-- 模型新增标注 · 分档抽检裁决页（配 serve.py；词表与 web-ui 人话原则同源） -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>新增标注抽检裁决</title>
+<style>
+:root { --bg:#f7f8fa; --card:#fff; --line:#e5e7eb; --txt:#1f2329; --sub:#6b7280;
+        --ok:#22a35a; --bad:#e5484d; --warn:#e6a23c; --acc:#3b7cff; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg); color:var(--txt); }
+header { padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line);
+         display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+h1 { font-size:16px; margin:0; }
+.meta { color:var(--sub); font-size:12.5px; }
+main { display:grid; grid-template-columns:250px 1fr; gap:16px; padding:16px 20px; max-width:1200px; margin:0 auto; }
+.buckets { display:flex; flex-direction:column; gap:10px; }
+.bkt { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; }
+.bkt.active { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
+.bkt h2 { font-size:13.5px; margin:0; }
+.bkt .num { color:var(--sub); font-size:12px; }
+.bar { height:6px; background:var(--line); border-radius:3px; margin-top:6px; overflow:hidden; }
+.bar i { display:block; height:100%; background:var(--acc); }
+.bar.err i { background:var(--bad); }
+.tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); color:var(--sub); }
+.ok { color:var(--ok); } .bad { color:var(--bad); }
+.controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+select,input[type=text] { padding:5px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; background:var(--card); }
+button { padding:5px 12px; border:1px solid var(--line); border-radius:6px; background:var(--card); font:inherit; cursor:pointer; }
+button:hover { border-color:var(--acc); }
+button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+button.okb.selected { background:var(--ok); color:#fff; border-color:var(--ok); }
+button.badb.selected { background:var(--bad); color:#fff; border-color:var(--bad); }
+button.uncb.selected { background:var(--warn); color:#fff; border-color:var(--warn); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+.card.done { opacity:.65; }
+.src { font-size:15px; }
+.hl { background:#ffe9c7; border-bottom:2px solid var(--warn); padding:0 1px; }
+.sub { color:var(--sub); font-size:12px; margin-top:2px; }
+.fix { margin-top:4px; }
+.fix b { color:var(--ok); }
+.ops { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ops input { flex:1; min-width:160px; }
+.pager { display:flex; gap:10px; align-items:center; margin:10px 0; color:var(--sub); font-size:12.5px; }
+.promote { margin-top:4px; }
+.hint { color:var(--sub); font-size:12px; margin:6px 0 10px; }
+kbd { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11px; background:var(--bg); }
+.login { position:fixed; inset:0; background:rgba(20,24,30,.45); display:flex; align-items:center; justify-content:center; z-index:9; }
+.login .box { background:var(--card); border-radius:12px; padding:22px 24px; width:320px; display:flex; flex-direction:column; gap:10px; }
+.login h2 { margin:0 0 4px; font-size:15px; }
+.login input { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+.vote { display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); margin-right:4px; }
+.vote.adopt { color:var(--ok); border-color:var(--ok); } .vote.reject { color:var(--bad); border-color:var(--bad); }
+.vote.uncertain { color:var(--warn); border-color:var(--warn); }
+.claimed { color:var(--warn); font-size:11.5px; }
+.me { font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>新增标注 · 分档抽检裁决</h1>
+  <span class="meta" id="totals">载入中…</span>
+  <span style="margin-left:auto"></span>
+  <span class="meta me" id="whoBadge"></span>
+  <button id="btnLogout" style="display:none">退出</button>
+  <a id="exportLink" download="adopted_new_labels.jsonl"><button>导出已采纳</button></a>
+</header>
+<div class="login" id="loginBox" style="display:none">
+  <div class="box">
+    <h2>加入裁决房间</h2>
+    <input id="lname" placeholder="你的名字（如：王老师）">
+    <input id="lkey" type="password" placeholder="房间口令（管理员发放）">
+    <button class="primary" id="btnLogin">进入</button>
+    <div class="sub" id="loginErr"></div>
+  </div>
+</div>
+<main>
+  <nav class="buckets" id="buckets"></nav>
+  <section>
+    <div class="controls">
+      <select id="setSel"><option value="">全部数据集</option></select>
+      <select id="statusSel">
+        <option value="all">全部状态</option>
+        <option value="todo">仅待裁决</option>
+        <option value="done">仅已裁决</option>
+      </select>
+      <input type="text" id="q" placeholder="搜索 id / 原文 / 修正">
+      <select id="signalSel">
+        <option value="">全部信号</option>
+        <option value="no_error">判无错误入</option>
+        <option value="del_intent">删除意图（fix=原文）</option>
+        <option value="noop_contra">矛盾：fix=原文</option>
+        <option value="lex_ok">词表/映射背书</option>
+        <option value="lex_contra">词典矛盾</option>
+        <option value="lex_blind">标点互换盲点</option>
+        <option value="none">无信号</option>
+      </select>
+      <button id="btnSample" class="primary" title="该桶按种子 42 的确定性抽审队列">抽审队列</button>
+      <button id="btnAll">全部队列</button>
+      <span id="bulkZone">批量(当前筛选待裁)：<button id="bulkAdopt" class="okb">采纳</button><button id="bulkReject" class="badb">放弃</button></span>
+    </div>
+    <div class="hint">键盘：<kbd>A</kbd> 采纳 · <kbd>R</kbd> 放弃 · <kbd>U</kbd> 存疑（当前焦点卡）；门槛条目需满 quorum 人后生效裁决（多数票，平票→存疑）计入放弃率。</div>
+    <div id="list"></div>
+    <div class="pager">
+      <button id="prev">← 上一页</button><span id="pageInfo"></span><button id="next">下一页 →</button>
+    </div>
+  </section>
+</main>
+<script>
+const S = { bucket:'audit', set:'', status:'all', q:'', signal:'', sample:false, offset:0, limit:20, total:0, state:null, who:null };
+// 部署在子路径（如 https://langfixer.jiulu.ltd/adjudicate/）时自适应；根路径下 PFX=''
+const PFX = location.pathname.replace(/\/(index\.html)?$/, '');
+const URL_ = p => PFX + p;
+const SIG_ZH = { no_error:['判无错误入','#8a8f98'], del_intent:['意图:删除此片段','#e6a23c'], noop_contra:['矛盾 fix=原文·机件缺陷','#e5484d'], lex_ok:['词表背书','#22a35a'], lex_contra:['词典矛盾','#e5484d'], lex_blind:['标点互换·词典盲','#e6a23c'] };
+
+async function api(p, opts){ const r = await fetch(URL_(p), opts); if(!r.ok) throw new Error((await r.json()).error||r.status); return r.json(); }
+const TYPE_ZH = { typo:'错别字/字词', grammar:'语法', punct:'标点', consistency:'一致', cohesion:'衔接', fact:'事实' };
+function esc(s){ return (s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function hi(x){ const t=esc(x.src); const a=x.a,b=Math.max(x.b,x.a+1);
+  return t.slice(0,a)+'<span class="hl">'+t.slice(a,b)+'</span>'+t.slice(b); }
+
+async function loadState(){
+  S.state = await api('/api/state');
+  const st=S.state; S.who = st.me;
+  const wb=document.getElementById('whoBadge');
+  wb.textContent = st.me ? `裁决人：${st.me}` : '';
+  document.getElementById('btnLogout').style.display = st.me && st.total_new!=null && S.room ? '' : 'none';
+  const crew = Object.entries(st.crew||{}).map(([w,c])=>`${w} ${c.total}`).join(' · ');
+  document.getElementById('totals').textContent =
+    `逐条新增 ${st.total_new} 条 · 信号 ${Object.entries(st.signals).map(([k,v])=>`${{no_error:'判无错',del_intent:'删除意图',noop_contra:'fix=原文矛盾',lex_ok:'背书',lex_contra:'词典矛盾',lex_blind:'标点盲点',none:'无信号'}[k]||k} ${v}`).join(' · ')} · 已裁决 ${st.reviewed_total}${crew?`（${crew}）`:''} · 门槛 ≥${st.gate.min_reviewed} 条/桶（quorum ${st.gate.quorum}）、放弃率 ≤${(st.gate.max_err*100).toFixed(0)}%`;
+  const nav=document.getElementById('buckets'); nav.innerHTML='';
+  for(const [b,s] of Object.entries(st.buckets)){
+    const d=document.createElement('div'); d.className='bkt'+(b===S.bucket?' active':'');
+    const pct=Math.min(100, s.reviewed/Math.max(st.gate.min_reviewed,1)*100);
+    d.innerHTML=`<h2>${b} <span class="num">${s.total} 条</span></h2>
+      <div class="num">${esc(s.desc)}</div>
+      <div class="num">${Object.entries(s.by_type).map(([t,n])=>`${TYPE_ZH[t]||t} ${n}`).join(' · ')}</div>
+      <div class="bar ${s.err_rate>st.gate.max_err&&s.reviewed?'bar err':''}"><i style="width:${pct}%"></i></div>
+      <div class="num">抽检 ${s.reviewed}${s.any_voters>s.reviewed?`（已投 ${s.any_voters}，待满 quorum）`:''}${s.reviewed?` · 放弃率 ${(s.err_rate*100).toFixed(1)}% ${s.err_rate<=st.gate.max_err?'<span class="ok">✓</span>':'<span class="bad">✗</span>'}`:''}
+        ${s.promoted_at?' · <span class="ok">已整桶升级</span>':(s.gate_ok&&S.bucket!== 'must'?`<button class="promote" data-b="${b}">整桶升级</button>`:'')}</div>`;
+    d.onclick=e=>{ if(e.target.classList.contains('promote')){
+        const note=prompt('升级备注（写进 buckets_promoted.json）')||'';
+        api('/api/promote',{method:'POST',body:JSON.stringify({bucket:b,note})}).then(loadState).catch(al);
+        e.stopPropagation(); return; }
+      S.bucket=b; S.offset=0; S.sample=false; loadState().then(renderNavList); };
+    nav.appendChild(d);
+  }
+  const sel=document.getElementById('setSel');
+  if(sel.options.length<=1) sel.innerHTML='<option value="">全部数据集</option>'+st.sets.map(s=>`<option>${s}</option>`).join('');
+}
+function renderNavList(){ document.querySelectorAll('.bkt').forEach((d,i)=>d.classList.toggle('active', Object.keys(S.state.buckets)[i]===S.bucket)); loadList(); }
+
+function qs(){ const p=new URLSearchParams({bucket:S.bucket,set:S.set,status:S.status,q:S.q,offset:S.offset,limit:S.limit});
+  if(S.sample) p.set('sample','1'); return p; }
+async function loadList(){
+  const r=await api('/api/items?'+qs()); S.total=r.total;
+  document.getElementById('pageInfo').textContent=`${r.total} 条 · 第 ${Math.floor(r.offset/S.limit)+1} 页${S.sample?'（抽审队列·种子42）':''}`;
+  const list=document.getElementById('list'); list.innerHTML='';
+  for(const x of r.items){
+    const v=x.mine; const sig=x.signal?`<span class="tag" style="color:${SIG_ZH[x.signal][1]};border-color:${SIG_ZH[x.signal][1]}">${SIG_ZH[x.signal][0]}</span>`:'';
+    const votes=(x.votes||[]).filter(t=>!x.mine||t.who!==x.mine)
+      .map(t=>`<span class="vote ${t.verdict}">${esc(t.who)} ${{adopt:'采纳',reject:'放弃',uncertain:'存疑'}[t.verdict]}</span>`).join('');
+    const noop=x.frag&&x.frag===x.fix;
+    const fixLine=noop?(x.signal==='del_intent'?`<div class="fix" style="color:var(--warn,#e6a23c)">删除此片段「${esc(x.frag)}」 <span class="sub">${esc(x.why)}</span></div>`:x.signal==='no_error'?`<div class="fix sub">判无错：原文保留 <span>${esc(x.why)}</span></div>`:`<div class="fix" style="color:#e5484d">fix==原文（机件缺陷，采纳前逐条核对 why） <span class="sub">${esc(x.why)}</span></div>`):x.fix?`<div class="fix">建议 → <b>${esc(x.fix)}</b> <span class="sub">${esc(x.why)}</span></div>`:`<div class="fix sub">建议删除 <span>${esc(x.why)}</span></div>`;
+    const c=document.createElement('div'); c.className='card'+(v?' done':''); c.tabIndex=0;
+    c.innerHTML=`<div class="src">${hi(x)}</div>
+      <div class="sub">${sig} ${esc(x.id)} · ${esc(x.set)} · ${TYPE_ZH[x.type]||esc(x.type)} · 金集此句已有 ${x.gold_n} 处 · ${esc(x.labeler)}/${esc(x.prompt_sha)}</div>
+      ${votes?`<div style="margin-top:4px">${votes}${x.eff?`<span class="tag">生效：${{adopt:'采纳',reject:'放弃',uncertain:'存疑'}[x.eff]}（${x.nvotes}人）</span>`:''}</div>`:(x.eff?`<div style="margin-top:4px"><span class="tag">生效：${{adopt:'采纳',reject:'放弃',uncertain:'存疑'}[x.eff]}（${x.nvotes}人）</span></div>`:'')}
+      ${fixLine}
+      <div class="ops">
+        <button class="okb${v&&v.verdict==='adopt'?' selected':''}">采纳 (A)</button>
+        <button class="badb${v&&v.verdict==='reject'?' selected':''}">放弃 (R)</button>
+        <button class="uncb${v&&v.verdict==='uncertain'?' selected':''}">存疑 (U)</button>
+        <input placeholder="原因（放弃时建议填）" value="${v&&v.reason?esc(v.reason):''}">
+        ${v?`<span class="sub">你已裁决：${{adopt:'采纳',reject:'放弃',uncertain:'存疑'}[v.verdict]}</span>`:''}
+        ${x.claim?`<span class="claimed">🔒 ${esc(x.claim)} 领取中</span>`:`<button class="claimb">领取</button>`}
+      </div>`;
+    const inp=c.querySelector('input');
+    const cb=c.querySelector('.claimb'); if(cb) cb.onclick=()=>{ api('/api/claim',{method:'POST',body:JSON.stringify({iid:x.iid})}).then(loadList).catch(e=>al(e.message)); };
+    const set=async(vd)=>{ try{ await api('/api/verdict',{method:'POST',body:JSON.stringify({iid:x.iid,verdict:vd,reason:inp.value})});
+        c.querySelector('.ops').insertAdjacentHTML('beforeend','<span class="sub">已裁决 ✓</span>'); c.classList.add('done');
+        c.querySelectorAll('.ops button').forEach(b=>b.classList.remove('selected'));
+        ({adopt:'.okb',reject:'.badb',uncertain:'.uncb'}[vd]&&c.querySelector(({adopt:'.okb',reject:'.badb',uncertain:'.uncb'}[vd])).classList.add('selected'));
+        loadState();
+      }catch(e){ al(e.message);} };
+    c.querySelectorAll('.ops button')[0].onclick=()=>set('adopt');
+    c.querySelectorAll('.ops button')[1].onclick=()=>set('reject');
+    c.querySelectorAll('.ops button')[2].onclick=()=>set('uncertain');
+    c.onkeydown=e=>{ if(e.target===inp) return;
+      if(e.key==='a'||e.key==='A') set('adopt'); if(e.key==='r'||e.key==='R') set('reject'); if(e.key==='u'||e.key==='U') set('uncertain'); };
+    list.appendChild(c);
+  }
+}
+function al(m){ alert(m); }
+async function boot(){
+  document.getElementById('exportLink').href = URL_('/api/export');
+  const w = await api('/api/whoami');
+  S.room = w.room;
+  if (w.room && !w.who) {
+    if (w.token_mode) {
+      document.getElementById('lname').style.display = 'none';
+      document.getElementById('lkey').placeholder = '你的评审令牌（管理员发放）';
+    }
+    document.getElementById('loginBox').style.display = 'flex';
+    document.getElementById('btnLogin').onclick = async ()=>{
+      const name=document.getElementById('lname').value.trim(), key=document.getElementById('lkey').value;
+      if(!w.token_mode && !name){ document.getElementById('loginErr').textContent='请填名字'; return; }
+      const body = w.token_mode ? {token:key} : {name,key};
+      const r = await fetch(URL_('/api/login'),{method:'POST',body:JSON.stringify(body)});
+      if(!r.ok){ document.getElementById('loginErr').textContent=(await r.json()).error||'登录失败'; return; }
+      document.getElementById('loginBox').style.display='none';
+      loadState().then(loadList);
+    };
+    document.getElementById('btnLogout').style.display='none';
+    return;
+  }
+  document.getElementById('btnLogout').style.display = w.room ? '' : 'none';
+  loadState().then(loadList).catch(e=>al(e.message));
+}
+document.getElementById('btnLogout').onclick=()=>api('/api/logout',{method:'POST'}).then(()=>location.reload());
+for(const [id,k] of [['setSel','set'],['statusSel','status'],['q','q'],['signalSel','signal']])
+  document.getElementById(id).addEventListener('change',e=>{ S[k]=e.target.value; S.offset=0; loadList(); });
+async function bulk(vd){
+  const p=new URLSearchParams({bucket:S.bucket,set:S.set,q:S.q,signal:S.signal,status:'todo'});
+  const r=await api('/api/items?'+p+'&limit=1'); if(!r.total){alert('筛选集内没有待裁条目');return;}
+  if(!confirm(`对当前筛选的 ${r.total} 条待裁条目批量「${vd==='adopt'?'采纳':'放弃'}」？（采纳会自动跳过 fix==原文三档：判无错/删除意图/矛盾）`))return;
+  const done=(await api('/api/bulk?'+p,{method:'POST',body:JSON.stringify({verdict:vd,reason:'预筛批量'})})).done;
+  alert(`已裁决 ${done} 条`); loadState().then(loadList);
+}
+document.getElementById('bulkAdopt').onclick=()=>bulk('adopt');
+document.getElementById('bulkReject').onclick=()=>bulk('reject');
+document.getElementById('btnSample').onclick=()=>{ S.sample=true; S.offset=0; loadList(); };
+document.getElementById('btnAll').onclick=()=>{ S.sample=false; S.offset=0; loadList(); };
+document.getElementById('prev').onclick=()=>{ S.offset=Math.max(0,S.offset-S.limit); loadList(); };
+document.getElementById('next').onclick=()=>{ if(S.offset+S.limit<S.total){ S.offset+=S.limit; loadList(); } };
+boot().catch(e=>al(e.message));
+</script>
+</body>
+</html>

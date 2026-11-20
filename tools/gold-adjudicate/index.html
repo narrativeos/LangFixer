@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<!-- 金集灰区 · 自动裁决+人裁+标记通道（配 serve.py；样式与 label-adjudicate 同源） -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>金集灰区裁决</title>
+<style>
+:root { --bg:#f7f8fa; --card:#fff; --line:#e5e7eb; --txt:#1f2329; --sub:#6b7280;
+        --ok:#22a35a; --bad:#e5484d; --warn:#e6a23c; --acc:#3b7cff; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg); color:var(--txt); }
+header { padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line);
+         display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+h1 { font-size:16px; margin:0; }
+.meta { color:var(--sub); font-size:12.5px; }
+main { display:grid; grid-template-columns:250px 1fr; gap:16px; padding:16px 20px; max-width:1200px; margin:0 auto; }
+.buckets { display:flex; flex-direction:column; gap:10px; }
+.bkt { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; }
+.bkt.active { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
+.bkt h2 { font-size:13.5px; margin:0; }
+.bkt .num { color:var(--sub); font-size:12px; }
+.bar { height:6px; background:var(--line); border-radius:3px; margin-top:6px; overflow:hidden; }
+.bar i { display:block; height:100%; background:var(--acc); }
+.tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); color:var(--sub); }
+.ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+.controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+select { padding:5px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; background:var(--card); }
+button { padding:5px 12px; border:1px solid var(--line); border-radius:6px; background:var(--card); font:inherit; cursor:pointer; }
+button:hover { border-color:var(--acc); }
+button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+.card.done { opacity:.65; }
+.src { font-size:15px; word-break:break-all; }
+.hl { background:#ffe9c7; border-bottom:2px solid var(--warn); padding:0 2px; font-weight:600; }
+.sub { color:var(--sub); font-size:12px; margin-top:4px; }
+.gold b { color:var(--bad); } .vfix b { color:var(--ok); }
+.ops { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ops .sel.real.selected { background:var(--ok); color:#fff; border-color:var(--ok); }
+.ops .sel.noise.selected { background:var(--bad); color:#fff; border-color:var(--bad); }
+.ops .sel.mark.selected { background:var(--warn); color:#fff; border-color:var(--warn); }
+.pager { display:flex; gap:10px; align-items:center; margin:10px 0; color:var(--sub); font-size:12.5px; }
+.hint { color:var(--sub); font-size:12px; margin:6px 0 10px; }
+kbd { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11px; background:var(--bg); }
+</style>
+</head>
+<body>
+<header>
+  <h1>金集灰区 · 裁决</h1>
+  <span class="meta" id="totals">载入中…</span>
+  <a href="/api/export" download="gold_verdicts.jsonl"><button>导出裁决(真错/噪声)</button></a>
+  <a href="/api/export-marks" download="gold_rule_candidates.jsonl"><button>导出规则候选</button></a>
+</header>
+<main>
+  <nav class="buckets" id="buckets"></nav>
+  <section>
+    <div class="controls">
+      <select id="fset"><option value="">全部集</option></select>
+      <select id="fdone">
+        <option value="0">未裁</option><option value="">全部</option><option value="1">已裁</option>
+      </select>
+      <button id="btnbulk" class="primary">按默认批量采纳当前筛选</button>
+      <span class="meta" id="fcount"></span>
+    </div>
+    <div class="hint">默认判：自动·真错→<b>真错</b>（带 v2.1 旧 fix）；自动·噪声→<b>噪声</b>（采纳前抽检 ≥58、反判 ≤2%）；标记桶→<b>标记</b>（落规则通道，运行时由用户命中判断）。快捷键 <kbd>R</kbd> 真错 <kbd>N</kbd> 噪声 <kbd>M</kbd> 标记 <kbd>J</kbd>/<kbd>K</kbd> 翻页。</div>
+    <div id="list"></div>
+    <div class="pager">
+      <button id="prev">← 上一页</button><span id="page"></span><button id="next">下一页 →</button>
+    </div>
+  </section>
+</main>
+<script>
+const LIM=20; let bucket="", offset=0, state=null, cur=[];
+const $=s=>document.querySelector(s);
+const q=()=>{const p=new URLSearchParams();
+  if(bucket)p.set("bucket",bucket);
+  if($("#fset").value)p.set("set",$("#fset").value);
+  if($("#fdone").value)p.set("done",$("#fdone").value);
+  return p.toString();};
+const esc=s=>(s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+function ctxHtml(x){ // 灰区 ctx 已用 ⟦⟧ 包住目标字，换成高亮
+  return esc(x.ctx).replace(/⟦([\s\S]*?)⟧/g,'<span class="hl">$1</span>')||"<i>(句首/尾)</i>";}
+function goldHtml(x){const g=x.gold;
+  if(g.op=="D"||g.ref===""&&g.a===g.b+1) return `金集判<span class="gold"><b>删「${esc(x.char)||"—"}」</b></span>`;
+  if(g.a===g.b) return `金集判此处<span class="gold"><b>补「${esc(g.ref)}」</b></span>`;
+  return `金集判「<b>${esc(x.char)||"—"}</b>»<span class="gold"><b>「${esc(g.ref)}」</b></span>`;}
+function sigHtml(x){const s=x.sig,p=[];
+  if(s.hit21)p.push('<span class="tag ok">v2.1已给fix</span>');
+  if(s.asked21)p.push('<span class="tag">v2.1问过</span>');
+  if(s.asked22)p.push('<span class="tag">v2.2问过</span>');
+  if(x.v21fix&&x.v21fix.fix)p.push(`<span class="vfix tag">旧fix→「${esc(x.v21fix.fix)}」${esc(x.v21fix.type||"")}</span>`);
+  p.push(`<span class="tag">${x.partition}</span>`);return p.join(" ");}
+async function loadState(){
+  state=await (await fetch("/api/state")).json();
+  const L={auto_real:"自动·真错",auto_noise:"自动·噪声",manual:"边界人裁",mark:"标记→规则通道"};
+  $("#buckets").innerHTML=Object.entries(state.buckets).map(([b,v])=>{
+    const pct=v.total?Math.round(100*v.reviewed/v.total):0;
+    const gate=b=="mark"?"":(v.promoted?'<span class="tag ok">已升级</span>':
+      (v.gate_ok?'<span class="tag ok">过门待升级</span>':`<span class="tag">抽${v.reviewed} 反判${(v.err_rate*100).toFixed(1)}%</span>`));
+    return `<div class="bkt${b==bucket?" active":""}" onclick="setBucket('${b}')">
+      <h2>${L[b]} ${gate}</h2><div class="num">${v.total.toLocaleString()} · 已裁 ${v.reviewed.toLocaleString()}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;}).join("");
+  $("#totals").textContent=`灰区 ${state.total.toLocaleString()} 字符 · 已裁 ${state.reviewed_total.toLocaleString()} · 快捷键 R/N/M`;
+  if(!$("#fset").options.length-1)
+    $("#fset").innerHTML+='<option value="">全部集</option>'+state.sets.map(s=>`<option>${s}</option>`).join("");
+}
+async function loadItems(){
+  const d=await (await fetch("/api/items?"+q()+"&offset="+offset+"&limit="+LIM)).json();
+  cur=d.items; $("#fcount").textContent=`筛选内 ${d.total.toLocaleString()} 条`;
+  $("#page").textContent=`${offset+1}–${Math.min(offset+LIM,d.total)} / ${d.total.toLocaleString()}`;
+  $("#list").innerHTML=d.items.map((x,i)=>{const v=x.verdict;
+    return `<div class="card${v?" done":""}" id="c${i}">
+      <div class="src">${ctxHtml(x)}</div>
+      <div class="sub">${x.id} · ${x.set} · 第${x.pos+1}字 · ${goldHtml(x)} ${sigHtml(x)}</div>
+      <div class="ops">
+        ${["real:真错","noise:噪声","mark:标记"].map(t=>{const[k,l]=t.split(":");
+          return `<button class="sel ${k}${v&&v.verdict==k?" selected":""}" onclick="verdict(${i},'${k}')">${l}</button>`;}).join("")}
+        ${v?`<span class="meta">已裁：${v.verdict}${v.reason?"（"+esc(v.reason)+"）":""}</span>`:""}
+      </div></div>`;}).join("")||'<div class="hint">空——换个筛选。</div>';
+}
+function setBucket(b){bucket=b;offset=0;loadState();loadItems();}
+async function verdict(i,vk){const x=cur[i];if(!x)return;
+  await fetch("/api/verdict",{method:"POST",body:JSON.stringify({iid:x.iid,verdict:vk})});
+  await loadState(); await loadItems();}
+async function bulk(){
+  if(!bucket){alert("先在左侧选一个桶——批量按桶的默认判。");return;}
+  if(!confirm(`把当前筛选内未裁条目全部按默认判（${{auto_real:"真错",auto_noise:"噪声",manual:"(跳过)",mark:"标记"}[bucket]}）采纳？`))return;
+  const r=await (await fetch("/api/bulk?"+q(),{method:"POST",body:JSON.stringify({})})).json();
+  alert("已裁 "+r.done.toLocaleString()+" 条");await loadState();await loadItems();}
+async function promote(b){const note=prompt("升级备注（抽检结论）：");if(note===null)return;
+  const r=await (await fetch("/api/promote",{method:"POST",body:JSON.stringify({bucket:b,note})})).json();
+  if(r.error)alert(r.error);await loadState();}
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName=="INPUT"||e.target.tagName=="SELECT")return;
+  const i=cur.findIndex(x=>!x.verdict); if(i<0)i=0;
+  if(e.key=="r"||e.key=="R")verdict(i,"real");
+  else if(e.key=="n"||e.key=="N")verdict(i,"noise");
+  else if(e.key=="m"||e.key=="M")verdict(i,"mark");
+  else if(e.key=="j"||e.key=="J"){offset+=LIM;loadItems();}
+  else if(e.key=="k"||e.key=="K"){offset=Math.max(0,offset-LIM);loadItems();}});
+$("#btnbulk").onclick=bulk; $("#prev").onclick=()=>{offset=Math.max(0,offset-LIM);loadItems();};
+$("#next").onclick=()=>{offset+=LIM;loadItems();}; $("#fset").onchange=()=>{offset=0;loadItems();};
+$("#fdone").onchange=()=>{offset=0;loadItems();};
+loadState(); loadItems();
+</script>
+</body>
+</html>

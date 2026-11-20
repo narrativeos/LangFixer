@@ -1,0 +1,215 @@
+{
+  "id": "20261112T223729Z_mucgec_current_capability",
+  "ts": "2026-11-12T22:37:29Z",
+  "benchmark": "mucgec",
+  "split": null,
+  "lang": "zh",
+  "beta": 0.5,
+  "arm": "current",
+  "mode": "capability",
+  "ablation": null,
+  "config": {
+    "llm_model_id": "generic",
+    "llm_model": "Qwen3.8",
+    "llm_enabled": true,
+    "decision_enabled": false,
+    "l3_enabled": true,
+    "knowledge_enabled": true,
+    "embedding_configured": true
+  },
+  "sentences": {
+    "total": 1137,
+    "ok": 1137,
+    "failed": 0
+  },
+  "n_sentences": 1137,
+  "n_gold_sentences": 1082,
+  "n_gold_edits": 7258,
+  "overall": {
+    "n_pred": 2007,
+    "tp_strict": 41,
+    "p_strict": 0.0204,
+    "r_strict": 0.0056,
+    "f_beta": 0.0134,
+    "tp_overlap": 1646,
+    "r_overlap": 0.2268,
+    "fp_strict": 1605,
+    "fp_overlap": 361,
+    "gate": {
+      "tp": 920,
+      "fp": 24,
+      "fn": 162,
+      "tn": 31,
+      "precision": 0.9746,
+      "recall": 0.8503,
+      "f1": 0.9082
+    }
+  },
+  "layers": {
+    "rule": {
+      "n_pred": 125,
+      "tp_strict": 2,
+      "p_strict": 0.016,
+      "r_strict": 0.0003,
+      "f_beta": 0.0013,
+      "tp_overlap": 21,
+      "r_overlap": 0.0029,
+      "fp_strict": 19,
+      "fp_overlap": 104,
+      "gate": {
+        "tp": 100,
+        "fp": 12,
+        "fn": 982,
+        "tn": 43,
+        "precision": 0.8929,
+        "recall": 0.0924,
+        "f1": 0.1675
+      },
+      "recall_share": 0.0032,
+      "attributed_gold": 23
+    },
+    "decision": {
+      "n_pred": 0,
+      "tp_strict": 0,
+      "p_strict": 0.0,
+      "r_strict": 0.0,
+      "f_beta": 0.0,
+      "tp_overlap": 0,
+      "r_overlap": 0.0,
+      "fp_strict": 0,
+      "fp_overlap": 0,
+      "gate": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 1082,
+        "tn": 55,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "recall_share": 0.0,
+      "attributed_gold": 0
+    },
+    "knowledge": {
+      "n_pred": 0,
+      "tp_strict": 0,
+      "p_strict": 0.0,
+      "r_strict": 0.0,
+      "f_beta": 0.0,
+      "tp_overlap": 0,
+      "r_overlap": 0.0,
+      "fp_strict": 0,
+      "fp_overlap": 0,
+      "gate": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 1082,
+        "tn": 55,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "recall_share": 0.0,
+      "attributed_gold": 0
+    },
+    "feature": {
+      "n_pred": 0,
+      "tp_strict": 0,
+      "p_strict": 0.0,
+      "r_strict": 0.0,
+      "f_beta": 0.0,
+      "tp_overlap": 0,
+      "r_overlap": 0.0,
+      "fp_strict": 0,
+      "fp_overlap": 0,
+      "gate": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 1082,
+        "tn": 55,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "recall_share": 0.0,
+      "attributed_gold": 0
+    },
+    "statistical": {
+      "n_pred": 0,
+      "tp_strict": 0,
+      "p_strict": 0.0,
+      "r_strict": 0.0,
+      "f_beta": 0.0,
+      "tp_overlap": 0,
+      "r_overlap": 0.0,
+      "fp_strict": 0,
+      "fp_overlap": 0,
+      "gate": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 1082,
+        "tn": 55,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "recall_share": 0.0,
+      "attributed_gold": 0
+    },
+    "llm": {
+      "n_pred": 1882,
+      "tp_strict": 39,
+      "p_strict": 0.0207,
+      "r_strict": 0.0054,
+      "f_beta": 0.0132,
+      "tp_overlap": 1625,
+      "r_overlap": 0.2239,
+      "fp_strict": 1586,
+      "fp_overlap": 257,
+      "gate": {
+        "tp": 896,
+        "fp": 18,
+        "fn": 186,
+        "tn": 37,
+        "precision": 0.9803,
+        "recall": 0.8281,
+        "f1": 0.8978
+      },
+      "recall_share": 0.4734,
+      "attributed_gold": 3436
+    }
+  },
+  "funnel": {
+    "llm_calls": 1137,
+    "llm_calls_per_100": 100.0,
+    "llm_reach": 1.0,
+    "avg_llm_ms": 48214,
+    "cumulative": [
+      {
+        "prefix": "① 规则",
+        "resolved": 21,
+        "rate": 0.0029
+      },
+      {
+        "prefix": "①+② 决策",
+        "resolved": 21,
+        "rate": 0.0029
+      },
+      {
+        "prefix": "①+②+②.5 知识",
+        "resolved": 21,
+        "rate": 0.0029
+      },
+      {
+        "prefix": "①+②+②.5+③-F L3",
+        "resolved": 21,
+        "rate": 0.0029
+      },
+      {
+        "prefix": "全级联",
+        "resolved": 1633,
+        "rate": 0.225
+      }
+    ]
+  }
+}

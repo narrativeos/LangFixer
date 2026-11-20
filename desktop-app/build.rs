@@ -5,5 +5,7 @@ fn main() {
     let source = std::env::var("LANGFIXER_RELEASE_SOURCE").unwrap_or_else(|_| "github".into());
     println!("cargo:rustc-env=LANGFIXER_RELEASE_SOURCE={source}");
     println!("cargo:rerun-if-env-changed=LANGFIXER_RELEASE_SOURCE");
+    // 自测钩子（update.rs::endpoints）：烧入自定义更新端点，正式发布不设置
+    println!("cargo:rerun-if-env-changed=LANGFIXER_UPDATE_TEST_ENDPOINT");
     tauri_build::build()
 }

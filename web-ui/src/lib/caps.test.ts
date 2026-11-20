@@ -31,10 +31,13 @@ describe('sanitizeCaps', () => {
 describe('view gating', () => {
   const caps: Caps = { learning: true, proofreading: false, ops: false }
 
-  it('核心视图（workspace/settings）始终可见', () => {
+  it('核心视图（workspace/settings/layers）始终可见', () => {
     expect(viewCapKey('workspace')).toBeNull()
     expect(viewAllowed('workspace', caps)).toBe(true)
     expect(viewAllowed('settings', caps)).toBe(true)
+    // 各层贡献度报告是只读质量透明面：评审通道（无 ops 位）必须可达
+    expect(viewCapKey('layers')).toBeNull()
+    expect(viewAllowed('layers', caps)).toBe(true)
   })
 
   it('载体审校依赖 proofreading；未开启时不可见', () => {
@@ -54,5 +57,10 @@ describe('view gating', () => {
   it('练习与复习依赖 learning', () => {
     expect(viewAllowed('learning', caps)).toBe(true)
     expect(viewAllowed('learning', { ...caps, learning: false })).toBe(false)
+  })
+
+  it('文档审校是共享核心视图（无能力位依赖，始终可见）', () => {
+    expect(viewCapKey('docjobs')).toBeNull()
+    expect(viewAllowed('docjobs', { learning: false, proofreading: false, ops: false })).toBe(true)
   })
 })

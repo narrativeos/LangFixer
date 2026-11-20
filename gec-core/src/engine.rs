@@ -21,7 +21,8 @@
 //! 响应级别语义（P0.5 重绑：**L3 特征模型是唯一的 pre-LLM 门控**）：
 //! - level 1：规则（+ 决策模型，若显式启用）；
 //! - level 2：level 1 + L3 门控（L3 启用时：高置信判定直接定案，
-//!   弃权 / 服务不可用 → LLM 兜底；L3 未启用时回退旧语义：决策模型弃权 → LLM 兜底）；
+//!   弃权 / 服务不可用 → LLM 兜底；L3 **显式关闭** → **无条件** LLM 兜底，
+//!   与 l3.rs「回退无条件 LLM」口径一致；从未配置 L3 时回退旧语义：决策模型弃权触发）；
 //! - level 3：level 1 + L3 门控 + **无条件**全文 LLM（「漏报」兜底）。
 //!
 //! LLM 兜底层（[`LlmGecEngine`]）不静态挂载：由 API / 桌面端在 level 2/3 请求
@@ -94,6 +95,18 @@ pub trait GecEngine: Send + Sync {
     fn name(&self) -> &str;
     /// 检测文本中的错误
     async fn detect(&self, text: &str) -> Result<Vec<Error>, DetectorError>;
+    /// 本次调用的**运行态输出通道**（C4 修复）：预算块/窗执行摘要与所有权空洞
+    /// 写入调用方自带的 [`RunReport`](crate::quality::RunReport)，经调用栈携带而非
+    /// 存入引擎共享槽——并发请求各用各的，质量/缓存核算不再互染。
+    /// 默认实现委托 [`detect`](Self::detect)（无预算块循环的引擎不写入）；有切块的
+    /// 引擎（stat 滑窗）覆写本方法。
+    async fn detect_run(
+        &self,
+        text: &str,
+        _run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        self.detect(text).await
+    }
     /// 最近一次 `detect` 中的 NLP 服务调用信息（`None` = 未调用 NLP 服务）。
     /// 组合引擎（级联 / 组合检测器）覆写本方法，从规则层转发。
     fn last_nlp_call(&self) -> Option<NlpCall> {
@@ -103,6 +116,20 @@ pub trait GecEngine: Send + Sync {
     /// 组合引擎（[`CascadeDetector`]）覆写本方法转发到决策层。
     fn decision_engine(&self) -> Option<&crate::decision::DecisionGecEngine> {
         None
+    }
+    /// 带可选段级事件接收器与运行态输出的底层检测：默认实现委托
+    /// [`detect_run`](Self::detect_run)（无预算块循环的引擎零事件）；执行循环内
+    /// 有切块的引擎（stat 滑窗）覆写本方法逐块推
+    /// [`crate::progress::StageEvent::ChunkBegin`] /
+    /// [`crate::progress::StageEvent::ChunkEnd`]。级联的 rule 分支经本方法注入 sink，
+    /// 使 stat 臂的窗进度同样上屏。
+    async fn detect_traced(
+        &self,
+        text: &str,
+        _sink: Option<crate::progress::StageSink>,
+        run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        self.detect_run(text, run).await
     }
     /// 三级响应检测：
     /// - `level = 1`：规则（+ 决策模型，若引擎组合中挂载）；
@@ -133,9 +160,11 @@ pub trait GecEngine: Send + Sync {
             )));
         }
         let started = std::time::Instant::now();
-        // ① 规则检测（计时含 NLP 服务调用；NLP 调用信息事后从引擎读取）
+        // ① 规则检测（计时含 NLP 服务调用；NLP 调用信息事后从引擎读取）；
+        // 预算窗执行摘要经 RunReport 随调用栈携带（C4：不落引擎共享槽）
+        let mut run = crate::quality::RunReport::default();
         let t_rule = std::time::Instant::now();
-        let mut errors = self.detect(text).await?;
+        let mut errors = self.detect_traced(text, None, &mut run).await?;
         let rule_ms = t_rule.elapsed().as_millis() as u64;
         let nlp = self.last_nlp_call();
         // 无来源错误补标 `rule`（组合引擎内部已自行补标的此处不再变化）
@@ -149,6 +178,10 @@ pub trait GecEngine: Send + Sync {
         // （无决策层的引擎 level 2 无弃权信号，等价 1 级）
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
+        let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
+        let mut llm_ran = false;
+        // ⑦ dropped 账本（§7）：本路径来源只有 LLM 层；out_of_range 恒 0 预留
+        let mut dropped = crate::quality::DroppedLedger::default();
         if force_llm || level == 3 {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -157,16 +190,62 @@ pub trait GecEngine: Send + Sync {
                 )
             })?;
             let t_llm = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
-            llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
-            layers.push(LayerReport::new(
-                shared_model::sources::LLM,
-                "ran",
-                extra.len(),
-            ));
-            merge_errors(&mut errors, extra);
+            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+            // 不当作「复查确认干净」。运行时失败（超时/排队耗尽/熔断开断）→ 降级：
+            // 保留规则层结果，层记 `unavailable`（与定向复查、L3 失败同一先例），
+            // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
+            // 那是要人改设置，不是运行时故障。
+            match llm_layer_detect(llm, text, None).await {
+                Ok((extra, llm_status, clean, chunk, ledger)) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = clean;
+                    llm_ran = true;
+                    llm_chunk = Some(chunk);
+                    dropped.merge(&ledger);
+                    layers.push(LayerReport::new(
+                        shared_model::sources::LLM,
+                        llm_status,
+                        extra.len(),
+                    ));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                    layers.push(LayerReport::new(
+                        shared_model::sources::LLM,
+                        "unavailable",
+                        0,
+                    ));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则层结果（本轮 LLM 未参与）");
+                }
+            }
         }
+        // S6 质量自描述（Detect Pipeline v2 §5）：段级预算（本层 LLM + 成员引擎的
+        // 预算窗）进 chunks；layers → 降级项；句级单层引擎不核算
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = run.chunks.take();
+        if let Some(c) = &llm_chunk {
+            chunk_stats = Some(match chunk_stats {
+                Some(mut a) => {
+                    a.merge(c);
+                    a
+                }
+                None => c.clone(),
+            });
+        }
+        let chunks = match chunk_stats {
+            Some(c) => c,
+            None if (force_llm || level == 3) && !llm_ran => crate::quality::ChunkStats {
+                mode: "single".into(),
+                total: 1,
+                done: 0,
+                failed: 1,
+                parse_failed: 0,
+            },
+            None => crate::quality::ChunkStats::single(),
+        };
+        let mut quality =
+            crate::quality::QualityReport::assemble(&layers, chunks.coverage(), run.unowned_chars);
+        quality.dropped = dropped;
         Ok(DetectOutcome {
             errors,
             decision_abstained: false,
@@ -180,7 +259,24 @@ pub trait GecEngine: Send + Sync {
                 ..Default::default()
             },
             layers,
+            quality: Some(quality),
+            chunks: Some(chunks),
+            sentences: None,
         })
+    }
+    /// 与 [`detect_level`](Self::detect_level) 相同，但附带可选的阶段事件接收器
+    /// （[`crate::progress::StageSink`]）：支持流式推送的引擎（级联检测器）在
+    /// 每个阶段结束点推送 [`crate::progress::StageEvent`]，供前端分阶段进度条实时渲染。
+    /// 默认实现委托 `detect_level`（单层引擎不产生阶段内事件）。
+    async fn detect_level_traced(
+        &self,
+        text: &str,
+        level: u8,
+        force_llm: bool,
+        llm: Option<&LlmGecEngine>,
+        _progress: Option<crate::progress::StageSink>,
+    ) -> Result<DetectOutcome, DetectorError> {
+        self.detect_level(text, level, force_llm, llm).await
     }
 }
 
@@ -261,6 +357,13 @@ pub struct DetectOutcome {
     /// 层级贡献摘要：本次检测**实际参与**的每层状态与检出数（前端「检测路径」展示）；
     /// 空 = 未产生（缓存命中 / 历史复用等未实际检测路径）
     pub layers: Vec<LayerReport>,
+    /// 质量自描述（Detect Pipeline v2）：`None` = 未实际检测（缓存命中 / 历史回放）；
+    /// **仅 `status == "full"` 的运行可写 LRU / 历史**（调用方在写入侧判定）
+    pub quality: Option<crate::quality::QualityReport>,
+    /// 段级（预算块）执行摘要；`None` = 未实际检测
+    pub chunks: Option<crate::quality::ChunkStats>,
+    /// 句级（结构切分）执行摘要；`None` = 未实际检测 / 单层引擎未做句级核算
+    pub sentences: Option<crate::quality::SentenceStats>,
 }
 
 /// 层级贡献报告：本次检测实际参与的每一层各一条
@@ -271,6 +374,9 @@ pub struct DetectOutcome {
 /// - `decided`：特征模型高置信定案（LLM 收缩未触发）；
 /// - `abstained`：模型明确弃权（长尾交由 LLM 兜底）；
 /// - `unavailable`：该层服务调用失败（按策略回退，不阻断检测）；
+/// - `partial`：该层**部分完成**——响应解析失败（全文单发）或部分块失败/
+///   解析失败（文档级分块复查）；此时该层的空结果**不得**解读为
+///   「复查确认干净」（`llm_confirmed_clean=false`）；
 /// - `skipped`：该层被评估但未执行（如 L3 已定案 → LLM 跳过）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LayerReport {
@@ -384,15 +490,28 @@ pub fn merge_errors(primary: &mut Vec<Error>, extra: impl IntoIterator<Item = Er
 /// - 摘录以 `\n` 分隔各段；LLM 返回的 span 若落在分隔符或跨段，
 ///   钳制到最近重叠段（LLM 偶发跨句编辑时保守收缩，不丢整条）；
 /// - 无法对应任何段的 LLM 错误（span 越界）丢弃并记 warn。
+///
+/// 返回（错误列表，dropped 账本）：账本桶 `pii_mask`（掩码区检出丢弃）、
+/// `ownership`（落在任何灰区段外的丢弃）；§7 完整性告警数据源。
 pub async fn targeted_llm_review(
     llm: &LlmGecEngine,
     text: &str,
     spans: &[[usize; 2]],
-) -> Result<Vec<Error>, DetectorError> {
-    // ① 越界钳制 + 排序 + 合并重叠/相邻 span
+) -> Result<(Vec<Error>, crate::quality::DroppedLedger), DetectorError> {
+    // ① 越界钓制 + 排序 + 合并重叠/相邻 span（钓制对齐字符边界，摘录切片不得 panic）
     let mut sp: Vec<[usize; 2]> = spans
         .iter()
-        .map(|s| [s[0].min(text.len()), s[1].min(text.len())])
+        .map(|s| {
+            let mut a = s[0].min(text.len());
+            let mut b = s[1].min(text.len());
+            while a > 0 && !text.is_char_boundary(a) {
+                a -= 1;
+            }
+            while b < text.len() && !text.is_char_boundary(b) {
+                b += 1;
+            }
+            [a, b]
+        })
         .filter(|s| s[0] < s[1])
         .collect();
     sp.sort_by_key(|s| s[0]);
@@ -404,7 +523,7 @@ pub async fn targeted_llm_review(
         }
     }
     if merged.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), crate::quality::DroppedLedger::default()));
     }
     // ② 摘录 + 段表 [excerpt_start, excerpt_end, orig_start]
     let mut excerpt = String::new();
@@ -418,7 +537,18 @@ pub async fn targeted_llm_review(
         segs.push([es, excerpt.len(), s]);
     }
     // ③ LLM 检测摘录（span 相对摘录），映射回原文
-    let found = llm.detect(&excerpt).await?;
+    // ②.5 PII 掩码：摘录送 LLM 前等长掩码（span 空间不变），
+    // 与被掩区域重叠的检出丢弃（`*` 区不可能产出有效检出）
+    let mask = crate::mask::maybe_mask(&excerpt);
+    let excerpt = match &mask {
+        Some(m) => m.text.clone(),
+        None => excerpt,
+    };
+    let mut found = llm.detect(&excerpt).await?;
+    let mut dropped = crate::quality::DroppedLedger::default();
+    if let Some(m) = &mask {
+        dropped.pii_mask = crate::mask::filter_masked_errors(&mut found, m);
+    }
     let mut out = Vec::with_capacity(found.len());
     for mut err in found {
         let seg = segs
@@ -429,6 +559,7 @@ pub async fn targeted_llm_review(
                 original = %err.original,
                 "定向 LLM 复查：错误 span 不在任何灰区段内，丢弃"
             );
+            dropped.ownership += 1;
             continue;
         };
         let shift = os - gs;
@@ -438,7 +569,110 @@ pub async fn targeted_llm_review(
         ];
         out.push(err);
     }
-    Ok(out)
+    Ok((out, dropped))
+}
+
+/// 全文 LLM 层统一执行入口：短文本单发、长文本**分块并行复查**
+/// （文档级架构 P1：10 万字+ 不再可能一次调用，且长文单发召回塌陷）。
+///
+/// 阈值与并发（环境变量，运行时设置后续接入）：
+/// - `GEC_LLM_CHUNK_CHARS`：走分块路径的字符阈值（默认 12000；0 = 恒单发）；
+/// - `GEC_LLM_CHUNK_TARGET`：目标块大小字符数（默认 1500）；
+/// - `GEC_LLM_CONCURRENCY`：块并发（默认 8）。
+///
+/// 返回（错误列表，层状态，`llm_confirmed_clean`，段级执行摘要，dropped 账本）：
+/// - 解析失败（单发）或块失败/解析失败（分块）→ 层状态 `partial`，
+///   且 `confirmed_clean` 必为 `false`——**解析失败不得伪装成「无错误」**；
+/// - 分块路径全部块失败 → [`Err`]（与单发网络失败同语义，由调用方降级）；
+/// - 第四位 [`ChunkStats`] 供调用方织入 quality.coverage / chunks（Detect Pipeline v2）；
+/// - 第五位 [`DroppedLedger`](crate::quality::DroppedLedger)：`pii_mask`（掩码区检出）
+///   与 `out_of_scope`（分块前缀区双报）；`out_of_range` 恒 0 预留（§7）。
+pub async fn llm_layer_detect(
+    llm: &LlmGecEngine,
+    text: &str,
+    progress: Option<crate::progress::StageSink>,
+) -> Result<
+    (
+        Vec<Error>,
+        &'static str,
+        bool,
+        crate::quality::ChunkStats,
+        crate::quality::DroppedLedger,
+    ),
+    DetectorError,
+> {
+    // 隐私防线：送 LLM（可能为外部端点）前掩码 PII（手机号 / 身份证 / 固话 /
+    // 长数字串 / 邮箱本地部分；等长替换，span 字节偏移空间不变）；
+    // 与被掩区域重叠的 LLM 检出丢弃。GEC_LLM_MASK_PII=0 可关
+    let mask = crate::mask::maybe_mask(text);
+    let text: &str = mask.as_ref().map(|m| m.text.as_str()).unwrap_or(text);
+    let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
+    if threshold == 0 || text.chars().count() < threshold {
+        let (mut errors, parse_failed) = llm.detect_tracked(text).await?;
+        let mut dropped = crate::quality::DroppedLedger::default();
+        if let Some(m) = &mask {
+            dropped.pii_mask = crate::mask::filter_masked_errors(&mut errors, m);
+        }
+        let clean = errors.is_empty() && !parse_failed;
+        let stats = crate::quality::ChunkStats {
+            mode: "single".into(),
+            total: 1,
+            done: if parse_failed { 0 } else { 1 },
+            failed: 0,
+            parse_failed: parse_failed as usize,
+        };
+        Ok((
+            errors,
+            if parse_failed { "partial" } else { "ran" },
+            clean,
+            stats,
+            dropped,
+        ))
+    } else {
+        let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
+        let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
+        let mut o = llm
+            .detect_document(text, target, concurrency, progress)
+            .await?;
+        let mut dropped = crate::quality::DroppedLedger {
+            out_of_scope: o.prefix_dropped,
+            ..Default::default()
+        };
+        if let Some(m) = &mask {
+            dropped.pii_mask = crate::mask::filter_masked_errors(&mut o.errors, m);
+        }
+        let bad = o.failed_chunks + o.parse_failed_chunks;
+        let clean = bad == 0 && o.errors.is_empty();
+        let status = if bad == 0 {
+            "ran"
+        } else if bad >= o.chunks {
+            "unavailable"
+        } else {
+            "partial"
+        };
+        tracing::info!(
+            chunks = o.chunks,
+            failed = o.failed_chunks,
+            parse_failed = o.parse_failed_chunks,
+            coverage = %o.coverage(),
+            "文档级 LLM 复查完成（分块并行）"
+        );
+        let stats = crate::quality::ChunkStats {
+            mode: "chunked".into(),
+            total: o.chunks,
+            done: o.chunks - bad.min(o.chunks),
+            failed: o.failed_chunks,
+            parse_failed: o.parse_failed_chunks,
+        };
+        Ok((o.errors, status, clean, stats, dropped))
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 #[async_trait]
@@ -487,6 +721,55 @@ impl GecEngine for CompositeDetector {
             }
         }
     }
+    async fn detect_run(
+        &self,
+        text: &str,
+        run: &mut crate::quality::RunReport,
+    ) -> Result<Vec<Error>, DetectorError> {
+        match self.primary.detect_run(text, run).await {
+            Ok(mut errors) => {
+                tag_source(&mut errors, self.primary.kind().as_str());
+                if let Some(fb) = &self.fallback {
+                    // 兜底引擎另用一份局部 RunReport：仅当主引擎无切块摘要时采用，
+                    // 空洞不重叠双计（与历史转发语义 primary or fallback 一致）
+                    let mut fb_run = crate::quality::RunReport::default();
+                    match fb.detect_run(text, &mut fb_run).await {
+                        Ok(mut rule_errors) => {
+                            tag_source(&mut rule_errors, fb.kind().as_str());
+                            merge_errors(&mut errors, rule_errors);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                engine = self.primary.name(),
+                                "兜底引擎检测失败，仅保留主引擎结果"
+                            );
+                        }
+                    }
+                    run.unowned_chars += fb_run.unowned_chars;
+                    if run.chunks.is_none() {
+                        run.chunks = fb_run.chunks;
+                    }
+                }
+                Ok(errors)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    engine = self.primary.name(),
+                    "主引擎不可用，回退兜底引擎"
+                );
+                match &self.fallback {
+                    Some(fb) => {
+                        let mut errors = fb.detect_run(text, run).await?;
+                        tag_source(&mut errors, fb.kind().as_str());
+                        Ok(errors)
+                    }
+                    None => Err(e),
+                }
+            }
+        }
+    }
     fn last_nlp_call(&self) -> Option<NlpCall> {
         self.primary
             .last_nlp_call()
@@ -519,9 +802,16 @@ pub struct CascadeDetector {
     pub decision: Option<Arc<DecisionGecEngine>>,
     /// 知识向量召回（可选；未配置嵌入引擎时为 None，静默跳过）
     pub knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
-    /// L3 特征模型（三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
-    /// 未启用时为 None，level 3 回退「无条件 LLM」）
+    /// L3 特征模型（三期门控层：level 2 先跑特征模型，LLM 收缩到纯长尾；
+    /// level 3 定案仍合并但不终结全文 LLM（漏报兜底臂）；未启用时为 None）
     pub l3: Option<Arc<L3FeatureEngine>>,
+    /// L3 **配置存在但显式关闭**（`enabled=false`）：level 2 门控视同「门控缺席」
+    /// 开闸，回退无条件 LLM（[`crate::l3::L3FeatureConfig`] enabled 字段的文档口径）；
+    /// 从未配置 L3 的部署保持旧语义（决策模型弃权门控）
+    pub l3_disabled: bool,
+    /// 术语库（可选；`lexicons/terminology_{lang}.json` 非空时挂载：
+    /// 受保护术语上的错误过滤 + 强制更正词注入，作用于全部来源层合并后）
+    pub terminology: Option<Arc<crate::terminology::Terminology>>,
     /// 对外报告的引擎类型（决策层挂载时报告 `decision`）
     kind_override: Option<GecEngineKind>,
 }
@@ -538,6 +828,8 @@ impl CascadeDetector {
             decision,
             knowledge_recall: None,
             l3: None,
+            l3_disabled: false,
+            terminology: None,
             kind_override: None,
         }
     }
@@ -573,13 +865,62 @@ impl GecEngine for CascadeDetector {
         force_llm: bool,
         llm: Option<&LlmGecEngine>,
     ) -> Result<DetectOutcome, DetectorError> {
+        self.detect_level_traced(text, level, force_llm, llm, None)
+            .await
+    }
+
+    /// 级联主链路（同 `detect_level`，另把各阶段完成事件推给可选 `progress` sink）。
+    /// 阶段计划 = 挂载层 + 级别；rule / decision / L3 并行段各自结束时推送，
+    /// 召回与 LLM 门控在其后；未触发的 LLM 记 skipped，管线结束推 End（总耗时）。
+    async fn detect_level_traced(
+        &self,
+        text: &str,
+        level: u8,
+        force_llm: bool,
+        llm: Option<&LlmGecEngine>,
+        progress: Option<crate::progress::StageSink>,
+    ) -> Result<DetectOutcome, DetectorError> {
         if !(1..=3).contains(&level) {
             return Err(DetectorError::DetectionFailed(format!(
                 "无效响应级别: {level}（应为 1-3）"
             )));
         }
         let started = std::time::Instant::now();
-        // ①+②(+③-F) 规则 / 决策模型 / L3 特征模型**并行**执行：
+        // ③-T 门控（开局预声明）：挂 L3、非 force 且已配置 LLM → 灰区句定向复查
+        // 可能出现（是否实际触发取决于 L3 是否部分定案；未触发在尾部记 skipped）
+        let targeted_gate = self.l3.is_some() && level >= 2 && !force_llm && llm.is_some();
+        // 阶段事件：开局声明本次参与的阶段计划（与 timings 各字段的挂载条件一致；
+        // LLM 只要门控存在就入计划，实际未触发时在尾部补记 skipped）
+        if let Some(sink) = &progress {
+            let mut plan: Vec<&'static str> = vec![shared_model::sources::RULE];
+            if self.decision.is_some() {
+                plan.push(shared_model::sources::DECISION);
+            }
+            if self.l3.is_some() && level >= 2 && !force_llm {
+                plan.push(shared_model::sources::FEATURE);
+            }
+            if self.knowledge_recall.is_some() {
+                plan.push(shared_model::sources::KNOWLEDGE);
+            }
+            if targeted_gate {
+                plan.push(shared_model::sources::TARGETED);
+            }
+            if force_llm || level >= 2 {
+                plan.push(shared_model::sources::LLM);
+            }
+            sink(crate::progress::StageEvent::Start { stages: plan });
+        }
+        // 并行三分支各自持 sink 克隆（Arc 浅拷贝，分支结束时推送自身完成事件）
+        let p_rule = progress.clone();
+        let p_dec = progress.clone();
+        let p_l3 = progress.clone();
+        // ① 臂的本次调用运行态（窗摘要/空洞）：随调用栈携带，不落引擎共享槽（C4）
+        let mut rule_run = crate::quality::RunReport::default();
+        // ①＋②（＋③-F）规则 / 决策模型 / L3 特征模型**并行**执行：
+        // 三者都是全文级判断、互不依赖对方结果，总延迟 = 各层 max
+        // （此前为串行求和）；规则不可用时回退决策模型（保持既有故障回退行为，
+        // 且决策服务只调一次——旧实现在回退路径会再调一次 `decide`）。
+        // 各分支独立计时（wall time），用于 [`DetectTimings`]
         // 三者都是全文级判断、互不依赖对方结果，总延迟 = 各层 max
         // （此前为串行求和）；规则不可用时回退决策模型（保持既有故障回退行为，
         // 且决策服务只调一次——旧实现在回退路径会再调一次 `decide`）。
@@ -587,15 +928,36 @@ impl GecEngine for CascadeDetector {
         let ((rule_res, rule_ms), (dec_res, dec_ms), (l3_res, l3_ms)) = tokio::join!(
             async {
                 let t = std::time::Instant::now();
-                let r = self.rule.detect(text).await;
-                (r, t.elapsed().as_millis() as u64)
+                // sink 透传到 rule 成员执行循环（stat 臂滑窗逐块推段级事件；
+                // 其余引擎经 trait 默认实现零事件）；窗执行摘要写入 rule_run
+                let r = self
+                    .rule
+                    .detect_traced(text, p_rule.clone(), &mut rule_run)
+                    .await;
+                let ms = t.elapsed().as_millis() as u64;
+                if let Some(sink) = &p_rule {
+                    sink(crate::progress::StageEvent::Stage {
+                        stage: shared_model::sources::RULE,
+                        status: if r.is_ok() { "ran" } else { "unavailable" },
+                        ms: Some(ms),
+                    });
+                }
+                (r, ms)
             },
             async {
                 match &self.decision {
                     Some(d) => {
                         let t = std::time::Instant::now();
                         let r = d.decide(text).await.map(Some);
-                        (r, t.elapsed().as_millis() as u64)
+                        let ms = t.elapsed().as_millis() as u64;
+                        if let Some(sink) = &p_dec {
+                            sink(crate::progress::StageEvent::Stage {
+                                stage: shared_model::sources::DECISION,
+                                status: if r.is_ok() { "ran" } else { "unavailable" },
+                                ms: Some(ms),
+                            });
+                        }
+                        (r, ms)
                     }
                     None => (Ok(None), 0),
                 }
@@ -606,7 +968,15 @@ impl GecEngine for CascadeDetector {
                         Some(l3) => {
                             let t = std::time::Instant::now();
                             let r = l3.detect(text).await;
-                            (Some(r), t.elapsed().as_millis() as u64)
+                            let ms = t.elapsed().as_millis() as u64;
+                            if let Some(sink) = &p_l3 {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::FEATURE,
+                                    status: if r.is_ok() { "ran" } else { "unavailable" },
+                                    ms: Some(ms),
+                                });
+                            }
+                            (Some(r), ms)
                         }
                         None => (None, 0),
                     }
@@ -689,6 +1059,13 @@ impl GecEngine for CascadeDetector {
             let t = std::time::Instant::now();
             let hits = kb.recall(&self.lang, text).await;
             recall_ms = Some(t.elapsed().as_millis() as u64);
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::KNOWLEDGE,
+                    status: "ran",
+                    ms: recall_ms,
+                });
+            }
             let mut recall_found = 0usize;
             for hit in &hits {
                 if let Some(err) = knowledge_hit_to_error(hit) {
@@ -711,12 +1088,14 @@ impl GecEngine for CascadeDetector {
             }
         }
         // ③ LLM 兜底：force_llm 无条件触发 / level 2 门控触发（P0.5：L3 是唯一的
-        // pre-LLM 门控——L3 弃权 / 服务不可用 → 长尾兜底；L3 未启用时回退旧语义：
-        // 决策模型弃权触发）/ level 3 无条件
+        // pre-LLM 门控——L3 弃权 / 服务不可用 → 开闸；L3 **显式关闭**（l3_disabled）
+        // → 同样开闸回退无条件 LLM，这是 l3.rs enabled 字段的文档口径，防止门控层
+        // 缺席叠加待发布决策层后 level 2 静默退化为纯规则；从未配置 L3 的旧式部署
+        // 保持旧语义：决策模型弃权触发）/ level 3 无条件
         let l3_gate_open = match &l3_res {
             Some(Ok(o)) => o.abstained,
             Some(Err(_)) => true,
-            None => false,
+            None => self.l3_disabled,
         };
         let mut need_llm = force_llm
             || match level {
@@ -728,9 +1107,13 @@ impl GecEngine for CascadeDetector {
         // 已在上方与 ①② **并行**跑完（`l3_res`）；
         // 高置信判定直接定案（有错 → 合并错误项；明确无错 → 放行），
         // LLM 收缩到纯长尾：仅特征模型弃权 / 服务不可用时才调用。
+        // **level 3 例外**：深度扫描的存在意义就是「漏报」兜底，句级门控
+        // （dev R≈0.45）不得终结全文 LLM——定案仍合并，但 need_llm 保持为真。
         // **部分定案**（`unreviewed_spans` 非空）：定案部分保留，灰区句不再全文
         // 兜底，改由 ③-T 定向 LLM 复查（成本 ≈ 灰区句长度）
         let mut targeted_spans: Vec<[usize; 2]> = Vec::new();
+        // ③-T 是否已自行落定（ran / unavailable）；在计划但未触发则尾部记 skipped
+        let mut targeted_settled = false;
         if let Some(l3_res) = l3_res {
             match l3_res {
                 Ok(o) if !o.abstained => {
@@ -757,10 +1140,10 @@ impl GecEngine for CascadeDetector {
                             tracing::warn!(
                                 "L3 特征模型判「明确无错」但决策模型弃权：模型冲突，保留 LLM 长尾兜底"
                             );
-                        } else {
+                        } else if level <= 2 {
                             need_llm = false;
                         }
-                    } else {
+                    } else if level <= 2 {
                         need_llm = false;
                     }
                 }
@@ -785,6 +1168,11 @@ impl GecEngine for CascadeDetector {
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
         let mut llm_ran = false;
+        // 段级预算块执行摘要（③ LLM）与灰区句未复查标记（③-T 句级核算）
+        let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
+        let mut gray_unresolved = false;
+        // ⑦ dropped 账本（§7）：来③ 全文/分块 LLM ⊕ ③-T 定向复查；out_of_range 恒 0 预留
+        let mut dropped = crate::quality::DroppedLedger::default();
         if need_llm {
             let llm = llm.ok_or_else(|| {
                 DetectorError::LlmNotConfigured(
@@ -793,27 +1181,92 @@ impl GecEngine for CascadeDetector {
                 )
             })?;
             let t = std::time::Instant::now();
-            let extra = llm.detect(text).await?;
-            llm_ms = Some(t.elapsed().as_millis() as u64);
-            llm_confirmed_clean = extra.is_empty();
-            llm_ran = true;
-            layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
-            merge_errors(&mut errors, extra);
+            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+            // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
+            // 层记 `unavailable`，不把整次 detect 打回 502。
+            // 长文本分块路径的段级事件经同一 sink 透传（chunk_begin/chunk_end）
+            match llm_layer_detect(llm, text, progress.clone()).await {
+                Ok((extra, llm_status, clean, chunk, ledger)) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    llm_confirmed_clean = clean;
+                    llm_ran = true;
+                    llm_chunk = Some(chunk);
+                    dropped.merge(&ledger);
+                    if let Some(sink) = &progress {
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::LLM,
+                            status: llm_status,
+                            ms: llm_ms,
+                        });
+                    }
+                    layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
+                    merge_errors(&mut errors, extra);
+                }
+                Err(e) => {
+                    llm_ms = Some(t.elapsed().as_millis() as u64);
+                    // R6：全文 LLM 未参与时，若 L3 部分定案留有灰区句且尚未
+                    // 定向复查（③-T 不跑）——灰区句本轮同样未复查，句级
+                    // 账本必须扣减，不得把待复查的灰区句计为已复查。
+                    if !targeted_spans.is_empty() {
+                        gray_unresolved = true;
+                    }
+                    if let Some(sink) = &progress {
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::LLM,
+                            status: "unavailable",
+                            ms: llm_ms,
+                        });
+                    }
+                    layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
+                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则/L3 结果（本轮 LLM 未参与）");
+                }
+            }
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
-            // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）
+            // 返回 span 映射回原文后合并（全文其余部分已由 L3 定案，不再送 LLM）。
+            // 阶段事件用自身层名 targeted 发；③ 全文复核本轮未触发记 skipped；
+            // 结果层归因仍记 layers.llm（DETECT_PIPELINE §5 契约）
             match llm {
                 Some(l) => {
                     let t = std::time::Instant::now();
                     match targeted_llm_review(l, text, &targeted_spans).await {
-                        Ok(extra) => {
+                        Ok((extra, ledger)) => {
+                            dropped.merge(&ledger);
                             llm_ms = Some(t.elapsed().as_millis() as u64);
                             llm_confirmed_clean = extra.is_empty();
                             llm_ran = true;
+                            targeted_settled = true;
+                            if let Some(sink) = &progress {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::TARGETED,
+                                    status: "ran",
+                                    ms: llm_ms,
+                                });
+                                // ③ 全文复核本轮未触发（灰区句已由 ③-T 覆盖）
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::LLM,
+                                    status: "skipped",
+                                    ms: None,
+                                });
+                            }
                             layers.push(LayerReport::new(sources::LLM, "ran", extra.len()));
                             merge_errors(&mut errors, extra);
                         }
                         Err(e) => {
+                            gray_unresolved = true;
+                            targeted_settled = true;
+                            if let Some(sink) = &progress {
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::TARGETED,
+                                    status: "unavailable",
+                                    ms: Some(t.elapsed().as_millis() as u64),
+                                });
+                                sink(crate::progress::StageEvent::Stage {
+                                    stage: shared_model::sources::LLM,
+                                    status: "skipped",
+                                    ms: None,
+                                });
+                            }
                             layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
                             tracing::warn!(
                                 error = %e,
@@ -823,18 +1276,42 @@ impl GecEngine for CascadeDetector {
                     }
                 }
                 None => {
+                    gray_unresolved = true;
+                    targeted_settled = true;
                     tracing::debug!("L3 部分定案存在灰区句但未配置 LLM → 本轮放行（灰区句未复查）");
                 }
             }
         }
         // LLM 层被评估但未触发（L3 高置信定案 / 无弃权信号）→ 显式记 skipped，
         // 前端「检测路径」据此区分「LLM 未触发」与「LLM 未参与（level 1）」
-        // （定向复查失败已记 `unavailable`，不再重复记 skipped）
+        // （③-T 触发时其分支内已记 ③ skipped，不重复走到这里）
         if (force_llm || level >= 2)
             && !llm_ran
             && !(need_llm || (!targeted_spans.is_empty() && llm.is_some()))
         {
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::LLM,
+                    status: "skipped",
+                    ms: None,
+                });
+            }
             layers.push(LayerReport::new(sources::LLM, "skipped", 0));
+        }
+        // ③-T 在计划但未触发（全文 ③ 已覆盖灰区 / L3 无灰区残留）→ 记 skipped
+        if targeted_gate && !targeted_settled {
+            if let Some(sink) = &progress {
+                sink(crate::progress::StageEvent::Stage {
+                    stage: shared_model::sources::TARGETED,
+                    status: "skipped",
+                    ms: None,
+                });
+            }
+        }
+        // ④ 术语库（最后一步，作用于全部来源层合并后的错误）：
+        // 受保护术语上的错误过滤 + 强制更正词注入
+        if let Some(term) = &self.terminology {
+            term.apply(&self.lang, text, &mut errors);
         }
         let timings = DetectTimings {
             rule_ms,
@@ -867,12 +1344,81 @@ impl GecEngine for CascadeDetector {
             total_ms = timings.total_ms,
             "检测各阶段计时"
         );
+        // 块矩阵数据面：句表（全局唯一切句，与下方 quality 句覆盖同一来源）随事件流
+        // 下发；先于 End 推送，保证轮询侧在 finished 前读到该事件。
+        let unit_spans = crate::docchunk::sentence_spans_with_origin(text);
+        if let Some(sink) = &progress {
+            sink(crate::progress::StageEvent::Units {
+                spans: unit_spans.iter().map(|(s, _)| *s).collect(),
+                origins: unit_spans.iter().map(|(_, o)| o.as_str()).collect(),
+            });
+            sink(crate::progress::StageEvent::End {
+                total_ms: timings.total_ms,
+            });
+        }
+        // S6 质量自描述（Detect Pipeline v2 §5）：
+        // - chunks：③ LLM 段级摘要 ⊕ 成员引擎预算窗摘要（stat 滑窗）；
+        //   无任何预算层且未触发 LLM → 全文单发；触发但未成功 → 单发未复查；
+        // - quality：layers 非 ran 项 → 降级项；coverage 由 chunks 核算；
+        //   unowned_chars：stat 臂窗切块空洞经 rule_run 入帐（R4：非零即降级，
+        //   不再只是日志）；
+        // - sentences：句级恒切一次；③-T 未定案时灰区句不计入已复查（③ 全文
+        //   复查覆盖全文，不扣；③ 失败且有灰区句同样扣减，见 R6）。
+        let mut chunk_stats: Option<crate::quality::ChunkStats> = rule_run.chunks.take();
+        if let Some(c) = &llm_chunk {
+            chunk_stats = Some(match chunk_stats {
+                Some(mut a) => {
+                    a.merge(c);
+                    a
+                }
+                None => c.clone(),
+            });
+        }
+        let chunks = match chunk_stats {
+            Some(c) => c,
+            None if need_llm && !llm_ran => crate::quality::ChunkStats {
+                mode: "single".into(),
+                total: 1,
+                done: 0,
+                failed: 1,
+                parse_failed: 0,
+            },
+            None => crate::quality::ChunkStats::single(),
+        };
+        let mut quality = crate::quality::QualityReport::assemble(
+            &layers,
+            chunks.coverage(),
+            rule_run.unowned_chars,
+        );
+        quality.dropped = dropped;
+        // 句表铺满序列含纯标点/纯空白片段（所有权不变式所需），句覆盖
+        // 分母只计含实词的真实句（与②.5 召回同一口径）；复用上方事件流同源句表，不重复切句
+        let s_sentences: Vec<[usize; 2]> = unit_spans
+            .iter()
+            .filter(|(s, _)| crate::docchunk::is_sentence(text, s))
+            .map(|(s, _)| *s)
+            .collect();
+        let unreviewed_sentences = if gray_unresolved {
+            s_sentences
+                .iter()
+                .filter(|s| targeted_spans.iter().any(|t| spans_overlap(**s, *t)))
+                .count()
+        } else {
+            0
+        };
+        let sentences = crate::quality::SentenceStats {
+            total: s_sentences.len(),
+            reviewed: s_sentences.len() - unreviewed_sentences,
+        };
         Ok(DetectOutcome {
             errors,
             decision_abstained: abstained,
             llm_confirmed_clean,
             timings,
             layers,
+            quality: Some(quality),
+            chunks: Some(chunks),
+            sentences: Some(sentences),
         })
     }
 }
@@ -897,11 +1443,22 @@ pub fn compose_detector<D: GECDetector + 'static>(
     knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
     l3: Option<L3FeatureConfig>,
 ) -> Arc<dyn GecEngine> {
+    // 术语库（`lexicons/terminology_{lang}.json`，空/缺失 = 不挂载，零开销）：
+    // 级联形态持有字段（保留 decision_engine 转发）；其余形态经守卫包装
+    let terminology = {
+        let t = Arc::new(crate::terminology::Terminology::load(
+            crate::terminology::Terminology::dir_from_env(),
+            lang,
+        ));
+        if t.is_empty() { None } else { Some(t) }
+    };
     // L3 特征模型引擎（三期：level 3 先跑特征模型，LLM 收缩到纯长尾）
     let l3_engine: Option<Arc<L3FeatureEngine>> = l3
         .as_ref()
         .filter(|c| c.enabled())
         .map(|c| Arc::new(L3FeatureEngine::new(lang, c.clone())));
+    // 显式关闭（配置在但 enabled=false）与从未配置区分：前者 level 2 开闸回退无条件 LLM
+    let l3_disabled = l3.as_ref().is_some_and(|c| !c.enabled());
     match GecEngineKind::from_env(lang) {
         GecEngineKind::Statistical => {
             let primary = Arc::new(StatisticalGecEngine::from_env(lang));
@@ -911,7 +1468,10 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 model = primary.name(),
                 "统计 GEC 引擎已启用（规则引擎兜底）"
             );
-            Arc::new(CompositeDetector::new(lang, primary, Some(fallback)))
+            wrap_terminology(
+                Arc::new(CompositeDetector::new(lang, primary, Some(fallback))),
+                terminology.clone(),
+            )
         }
         GecEngineKind::Decision => {
             let cfg = decision.unwrap_or_else(DecisionConfig::from_env);
@@ -924,18 +1484,20 @@ pub fn compose_detector<D: GECDetector + 'static>(
             let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                 .with_kind_override(GecEngineKind::Decision);
             det.knowledge_recall = knowledge_recall;
+            det.l3_disabled = l3_disabled;
+            det.terminology = terminology.clone();
             if let Some(e) = l3_engine {
                 det.l3 = Some(e);
                 tracing::info!(
                     lang,
-                    "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                    "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                 );
             }
             Arc::new(det)
         }
         GecEngineKind::Llm => {
             tracing::debug!(lang, "LLM 引擎为预留类型，当前使用规则引擎");
-            rule
+            wrap_terminology(rule, terminology)
         }
         GecEngineKind::Rule => match decision {
             Some(cfg) if cfg.enabled() => {
@@ -948,11 +1510,13 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                     .with_kind_override(GecEngineKind::Decision);
                 det.knowledge_recall = knowledge_recall;
+                det.l3_disabled = l3_disabled;
+                det.terminology = terminology.clone();
                 if let Some(e) = l3_engine {
                     det.l3 = Some(e);
                     tracing::info!(
                         lang,
-                        "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                        "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                     );
                 }
                 Arc::new(det)
@@ -967,18 +1531,32 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     );
                     let mut det = CascadeDetector::new(lang, rule, None);
                     det.knowledge_recall = Some(kr);
+                    det.l3_disabled = l3_disabled;
+                    det.terminology = terminology.clone();
                     if let Some(e) = l3_engine {
                         det.l3 = Some(e);
                         tracing::info!(
                             lang,
-                            "L3 特征模型层已启用（level 3 先跑特征模型，LLM 收缩到长尾）"
+                            "L3 特征模型层已启用（level 2 门控；level 3 定案合并但不终结全文 LLM）"
                         );
                     }
                     Arc::new(det)
                 }
-                None => rule,
+                None => wrap_terminology(rule, terminology),
             },
         },
+    }
+}
+
+/// 术语库非空时把引擎包一层守卫（空则原样返回，零开销）；
+/// 级联形态不经此函数（持有字段以保留 `decision_engine()` 转发）
+fn wrap_terminology(
+    engine: Arc<dyn GecEngine>,
+    terminology: Option<Arc<crate::terminology::Terminology>>,
+) -> Arc<dyn GecEngine> {
+    match terminology {
+        Some(t) => Arc::new(crate::terminology::TerminologyEngine::new(engine, t)),
+        None => engine,
     }
 }
 
@@ -1092,6 +1670,8 @@ mod tests {
     #[tokio::test]
     async fn cascade_level2_without_gates_marks_llm_skipped() {
         // level 2 但无决策层 / L3（无弃权信号、无门控）→ LLM 未触发 → layers 记 `skipped`
+        // （L3 **从未配置**的旧式部署语义；若是显式关闭 enabled=false 则开闸，
+        // 见 cascade_level2_with_l3_disabled_triggers_llm）
         let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
             lang: "en",
             fail: false,
@@ -1104,6 +1684,34 @@ mod tests {
             .find(|l| l.layer == "llm")
             .expect("level 2 应报告 llm 层状态");
         assert_eq!(llm.status, "skipped");
+    }
+
+    #[tokio::test]
+    async fn cascade_level2_with_l3_disabled_triggers_llm() {
+        // L3 显式关闭（配置存在但 enabled=false，引擎未挂载）→ level 2 门控开闸，
+        // 回退**无条件** LLM（l3.rs「回退无条件 LLM」口径）。若关门，叠加待发布
+        // 决策层后 level 2 会静默退化为纯规则——level 2 流量丢失 LLM 覆盖率
+        let llm_endpoint = mock_llm_service().await;
+        let llm = llm_engine(&llm_endpoint);
+        let mut det = CascadeDetector::new(
+            "zh",
+            Arc::new(FakeRule {
+                lang: "zh",
+                fail: false,
+            }),
+            None,
+        );
+        det.l3_disabled = true;
+        let outcome = det
+            .detect_level("正确句子", 2, false, Some(&llm))
+            .await
+            .unwrap();
+        let llm_layer = outcome
+            .layers
+            .iter()
+            .find(|l| l.layer == "llm")
+            .expect("level 2 应报告 llm 层状态");
+        assert_eq!(llm_layer.status, "ran", "显式关闭 L3 应开闸回退 LLM");
     }
 
     #[test]
@@ -1267,7 +1875,7 @@ mod tests {
         }
         let fallback: Arc<dyn GecEngine> = Arc::new(FakeRule2);
         let composite = CompositeDetector::new("en", primary, Some(fallback));
-        let errors = composite.detect("abc").await.unwrap();
+        let errors = composite.detect("abcdef").await.unwrap();
         assert_eq!(errors.len(), 3);
         assert_eq!(errors[0].span, [0, 2]);
         assert_eq!(
@@ -1594,6 +2202,108 @@ mod tests {
             },
         ));
         CascadeDetector::new("zh", rule, Some(secondary))
+    }
+
+    #[tokio::test]
+    async fn cascade_stat_rule_emits_chunk_events() {
+        // 级联 rule 位挂 stat 臂：sink 经 detect_traced 透传到滑窗循环，
+        // 段级事件（stage=rule）随窗推进上屏；stage 事件（rule）仍照常。
+        let app = axum::Router::new().route(
+            "/gec",
+            axum::routing::post(|body: axum::body::Bytes| async move {
+                let _ = body;
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({ "errors": [] })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let stat = Arc::new(
+            StatisticalGecEngine::new(
+                "zh",
+                StatisticalConfig {
+                    endpoint: format!("http://{addr}"),
+                    timeout: Duration::from_secs(5),
+                    model: "mock".into(),
+                },
+            )
+            .with_window_chars(120),
+        );
+        let cascade = CascadeDetector::new("zh", stat, None);
+        let text = "这句话用来构造统计臂的滑窗测试。".repeat(9);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        cascade
+            .detect_level_traced(&text, 1, false, None, Some(sink))
+            .await
+            .unwrap();
+        let evs = events.lock().unwrap();
+        let begins = evs
+            .iter()
+            .filter(|e| matches!(e, crate::progress::StageEvent::ChunkBegin { stage, .. } if *stage == shared_model::sources::RULE))
+            .count();
+        let ends = evs
+            .iter()
+            .filter(|e| matches!(e, crate::progress::StageEvent::ChunkEnd { .. }))
+            .count();
+        assert!(begins > 1, "stat 臂多窗应逐窗推段级事件: {begins}");
+        assert_eq!(begins, ends, "begin/end 配对");
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, crate::progress::StageEvent::Stage { stage, .. } if *stage == shared_model::sources::RULE)));
+    }
+
+    #[tokio::test]
+    async fn traced_pushes_units_before_end() {
+        // 块矩阵数据面：sink 应收到句表 Units 事件，先于 End，且 spans/origins
+        // 与全局唯一切句器逐字一致（前端矩阵行不得自行切句，同源才能对齐高亮）
+        let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
+            lang: "zh",
+            fail: false,
+        });
+        let cascade = CascadeDetector::new("zh", rule, None);
+        // 无标点长段：进自动断句，覆盖 marker/pause/fallback 多类边界来源
+        let text = "这是一段没有标点符号的长文需要自动断句".repeat(30);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
+        cascade
+            .detect_level_traced(&text, 1, false, None, Some(sink))
+            .await
+            .unwrap();
+        let evs = events.lock().unwrap();
+        let units_idx = evs
+            .iter()
+            .position(|e| matches!(e, crate::progress::StageEvent::Units { .. }))
+            .expect("事件流应含 units");
+        let end_idx = evs
+            .iter()
+            .position(|e| matches!(e, crate::progress::StageEvent::End { .. }))
+            .expect("事件流应含 end");
+        assert!(units_idx < end_idx, "units 必须先于 end");
+        let expected = crate::docchunk::sentence_spans_with_origin(&text);
+        if let crate::progress::StageEvent::Units { spans, origins } = &evs[units_idx] {
+            assert_eq!(
+                *spans,
+                expected.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+                "句表必须与唯一切句器同源"
+            );
+            assert_eq!(origins.len(), spans.len());
+            assert!(
+                origins
+                    .iter()
+                    .all(|o| matches!(*o, "punct" | "marker" | "pause" | "fallback"))
+            );
+        }
     }
 
     #[tokio::test]
@@ -2044,7 +2754,8 @@ mod tests {
 
     /// L3 特征模型高置信命中 → 直接定案，不调用 LLM
     #[tokio::test]
-    async fn cascade_level3_l3_hit_skips_llm() {
+    async fn cascade_level3_l3_hit_still_runs_llm() {
+        // level 3（深度扫描）= 漏报兜底臂：L3 定案错误照合并，但全文 LLM 仍无条件跑
         let endpoint = mock_decision_service(true, false, 0.3).await;
         let l3ep = mock_l3_service(false, true, 0.9, true).await;
         let cascade = cascade_with_l3(
@@ -2060,25 +2771,32 @@ mod tests {
             .detect_level("他昨天报复很大。", 3, false, Some(&llm))
             .await
             .unwrap();
-        assert_eq!(
-            outcome.errors.len(),
-            1,
-            "L3 错误 [0,6] 与规则 [0,2] 重叠 → 合并为 1 条: {:?}",
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|e| e.source.as_deref() == Some("l3"))
+                || outcome
+                    .layers
+                    .iter()
+                    .any(|l| l.layer == sources::FEATURE && l.status == "decided"),
+            "L3 定案结果应保留: {:?}",
             outcome.errors
         );
         assert!(
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "L3 高置信命中不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "level 3 不得被 L3 门控终结全文 LLM: {:?}",
             outcome.errors
         );
     }
 
-    /// L3 特征模型明确无错 + 决策模型也明确（非弃权）→ 放行，不调用 LLM
+    /// L3 明确无错 + 决策明确：level 3 仍**无条件**跑全文 LLM（漏报兜底）；
+    /// level 2 的放行语义见 cascade_level2_l3_confident_clean_skips_llm
     #[tokio::test]
-    async fn cascade_level3_l3_confident_clean_skips_llm() {
+    async fn cascade_level3_l3_confident_clean_still_runs_llm() {
         let endpoint = mock_decision_service(false, false, 0.1).await;
         let l3ep = mock_l3_service(false, false, 0.05, false).await;
         let cascade = cascade_with_l3(
@@ -2098,8 +2816,8 @@ mod tests {
             outcome
                 .errors
                 .iter()
-                .all(|e| e.source.as_deref() != Some("llm")),
-            "特征模型明确无错且决策模型一致时不应调用 LLM: {:?}",
+                .any(|e| e.source.as_deref() == Some("llm")),
+            "特征模型明确无错不得终结 level 3 全文 LLM: {:?}",
             outcome.errors
         );
     }
@@ -2294,8 +3012,18 @@ mod tests {
         );
         // 标记 = 第二句：LLM 若收到全文（含第二句）会返回「天气」错误
         let llm = llm_engine(&mock_llm_service_marker("今天天气很好。").await);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level("他昨天报复很大。今天天气很好。", 2, false, Some(&llm))
+            .detect_level_traced(
+                "他昨天报复很大。今天天气很好。",
+                2,
+                false,
+                Some(&llm),
+                Some(sink),
+            )
             .await
             .unwrap();
         assert!(
@@ -2315,6 +3043,25 @@ mod tests {
             outcome.timings.llm_ms.is_some(),
             "定向复查应计入 llm_ms 计时"
         );
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Start { stages }
+                if stages.contains(&shared_model::sources::TARGETED))),
+            "Start 计划应含 ③-T"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::TARGETED && *status == "ran")),
+            "③-T 应以自身层名记 ran"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::LLM && *status == "skipped")),
+            "③-T 触发时 ③ 全文复核应记 skipped"
+        );
     }
 
     /// 定向复查的 span 映射：灰区句不在文本开头时，偏移正确平移回原文
@@ -2323,11 +3070,27 @@ mod tests {
         let llm = llm_engine(&mock_llm_service().await);
         // 第一句「今天天气很好。」7 字 21 字节；第二句字节 [21,45)
         let text = "今天天气很好。他昨天报复很大。";
-        let mapped = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
+        let (mapped, ledger) = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped[0].original, "报复");
         // 「报复」在原文字符 [10,12) → 字节 [30,36)
         assert_eq!(mapped[0].span, [30, 36]);
+        assert!(ledger.is_empty(), "正常映射不应有丢弃记账: {ledger:?}");
+    }
+
+    /// dropped 账本：LLM 检出无法对应任何灰区段（定位失败）→ ownership 桶计数
+    #[tokio::test]
+    async fn targeted_llm_review_ledgers_out_of_segment_drop() {
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"不存在的词","correction":null,"message":"幻觉位置"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let text = "今天天气很好。他昨天报复很大。";
+        let (mapped, ledger) = targeted_llm_review(&llm, text, &[[21, 45]]).await.unwrap();
+        assert!(mapped.is_empty(), "段外检出必须丢弃: {mapped:?}");
+        assert_eq!(ledger.ownership, 1, "段外丢弃计入 ownership 桶");
+        assert_eq!(ledger.total(), 1);
     }
 
     /// 决策模型弃权 + L3 部分定案 → 全文 LLM（覆盖灰区，不重复定向调用）
@@ -2345,14 +3108,38 @@ mod tests {
         );
         // 全文送审 → 标记命中 → LLM 返回「天气」错误
         let llm = llm_engine(&mock_llm_service_marker("今天天气很好。").await);
+        let events: Arc<std::sync::Mutex<Vec<crate::progress::StageEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let sink: crate::progress::StageSink = Arc::new(move |e| ev.lock().unwrap().push(e));
         let outcome = cascade
-            .detect_level("他昨天报复很大。今天天气很好。", 2, false, Some(&llm))
+            .detect_level_traced(
+                "他昨天报复很大。今天天气很好。",
+                2,
+                false,
+                Some(&llm),
+                Some(sink),
+            )
             .await
             .unwrap();
         assert!(
             outcome.errors.iter().any(|e| e.original == "天气"),
             "决策弃权应触发全文 LLM（而非仅定向复查）: {:?}",
             outcome.errors
+        );
+        // 全文 ③ 已覆盖灰区 → ③-T 在计划但未触发，必须记 skipped（不留悬空节点）
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Start { stages }
+                if stages.contains(&shared_model::sources::TARGETED))),
+            "Start 计划应含 ③-T"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e,
+            crate::progress::StageEvent::Stage { stage, status, .. }
+                if *stage == shared_model::sources::TARGETED && *status == "skipped")),
+            "全文 LLM 路径下 ③-T 应记 skipped"
         );
     }
 
@@ -2532,6 +3319,251 @@ mod tests {
         assert!(
             outcome.timings.decision_ms.unwrap() <= outcome.timings.total_ms,
             "决策层耗时应计入总耗时"
+        );
+    }
+
+    // ── 文档级重构 P0：LLM 层统一入口（单发 partial 语义 + 长文分块） ──
+
+    /// mock LLM：响应可注入（garbage = 解析失败臂）
+    async fn mock_llm_content(content: &'static str) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_body: axum::body::Bytes| async move {
+                let resp = serde_json::json!({
+                    "choices": [{ "message": { "content": content } }]
+                });
+                (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn llm_layer_parse_failure_marks_partial_not_clean() {
+        // 解析失败：层状态 partial，confirmed_clean 必须为 false
+        // （「复查失败」绝不得伪装成「复查确认干净」）
+        let endpoint = mock_llm_content("抱歉，我无法完成该任务。").await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, confirmed_clean, chunk, dropped) =
+            llm_layer_detect(&llm, "正确句子", None).await.unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(status, "partial");
+        assert!(!confirmed_clean, "解析失败不得当作确认干净");
+        assert_eq!(chunk.mode, "single");
+        assert_eq!((chunk.total, chunk.done, chunk.parse_failed), (1, 0, 1));
+        assert!(dropped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn llm_layer_normal_run_marks_ran() {
+        let endpoint = mock_llm_content("[]").await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, confirmed_clean, chunk, _dropped) =
+            llm_layer_detect(&llm, "正确句子", None).await.unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(status, "ran");
+        assert!(confirmed_clean);
+        assert_eq!(chunk.coverage(), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn llm_layer_chunked_status_derives_from_outcome() {
+        // 分块路径的状态判定（纯逻辑侧）：直接经 detect_document 验证
+        // 阈值路由本身由 detect_document 测试覆盖（llm.rs），此处锁定
+        // 「全部干净 → ran + confirmed_clean」在长文本入口同样成立
+        let endpoint = mock_llm_content("[]").await;
+        let llm = llm_engine(&endpoint);
+        let text = "第一段是干净的中文叙述，没有任何错误需要检出。\n这是第二段内容，同样干净。\n这是第三段收尾文字，也干净。";
+        let o = llm.detect_document(text, 50, 4, None).await.unwrap();
+        assert!(o.chunks >= 2, "应切成多块: {}", o.chunks);
+        assert_eq!(o.coverage(), 1.0);
+        let (errors, _status, _clean, _chunk, _dropped) =
+            llm_layer_detect(&llm, text, None).await.unwrap();
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn level3_llm_runtime_failure_degrades_to_rule_results() {
+        // 演练立场（2026-11）：LLM 层运行时失败不能把整次 detect 打回 502——
+        // 规则结果必须保留，层记 `unavailable`；未配置 LLM 则仍是明确报错
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let llm = LlmGecEngine::new(
+            "zh",
+            LlmDetectConfig::from_parts(
+                format!("http://{addr}/v1"),
+                "sk-test",
+                "mock-llm",
+                5,
+                "system",
+                "user {{text}}",
+            )
+            .with_retry(Vec::new(), 0),
+        );
+        let fake = Arc::new(FakeRule {
+            lang: "zh",
+            fail: false,
+        });
+        let outcome = fake
+            .detect_level("他昨天报复很大。", 3, false, Some(&llm))
+            .await
+            .expect("LLM 运行时失败必须降级 Ok，不得打回 Err");
+        assert_eq!(outcome.errors.len(), 1, "规则层结果必须保留");
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == "llm" && l.status == "unavailable"),
+            "llm 层应记 unavailable：{:?}",
+            outcome.layers
+        );
+        // 未配置 ≠ 运行时失败：仍然明确报错（要人改设置）
+        let e = fake
+            .detect_level("他昨天报复很大。", 3, false, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, DetectorError::LlmNotConfigured(_)), "{e:?}");
+    }
+
+    // ── 成熟架构补强：术语库（领域术语保护） ──
+
+    struct FakeZhSpan;
+
+    #[async_trait]
+    impl GECDetector for FakeZhSpan {
+        fn language(&self) -> &str {
+            "zh"
+        }
+        async fn detect(&self, _text: &str) -> Result<Vec<Error>, DetectorError> {
+            // 固定产出「测试」[0,6) 上的错误（字节偏移）
+            Ok(vec![Error::new(
+                "zh",
+                "spelling",
+                0.9,
+                [0, 6],
+                "测试",
+                None,
+                "fake",
+            )])
+        }
+    }
+
+    fn term_zh(protected: &[&str], forced_json: &str) -> crate::terminology::Terminology {
+        let dir = std::env::temp_dir().join(format!(
+            "lf_term_engine_{}_{:04x}",
+            std::process::id(),
+            rand_like_seed()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prot = protected
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            dir.join("terminology_zh.json"),
+            format!(r#"{{"protected":[{prot}],"forced":{forced_json}}}"#),
+        )
+        .unwrap();
+        let t = crate::terminology::Terminology::load(&dir, "zh");
+        std::fs::remove_dir_all(&dir).ok();
+        t
+    }
+
+    fn rand_like_seed() -> u32 {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn cascade_terminology_protects_and_forces() {
+        // 级联形态：受保护术语上的错误被过滤，强制词注入
+        let rule: Arc<dyn GecEngine> = Arc::new(FakeZhSpan);
+        let mut det = CascadeDetector::new("zh", rule, None);
+        det.terminology = Some(Arc::new(term_zh(
+            &["测试"],
+            r#"[{"wrong":"词","right":"词儿"}]"#,
+        )));
+        let outcome = det.detect_level("测试词", 1, false, None).await.unwrap();
+        assert_eq!(
+            outcome.errors.len(),
+            1,
+            "受保护错误被过滤 + 强制词注入：{:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.errors[0].original, "词");
+        assert_eq!(outcome.errors[0].correction.as_deref(), Some("词儿"));
+    }
+
+    #[tokio::test]
+    async fn terminology_engine_wrapper_applies_on_default_level() {
+        // 非级联形态（纯规则默认路径）经守卫包装：detect_level 同样生效
+        let inner: Arc<dyn GecEngine> = Arc::new(FakeZhSpan);
+        let wrapped = wrap_terminology(inner, Some(Arc::new(term_zh(&["测试"], "[]"))));
+        let outcome = wrapped
+            .detect_level("测试词", 1, false, None)
+            .await
+            .unwrap();
+        assert!(
+            outcome.errors.is_empty(),
+            "受保护术语上的错误应被过滤：{:?}",
+            outcome.errors
+        );
+    }
+
+    // ── 成熟架构补强：LLM 出站 PII 掩码 ──
+
+    #[tokio::test]
+    async fn llm_layer_masks_pii_and_drops_masked_region_errors() {
+        // 送 LLM 前掩码手机号；LLM 对被掩区域的检出（`*` 引用）被丢弃
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"***********","correction":null,"message":"masked noise"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, _clean, _chunk, dropped) =
+            llm_layer_detect(&llm, "电话13800138000有误", None)
+                .await
+                .unwrap();
+        assert!(
+            errors.is_empty(),
+            "被掩区域（`*`）的检出应被过滤：{errors:?}"
+        );
+        assert_eq!(status, "ran");
+        assert_eq!(dropped.pii_mask, 1, "掩码区丢弃必须计入 dropped 账本");
+    }
+
+    #[tokio::test]
+    async fn llm_layer_keeps_errors_outside_masked_regions() {
+        // 掩码不影响被掩区域之外的检出
+        let endpoint = mock_llm_content(
+            r#"[{"error_type":"spelling","confidence":0.9,"original":"报负","correction":"抱负","message":"x"}]"#,
+        )
+        .await;
+        let llm = llm_engine(&endpoint);
+        let (errors, status, _, _chunk, dropped) =
+            llm_layer_detect(&llm, "他13800138000说报负很大", None)
+                .await
+                .unwrap();
+        assert_eq!(errors.len(), 1, "掩码区外检出应保留：{errors:?}");
+        assert_eq!(errors[0].correction.as_deref(), Some("抱负"));
+        assert_eq!(status, "ran");
+        assert!(
+            dropped.is_empty(),
+            "区外检出保留时不应有丢弃记账: {dropped:?}"
         );
     }
 }

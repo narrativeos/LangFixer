@@ -173,6 +173,30 @@ pub fn build_domain_pool(input: &PoolInput) -> DomainPool {
                 &mut seen,
                 &mut samples,
             ),
+            // 定向 LLM 复查结果（routes/recheck 落 feedback_log）：命中 = 确证
+            // 句级判定的 error 样本；未命中 = 句级误报的 clean 样本
+            "recheck_found" => push(
+                PoolSample {
+                    sentence: f.original.clone(),
+                    label: "error".into(),
+                    error_type: (!f.error_type.is_empty()).then(|| f.error_type.clone()),
+                    correction: (!f.correction.is_empty()).then(|| f.correction.clone()),
+                    source: "feedback_recheck".into(),
+                },
+                &mut seen,
+                &mut samples,
+            ),
+            "recheck_clean" => push(
+                PoolSample {
+                    sentence: f.original.clone(),
+                    label: "clean".into(),
+                    error_type: None,
+                    correction: None,
+                    source: "feedback_recheck".into(),
+                },
+                &mut seen,
+                &mut samples,
+            ),
             _ => {}
         }
     }
@@ -413,6 +437,27 @@ mod tests {
         assert!(reject.correction.is_none());
         assert_eq!(pool.by_source[0].0, "feedback_reject"); // clean 2 > error 1
         assert_eq!(pool.by_source[0].1, 2);
+    }
+
+    #[test]
+    fn pool_recheck_feedback() {
+        // 定向复查落日志的两类 action 进训练池：found=error 样本、clean=clean 样本
+        let mut found = fb("decision", "recheck_found", "复查确证句", "复查修正");
+        found.error_type = "grammar".into();
+        let input = PoolInput {
+            lang: "zh".into(),
+            feedback: vec![found, fb("decision", "recheck_clean", "复查误报句", "")],
+            flywheel: vec![],
+            clean_sentences: vec![],
+        };
+        let pool = build_domain_pool(&input);
+        assert_eq!(pool.total, 2);
+        assert_eq!(pool.error_count, 1);
+        assert_eq!(pool.samples[0].label, "error");
+        assert_eq!(pool.samples[0].source, "feedback_recheck");
+        assert_eq!(pool.samples[0].correction.as_deref(), Some("复查修正"));
+        assert_eq!(pool.samples[1].label, "clean");
+        assert_eq!(pool.samples[1].source, "feedback_recheck");
     }
 
     #[test]

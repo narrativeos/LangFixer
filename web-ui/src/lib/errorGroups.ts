@@ -26,6 +26,16 @@ export function summarizeCategories(errors: ErrorItem[]): Record<string, number>
   return m
 }
 
+/** 细分类型计数（分类过滤之下第二级过滤行）：error_type → 条数，
+ *  按条数降序、同数按码位序（与列表出现顺序无关，保证稳定） */
+export function summarizeTypes(errors: ErrorItem[]): { key: string; count: number }[] {
+  const m = new Map<string, number>()
+  for (const e of errors) m.set(e.error_type, (m.get(e.error_type) ?? 0) + 1)
+  return [...m.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
+}
+
 /** 同类合并：相同 error_type + original + correction 的实例并成一组（×N 计数）；
  *  组顺序 = 首个实例出现顺序 */
 export function buildMergedGroups(items: MergedItem[]): MergedGroup[] {

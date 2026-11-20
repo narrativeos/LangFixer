@@ -102,11 +102,16 @@ def api_put(server: str, path: str, body: dict, timeout: float = 30.0):
 
 
 def detect(server: str, lang: str, text: str, force_llm: bool,
-          level: int = 1, timeout: float = 180.0, attempts: int = 3) -> dict:
+           level: int = 1, timeout: float = 960.0, attempts: int = 2) -> dict:
     """POST /gec/detect；5xx / 连接错误退避重试，4xx 立即失败（同 eval_llm_mucgec）。
 
     `level` 恒显式下发（服务端缺省 1 = 纯规则：不传 level 时 funnel 模式会
-    静默退化成「只测规则层」，LLM / L3 层结构性为 0，报告失真）。"""
+    静默退化成「只测规则层」，LLM / L3 层结构性为 0，报告失真）。
+
+    **超时必须大于服务端自己的挂钟预算**（评测实例 `LLM_RETRY_BUDGET_SECS=900`）：
+    客户端在服务端仍在等网关时弃单重投，等于凭空给网关加一路并发——11-12 定版
+    跑到后半程就是被这个 180s×3 的客户端档打崩的（超时→重投→排队更长→更多超时）。
+    所以默认 960s 等待、只重试一次（那次是为隧道断连准备，不是为慢句准备）。"""
     body = json.dumps(
         {"lang": lang, "text": text, "force_llm": force_llm, "level": level}
     ).encode("utf-8")
@@ -141,8 +146,28 @@ def put_settings(server: str, **fields) -> dict:
 # 计分（与 score_f05.py / mucgec_eval.rs 同口径）
 # ─────────────────────────────────────────────────────────────────────────────
 
-def edit_key(e: dict):
-    return (e["op"], e.get("ref", ""), tuple(e["span"]))
+def norm_span(text: str, span) -> list:
+    """把 span 归一到「空白不敏感」坐标：S/D 右端点剥尾随空白（JFLEG gold 的
+    含空白约定，`make_gold.py` 明文）；零宽插入点若落在空白后（gold 取下词起点）
+    向左归一到词尾。中文 gold 无空白 → 恒等变换。越界端点不动（防御畸形 gold）。"""
+    a, b = span
+    while b > a and 0 <= b - 1 < len(text) and text[b - 1].isspace():
+        b -= 1
+    while a == b and a >= 1 and a - 1 < len(text) and text[a - 1].isspace():
+        a -= 1
+        b -= 1
+    return [a, b]
+
+
+def edit_key(e: dict, text: str | None = None):
+    """严格匹配键 (op, ref, span)。
+
+    传 `text` 时先经 norm_span 空白不敏感化：JFLEG gold 的 S/D span 含尾随空白、
+    插入锚点取下词起点，而生产侧 LLM 句级 diff 产出的预测 span 是词界精确的——
+    两套坐标系直接比，英文 strict 命中恒为 0（11-12 定版 jfleg 4466 预测 0 命中
+    的根因：量具口径错位，不是检测能力）。不传 `text` 保持原行为。"""
+    span = norm_span(text, e["span"]) if text is not None else e["span"]
+    return (e["op"], e.get("ref", ""), tuple(span))
 
 
 def fb_score(tp, n_pred, n_gold, beta):
@@ -214,8 +239,11 @@ def score_sentences(sentences, beta=0.5):
     n_gold_sents = sum(1 for s in sentences if s["gold"])
 
     for s in sentences:
-        s["gold_keys"] = {edit_key(e) for e in s["gold"]}
-        s["gold_spans"] = [e["span"] for e in s["gold"]]
+        # 严格键与重叠判定走同一套空白不敏感坐标（norm_span），中文恒等、英文
+        # 消除 gold 含空白约定与预测词界精确的坐标系错位（见 norm_span docstring）
+        s["gold_keys"] = {edit_key(e, s["src"]) for e in s["gold"]}
+        s["gold_spans"] = [norm_span(s["src"], e["span"]) for e in s["gold"]]
+        s["pred_spans"] = [norm_span(s["src"], p["span"]) for p in s["preds"]]
 
     layers = {
         name: {
@@ -236,7 +264,7 @@ def score_sentences(sentences, beta=0.5):
         g_has = bool(s["gold"])
         any_pred = False
         s_edit_hit = [False] * len(s["gold"])  # 每个 gold 编辑是否被任一层重叠命中
-        for p in s["preds"]:
+        for pi, p in enumerate(s["preds"]):
             overall["n_pred"] += 1
             any_pred = True
             lay = layers.get(p["source"])
@@ -244,7 +272,7 @@ def score_sentences(sentences, beta=0.5):
                 lay["n_pred"] += 1
             hit_gi = None
             for gi, gs in enumerate(s["gold_spans"]):
-                if spans_overlap(p["span"], gs):
+                if spans_overlap(s["pred_spans"][pi], gs):
                     hit_gi = gi
                     break
             if hit_gi is None:
@@ -287,7 +315,8 @@ def score_sentences(sentences, beta=0.5):
         # 召回份额：每个 gold 编辑归因到级联序首个重叠层
         for gi, gs in enumerate(s["gold_spans"]):
             for name in CASCADE_ORDER:
-                if any(spans_overlap(p["span"], gs) and p["source"] == name for p in s["preds"]):
+                if any(spans_overlap(ps, gs) and p["source"] == name
+                       for p, ps in zip(s["preds"], s["pred_spans"])):
                     layers[name]["attributed_gold"] += 1
                     break
         # 漏斗：LLM 触达 + 级联前缀累计解决（按 gold 编辑计数）
@@ -297,8 +326,8 @@ def score_sentences(sentences, beta=0.5):
         for pi, (_, names) in enumerate(FUNNEL_PREFIXES):
             for gi in range(len(s["gold"])):
                 if s_edit_hit[gi] and any(
-                    spans_overlap(p["span"], s["gold_spans"][gi]) and p["source"] in names
-                    for p in s["preds"]
+                    spans_overlap(ps, s["gold_spans"][gi]) and p["source"] in names
+                    for p, ps in zip(s["preds"], s["pred_spans"])
                 ):
                     fh[pi] += 1
 
@@ -380,8 +409,11 @@ def abl_fp(ablation) -> str:
     return "+".join(parts) or "none"
 
 
-def cache_path(benchmark: str, split: str | None, arm: str, ablation, mode: str) -> Path:
-    name = f"{benchmark}" + (f"_{split}" if split else "") + f"_{arm}_{abl_fp(ablation)}_{mode}"
+def cache_path(benchmark: str, split: str | None, arm: str, ablation, mode: str,
+               subset: int | None = None) -> Path:
+    # subset 是抽样冒烟档：若与全量共用缓存路径，--fresh 会把正式定版缓存整份清掉
+    name = (f"{benchmark}" + (f"_{split}" if split else "") + f"_{arm}_{abl_fp(ablation)}_{mode}"
+            + (f"_subset{subset}" if subset else ""))
     return CACHE_DIR / f"{name}.jsonl"
 
 
@@ -467,7 +499,7 @@ def run_eval_job(job: dict, server: str, cfg: dict):
     except Exception as e:  # noqa: BLE001
         return fail(f"设置应用失败: {e}")
 
-    cpath = cache_path(benchmark, split, arm, ablation, mode)
+    cpath = cache_path(benchmark, split, arm, ablation, mode, subset)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if fresh:
         if cpath.exists():
@@ -795,6 +827,22 @@ def selftest():
     assert abl_fp({"l3": False}) == "l3-off"
     assert abl_fp({"knowledge": False}) == "know-off"
     assert abl_fp({"decision": False, "knowledge": False}) == "dec-off+know-off"
+    # JFLEG 坐标系：gold S/D span 含尾随空白、插入锚点=下词起点（make_gold.py 口径），
+    # 生产 diff 预测词界精确——strict 必须空白不敏感，否则英文 strict 恒 0（11-12 定版根因）
+    en = [{
+        "src": "I go home yesterday . ",
+        "gold": [
+            {"op": "S", "src": "go", "ref": "went", "span": [2, 5]},     # go=2..4 + 尾随空白
+            {"op": "I", "src": "", "ref": "back", "span": [10, 10]},     # 锚在 yesterday 起点
+        ],
+        "preds": [
+            {"op": "S", "src": "go", "ref": "went", "span": [2, 4], "source": "llm"},
+            {"op": "I", "src": "", "ref": "back", "span": [9, 9], "source": "llm"},  # 锚在 home 词尾
+        ],
+        "llm_ran": True, "llm_ms": 1,
+    }]
+    o_en = score_sentences(en, beta=0.5)["overall"]
+    assert o_en["tp_strict"] == 2 and o_en["fp_strict"] == 0, o_en
     r = score_sentences(sentences, beta=0.5)
     o = r["overall"]
     assert o["n_pred"] == 5, o

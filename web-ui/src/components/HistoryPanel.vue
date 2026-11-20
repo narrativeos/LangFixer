@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { ref, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import { errMsg } from '../lib/err'
-import { errorTypeLabel, plainLayerLabel } from '../lib/labels'
+import { errorTypeLabel, modeLabel, plainLayerLabel } from '../lib/labels'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
+import LButton from '../ui/LButton.vue'
+import LInput from '../ui/LInput.vue'
+import LSelect from '../ui/LSelect.vue'
+import LTag from '../ui/LTag.vue'
+import LEmpty from '../ui/LEmpty.vue'
+import { toast } from '../ui/toast'
 import { api } from '../api/client'
 import { useGecStore } from '../stores/gec'
 import type { DetectTimings, HistoryDetail, HistoryListItem, LayerReport } from '../types'
@@ -25,8 +31,48 @@ const keyword = ref('')
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
-const PAGE_SIZES = [20, 50, 100, 200]
+const PAGE_SIZES = [20, 50, 100, 200].map((n) => ({ value: String(n), label: `${n} / 页` }))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 危险操作走行内二次确认（侧栏形态不开对话框）：先「确认」，5 秒内再点一次才执行 */
+const confirmDeleteId = ref<number | null>(null)
+let confirmTimer: ReturnType<typeof setTimeout> | null = null
+function clearConfirmTimer() {
+  if (confirmTimer) {
+    clearTimeout(confirmTimer)
+    confirmTimer = null
+  }
+}
+function armDelete(id: number) {
+  clearConfirmTimer()
+  if (confirmDeleteId.value === id) {
+    void doDelete(id)
+    return
+  }
+  confirmDeleteId.value = id
+  confirmTimer = setTimeout(() => {
+    confirmDeleteId.value = null
+    confirmTimer = null
+  }, 5000)
+}
+
+const clearArmed = ref(false)
+let clearTimer: ReturnType<typeof setTimeout> | null = null
+function armClear() {
+  if (clearTimer) clearTimeout(clearTimer)
+  if (clearArmed.value) {
+    clearArmed.value = false
+    clearTimer = null
+    void doClear()
+    return
+  }
+  clearArmed.value = true
+  clearTimer = setTimeout(() => {
+    clearArmed.value = false
+    clearTimer = null
+  }, 5000)
+}
 
 /** 历史详情的层级贡献摘要文案（与 ResultsPanel「检测路径」同词表） */
 function histLayerText(l: LayerReport): string {
@@ -36,7 +82,7 @@ function histLayerText(l: LayerReport): string {
   if (l.status === 'decided') return l.found > 0 ? `${base} 定案 ${l.found} 条` : `${base} 定案（无错）`
   if (l.status === 'abstained') return `${base} 未定`
   if (l.status === 'unavailable') return `${base} 不可用`
-  return `${base} 未触发`
+  return `${base} 跳过`
 }
 
 /** 历史参数标签（解析 params_json；旧记录无参数快照时显示「未记录参数」） */
@@ -52,9 +98,7 @@ function paramsLabel(item: { params_json?: string | null }): string {
     }
     const parts: string[] = []
     if (p.force_llm) parts.push('全文 AI 复查')
-    else if (p.level && p.level > 2) parts.push('深度扫描')
-    else if (p.level && p.level > 1) parts.push('标准检查')
-    else parts.push('快速检查')
+    else parts.push(modeLabel(p.level ?? 1))
     if (p.category) parts.push(p.category)
     if (p.model_version) parts.push(`模型 ${p.model_version}`)
     return parts.join(' · ')
@@ -103,8 +147,8 @@ function reloadPage(p: number) {
   page.value = p
   void load()
 }
-function reloadSize(s: number) {
-  pageSize.value = s
+function reloadSize(s: string | number) {
+  pageSize.value = Number(s)
   page.value = 1
   void load()
 }
@@ -115,7 +159,7 @@ async function loadToWorkspace(id: number) {
     const d = await api.getHistory(id)
     store.loadText(d.text, d.lang)
     store.requestNav('workspace')
-    ElMessage.success('已载入历史文本到工作区')
+    toast('已载入历史文本到工作区', 'ok')
   } catch (e) {
     error.value = errMsg(e)
   }
@@ -139,9 +183,13 @@ async function expand(id: number) {
     detail.value = null
     detailTimings.value = null
     detailLayers.value = []
+    confirmDeleteId.value = null
+    clearConfirmTimer()
     return
   }
   expandedId.value = id
+  confirmDeleteId.value = null
+  clearConfirmTimer()
   try {
     detail.value = await api.getHistory(id)
     detailErrors.value = JSON.parse(detail.value.errors_json)
@@ -164,34 +212,26 @@ async function expand(id: number) {
   }
 }
 
-async function remove(id: number) {
-  try {
-    await ElMessageBox.confirm('确定删除这条记录？', '删除确认', { type: 'warning' })
-  } catch {
-    return
-  }
+async function doDelete(id: number) {
+  clearConfirmTimer()
+  confirmDeleteId.value = null
   try {
     await api.removeHistory(id)
     if (expandedId.value === id) {
       expandedId.value = null
       detail.value = null
     }
-    ElMessage.success('已删除')
+    toast('已删除', 'ok')
     await load()
   } catch (e) {
     error.value = errMsg(e)
   }
 }
 
-async function clearAll() {
-  try {
-    await ElMessageBox.confirm('确定清空全部检测历史？此操作不可撤销。', '清空确认', { type: 'warning' })
-  } catch {
-    return
-  }
+async function doClear() {
   try {
     const res = await api.clearHistory()
-    ElMessage.success(`已清空 ${res.deleted} 条记录`)
+    toast(`已清空 ${res.deleted} 条记录`, 'ok')
     expandedId.value = null
     detail.value = null
     await load()
@@ -201,21 +241,34 @@ async function clearAll() {
 }
 
 // ── 桌面规范（macOS HIG）：⌘F 聚焦搜索 + 行右键菜单（原生弹出，Web 形态 no-op） ──
-const searchRef = ref<{ focus?: () => void } | null>(null)
-const onFocusSearch = () => searchRef.value?.focus?.()
+const searchRef = ref<ComponentPublicInstance | null>(null)
+const onFocusSearch = () => {
+  const el = searchRef.value?.$el as HTMLElement | null
+  if (el instanceof HTMLElement) el.focus()
+}
 
-async function onRowContextMenu(row: HistoryListItem, _col: unknown, ev: MouseEvent) {
+async function onRowContextMenu(row: HistoryListItem, ev: MouseEvent) {
   ev.preventDefault()
   const action = await api.showContextMenu('history')
   if (action === 'ctx:history:load') void loadToWorkspace(row.id)
-  else if (action === 'ctx:history:delete') void remove(row.id)
+  else if (action === 'ctx:history:delete') {
+    // 侧栏不弹对话框：展开该行并进入行内二次确认
+    if (expandedId.value !== row.id) void expand(row.id)
+    armDelete(row.id)
+    toast('该行点「确认删除」完成删除', 'warn')
+  }
 }
 
 onMounted(() => {
   void load()
   window.addEventListener('langfixer:focus-history-search', onFocusSearch)
 })
-onBeforeUnmount(() => window.removeEventListener('langfixer:focus-history-search', onFocusSearch))
+onBeforeUnmount(() => {
+  window.removeEventListener('langfixer:focus-history-search', onFocusSearch)
+  if (searchTimer) clearTimeout(searchTimer)
+  clearConfirmTimer()
+  if (clearTimer) clearTimeout(clearTimer)
+})
 
 // 关键词防抖重查（服务端搜索）：输入停顿 300ms 后回到第 1 页重新拉取
 watch(keyword, () => {
@@ -247,189 +300,214 @@ watch(
 </script>
 
 <template>
-  <el-card shadow="never">
-    <template #header>
-      <div class="card-header">
-        <span class="card-title">检测历史</span>
-        <span class="sub">共 {{ total }} 条检测记录</span>
-        <span class="spacer"></span>
-        <el-input
-          ref="searchRef"
-          v-model="keyword"
-          size="small"
-          placeholder="搜索全文…"
-          clearable
-          style="width: 200px"
-        />
-        <el-button size="small" :loading="loading" @click="load">
-          <el-icon v-if="!loading"><Refresh /></el-icon>
-          刷新
-        </el-button>
-        <el-button size="small" type="danger" plain @click="clearAll">清空全部</el-button>
-      </div>
-    </template>
-
-    <div v-if="loading && !items.length" class="loading">
-      <el-icon class="is-loading"><Loading /></el-icon>
-      加载中…
+  <div class="history-pane">
+    <div class="head">
+      <span class="title">检测历史</span>
+      <span class="sub">共 {{ total }} 条</span>
     </div>
-    <el-alert v-else-if="error" type="error" :closable="false" :title="error" />
-    <el-table
-      v-else
-      :data="items"
-      @row-contextmenu="onRowContextMenu"
-      :empty-text="
+
+    <div class="search-row">
+      <LInput ref="searchRef" v-model="keyword" class="search-input" placeholder="搜索全文…" />
+      <LButton size="sm" :loading="loading" title="重新拉取当前页" @click="load">刷新</LButton>
+    </div>
+
+    <div v-if="loading && !items.length" class="loading">加载中…</div>
+
+    <LEmpty
+      v-else-if="error"
+      :text="error"
+      hint="检测历史暂时读不出来，重试或切换语言页签再试"
+    >
+      <template #action>
+        <LButton size="sm" :loading="loading" @click="load">重试</LButton>
+      </template>
+    </LEmpty>
+
+    <LEmpty
+      v-else-if="!items.length"
+      :text="
         keyword.trim()
           ? `未找到匹配「${keyword.trim()}」的检测记录`
-          : '暂无检测历史：在上方「文本输入」粘贴文本并点「检测 + 归因」，完成后自动记录在此（可回看 / 载入复用 / 删除）'
+          : '暂无检测历史'
       "
-      class="history-table"
-      @row-click="(row: HistoryListItem) => expand(row.id)"
+      hint="在「文本输入」粘贴文本并点「检测 + 归因」，完成后自动记录在此（可回看 / 载入复用 / 删除）"
     >
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <div v-if="expandedId === row.id && detail" class="detail">
-            <div class="detail-text">{{ detail.text }}</div>
-            <div class="detail-actions">
-              <el-button size="small" type="primary" plain @click.stop="loadToWorkspace(row.id)">
-                载入工作区
-              </el-button>
-              <el-button size="small" type="primary" @click.stop="loadAndRedetect(row.id)">
-                载入并重新检测
-              </el-button>
-            </div>
-            <div v-if="detail.version || detail.params_json" class="detail-meta">
-              <el-tag v-if="detail.version" size="small" type="info">版本 v{{ detail.version }}</el-tag>
-              <el-tag size="small" :type="detail.params_json ? 'info' : 'warning'">
-                参数 {{ paramsLabel(detail) }}
-              </el-tag>
-            </div>
-            <div v-if="detailTimings" class="detail-timings">
-              <el-tag size="small" type="info">总耗时 {{ detailTimings.total_ms }} ms</el-tag>
-              <el-tag size="small">规则 {{ detailTimings.rule_ms }} ms</el-tag>
-              <el-tag
-                v-if="detailTimings.nlp_ms != null"
-                size="small"
-                :type="detailTimings.nlp_warmup_ms != null ? 'warning' : 'info'"
-              >
-                文本处理 {{ detailTimings.nlp_ms }} ms<template v-if="detailTimings.nlp_warmup_ms != null">（含首次准备 {{ detailTimings.nlp_warmup_ms }} ms）</template>
-              </el-tag>
-              <el-tag v-if="detailTimings.decision_ms != null" size="small">快速定案 {{ detailTimings.decision_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.l3_ms != null" size="small">快速定案 {{ detailTimings.l3_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.recall_ms != null" size="small">知识查询 {{ detailTimings.recall_ms }} ms</el-tag>
-              <el-tag v-if="detailTimings.llm_ms != null" size="small">AI 复查 {{ detailTimings.llm_ms }} ms</el-tag>
-            </div>
-            <div v-if="detailLayers.length" class="detail-timings">
-              <el-tag v-for="l in detailLayers" :key="l.layer" size="small" effect="plain" type="info">
-                {{ histLayerText(l) }}
-              </el-tag>
-            </div>
-            <div v-if="detailErrors.length > 0" class="detail-errors">
-              <div v-for="(e, i) in detailErrors" :key="i" class="detail-error">
-                <el-tag type="danger" size="small">{{ errorTypeLabel(e.error_type) }}</el-tag>
-                <span class="orig">{{ e.original }}</span>
-                <template v-if="e.correction">
-                  <span class="arrow">→</span>
-                  <span class="corr">{{ e.correction }}</span>
-                </template>
-                <span class="msg">{{ e.message }}</span>
-              </div>
-            </div>
-            <div v-else class="no-errors">无错误</div>
+      <template v-if="keyword.trim()" #action>
+        <LButton size="sm" @click="keyword = ''">清除搜索</LButton>
+      </template>
+    </LEmpty>
+
+    <template v-else>
+      <ul class="rows">
+        <li
+          v-for="row in items"
+          :key="row.id"
+          class="row"
+          :class="{ 'row--open': expandedId === row.id }"
+          @click="expand(row.id)"
+          @contextmenu="onRowContextMenu(row, $event)"
+        >
+          <div class="row-main">
+            <span class="row-line1">
+              <span class="time">{{ row.created_at }}</span>
+              <span class="spacer"></span>
+              <LTag :tone="row.error_count > 0 ? 'danger' : 'neutral'">
+                {{ row.error_count }} 处
+              </LTag>
+            </span>
+            <span class="preview">{{ row.text_preview }}</span>
           </div>
-          <div v-else class="no-errors">点击行加载详情…</div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="id" label="#" width="70" />
-      <el-table-column label="时间" width="170">
-        <template #default="{ row }"><span class="time">{{ row.created_at }}</span></template>
-      </el-table-column>
-      <el-table-column label="语言" width="90">
-        <template #default="{ row }">
-          <el-tag size="small" type="primary" effect="light">{{ langName(row.lang) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="文本预览">
-        <template #default="{ row }"><span class="preview">{{ row.text_preview }}</span></template>
-      </el-table-column>
-      <el-table-column label="错误数" width="90">
-        <template #default="{ row }">
-          <span :class="{ 'has-errors': row.error_count > 0 }">{{ row.error_count }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="耗时" width="110">
-        <template #default="{ row }">
-          <span v-if="row.total_ms != null" class="time">{{ row.total_ms }} ms</span>
-          <span v-else class="muted">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="参数" width="150">
-        <template #default="{ row }">
-          <el-tag v-if="row.params_json" size="small" effect="plain">{{ paramsLabel(row) }}</el-tag>
-          <span v-else class="muted">未记录参数</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="版本" width="100">
-        <template #default="{ row }">
-          <span v-if="row.version" class="muted">v{{ row.version }}</span>
-          <span v-else class="muted">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="170">
-        <template #default="{ row }">
-          <el-button type="primary" size="small" plain @click.stop="loadToWorkspace(row.id)">
-            载入
-          </el-button>
-          <el-button
-            type="danger"
-            size="small"
-            plain
-            @click.stop="remove(row.id)"
-          >
-            删除
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    <div v-if="total > 0" class="pager">
-      <el-pagination
-        :current-page="page"
-        :page-size="pageSize"
-        :page-sizes="PAGE_SIZES"
-        :total="total"
-        layout="total, sizes, prev, pager, next, jumper"
-        size="small"
-        background
-        @current-change="reloadPage"
-        @size-change="reloadSize"
-      />
-    </div>
-    <el-empty
-      v-if="!loading && !error && items.length === 0"
-      description="暂无检测记录 — 完成一次「检测」或「检测 + 归因」后，记录会出现在这里"
-      :image-size="80"
-    />
-  </el-card>
+
+          <div v-if="expandedId === row.id" class="detail" @click.stop>
+            <template v-if="detail">
+              <div class="detail-text">{{ detail.text }}</div>
+              <div class="detail-actions">
+                <LButton size="sm" @click="loadToWorkspace(row.id)">载入工作区</LButton>
+                <LButton size="sm" variant="primary" @click="loadAndRedetect(row.id)">
+                  载入并重新检测
+                </LButton>
+              </div>
+              <div v-if="detail.version || detail.params_json" class="detail-tags">
+                <LTag v-if="detail.version" tone="neutral">版本 v{{ detail.version }}</LTag>
+                <LTag :tone="detail.params_json ? 'neutral' : 'warn'">
+                  参数 {{ paramsLabel(detail) }}
+                </LTag>
+              </div>
+              <div v-if="detailTimings" class="detail-tags">
+                <LTag tone="neutral">总耗时 {{ detailTimings.total_ms }} ms</LTag>
+                <LTag tone="neutral">规则 {{ detailTimings.rule_ms }} ms</LTag>
+                <LTag
+                  v-if="detailTimings.nlp_ms != null"
+                  :tone="detailTimings.nlp_warmup_ms != null ? 'warn' : 'neutral'"
+                >
+                  文本处理 {{ detailTimings.nlp_ms }} ms<template v-if="detailTimings.nlp_warmup_ms != null">（含首次准备 {{ detailTimings.nlp_warmup_ms }} ms）</template>
+                </LTag>
+                <LTag v-if="detailTimings.decision_ms != null" tone="neutral">
+                  快速定案 {{ detailTimings.decision_ms }} ms
+                </LTag>
+                <LTag v-if="detailTimings.l3_ms != null" tone="neutral">
+                  快速定案 {{ detailTimings.l3_ms }} ms
+                </LTag>
+                <LTag v-if="detailTimings.recall_ms != null" tone="neutral">
+                  知识查询 {{ detailTimings.recall_ms }} ms
+                </LTag>
+                <LTag v-if="detailTimings.llm_ms != null" tone="neutral">
+                  AI 复查 {{ detailTimings.llm_ms }} ms
+                </LTag>
+              </div>
+              <div v-if="detailLayers.length" class="detail-tags">
+                <LTag v-for="l in detailLayers" :key="l.layer" tone="neutral">
+                  {{ histLayerText(l) }}
+                </LTag>
+              </div>
+              <div v-if="detailErrors.length > 0" class="detail-errors">
+                <div v-for="(e, i) in detailErrors" :key="i" class="detail-error">
+                  <LTag tone="danger">{{ errorTypeLabel(e.error_type) }}</LTag>
+                  <span class="orig">{{ e.original }}</span>
+                  <template v-if="e.correction">
+                    <span class="arrow">→</span>
+                    <span class="corr">{{ e.correction }}</span>
+                  </template>
+                  <span class="msg">{{ e.message }}</span>
+                </div>
+              </div>
+              <div v-else class="no-errors">无错误</div>
+              <div class="detail-actions">
+                <LButton
+                  size="sm"
+                  :variant="confirmDeleteId === row.id ? 'danger' : 'default'"
+                  @click="armDelete(row.id)"
+                >
+                  {{ confirmDeleteId === row.id ? '确认删除' : '删除' }}
+                </LButton>
+              </div>
+            </template>
+            <div v-else class="no-errors">详情加载中…</div>
+          </div>
+        </li>
+      </ul>
+
+      <div class="pager">
+        <span v-if="total > 0" class="pager-text">第 {{ page }} / {{ totalPages }} 页</span>
+        <span class="spacer"></span>
+        <LButton size="sm" :disabled="page <= 1" @click="reloadPage(page - 1)">上一页</LButton>
+        <LButton size="sm" :disabled="page >= totalPages" @click="reloadPage(page + 1)">下一页</LButton>
+        <LSelect
+          :model-value="String(pageSize)"
+          :options="PAGE_SIZES"
+          aria-label="每页条数"
+          class="size-select"
+          @update:model-value="reloadSize"
+        />
+      </div>
+      <div class="foot">
+        <LButton
+          size="sm"
+          :variant="clearArmed ? 'danger' : 'default'"
+          :disabled="!total"
+          @click="armClear"
+        >
+          {{ clearArmed ? '确认清空全部' : '清空全部' }}
+        </LButton>
+      </div>
+    </template>
+  </div>
 </template>
 
 <style scoped>
-.time { color: var(--muted); white-space: nowrap; }
-.muted { color: var(--muted); }
-.preview {
-  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-2);
+.history-pane { display: flex; flex-direction: column; gap: var(--space-2); }
+.head { display: flex; align-items: baseline; gap: var(--space-2); }
+.title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.sub { color: var(--muted); font-size: var(--fs-xs); }
+.spacer { flex: 1; }
+
+.search-row { display: flex; gap: var(--space-2); align-items: center; }
+.search-input { flex: 1; min-width: 0; }
+.size-select { width: auto; }
+
+.loading { color: var(--muted); font-size: var(--fs-sm); padding: var(--space-3) 0; }
+
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
 }
-.has-errors { color: var(--danger); font-weight: 600; }
-.detail { padding: 8px 12px; }
-.detail-text { margin-bottom: 8px; white-space: pre-wrap; font-size: 0.95em; }
-.detail-actions { display: flex; gap: 8px; margin-bottom: 10px; }
-.detail-meta { margin-bottom: 8px; }
-.detail-timings { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.detail-errors { display: flex; flex-direction: column; gap: 6px; }
-.detail-error { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13.5px; }
+.row:hover { border-color: var(--border-strong); }
+.row--open { border-color: var(--accent); }
+.row-main {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-2); min-width: 0;
+}
+.row-line1 { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.time { color: var(--muted); font-size: var(--fs-xs); font-family: var(--font-mono); white-space: nowrap; }
+.preview {
+  display: block; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-ui);
+}
+
+.detail {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-2); border-top: 1px solid var(--border);
+  cursor: default;
+}
+.detail-text {
+  white-space: pre-wrap; font-size: var(--fs-sm); line-height: var(--lh-body);
+  max-height: 12lh; overflow: auto;
+}
+.detail-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.detail-tags { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+.detail-errors { display: flex; flex-direction: column; gap: var(--space-1); }
+.detail-error { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; font-size: var(--fs-sm); }
 .orig { color: var(--text); }
+.arrow { color: var(--muted); }
 .corr { color: var(--ok); font-weight: 500; }
 .msg { color: var(--muted); }
-.no-errors { color: var(--muted); font-size: 0.9em; }
-.pager { display: flex; justify-content: flex-end; margin-top: 10px; }
+.no-errors { color: var(--muted); font-size: var(--fs-sm); }
+
+.pager { display: flex; align-items: center; gap: var(--space-2); }
+.pager-text { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.foot { display: flex; justify-content: flex-end; }
 </style>

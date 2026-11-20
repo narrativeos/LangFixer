@@ -1,8 +1,13 @@
+pub mod admin;
 pub mod agent;
 pub mod analyze;
 pub mod attribute;
+pub mod auth;
 pub mod custom_words;
+pub mod deps;
 pub mod detect;
+pub mod detect_progress;
+pub mod doc_jobs;
 pub mod eval;
 pub mod explain;
 pub mod feedback;
@@ -14,8 +19,11 @@ pub mod l3;
 pub mod languages;
 pub mod learned_knowledge;
 pub mod llm_feedback;
+pub mod mcp;
 pub mod media;
+pub mod observability;
 pub mod optimization;
+pub mod recheck;
 pub mod reflection_center;
 pub mod rules;
 pub mod session;
@@ -39,6 +47,12 @@ pub enum ApiError {
     NotFound(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("quota exceeded: {0}")]
+    TooManyRequests(String),
     #[error("upstream error: {0}")]
     Upstream(String),
     #[error("service unavailable: {0}")]
@@ -53,6 +67,9 @@ impl ApiError {
             ApiError::BadRequest(_) => http::StatusCode::BAD_REQUEST,
             ApiError::NotFound(_) => http::StatusCode::NOT_FOUND,
             ApiError::Unauthorized(_) => http::StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => http::StatusCode::FORBIDDEN,
+            ApiError::Conflict(_) => http::StatusCode::CONFLICT,
+            ApiError::TooManyRequests(_) => http::StatusCode::TOO_MANY_REQUESTS,
             ApiError::Upstream(_) => http::StatusCode::BAD_GATEWAY,
             ApiError::ServiceUnavailable(_) => http::StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -94,6 +111,11 @@ impl From<attribution_engine::AttributionError> for ApiError {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/gec/detect", axum::routing::post(detect::detect))
+        // 分阶段进度条：检测进行中按 progress_id 轮询阶段事件（见 routes/detect_progress）
+        .route(
+            "/gec/detect/progress",
+            axum::routing::get(detect_progress::progress),
+        )
         // ── 多模态审校（MULTIMODAL.md §8）：上传载体可达数十 MB，单独放宽 body limit ──
         .nest(
             "/gec/media",
@@ -111,10 +133,38 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .route("/reports/:id", axum::routing::get(media::report_file))
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        // ── 文档级审校作业（10 万字+：请求变作业，块级 checkpoint/断点续跑）──
+        .nest(
+            "/gec/doc-jobs",
+            Router::new()
+                .route(
+                    "/",
+                    axum::routing::post(doc_jobs::create).get(doc_jobs::list),
+                )
+                .route("/:id", axum::routing::get(doc_jobs::get))
+                .route("/:id/results", axum::routing::get(doc_jobs::results))
+                .route("/:id/events", axum::routing::get(doc_jobs::events))
+                .route("/:id/cancel", axum::routing::post(doc_jobs::cancel))
+                .route("/:id/retry", axum::routing::post(doc_jobs::retry))
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/gec/eval/run", axum::routing::post(eval::run))
         .route("/gec/eval/job/:id", axum::routing::get(eval::job))
         .route("/gec/eval/reports", axum::routing::get(eval::reports))
         .route("/gec/eval/report/:id", axum::routing::get(eval::report))
+        .route("/gec/eval/layers", axum::routing::get(eval::layers))
+        .route("/gec/deps", axum::routing::get(deps::list))
+        .route("/gec/deps/start", axum::routing::post(deps::start))
+        .route("/gec/deps/recheck", axum::routing::post(deps::recheck))
+        // §7 可观测性：两路告警 + 按天聚合看板（数据源 request_summary 账本）
+        .route(
+            "/gec/observability/alerts",
+            axum::routing::get(observability::alerts),
+        )
+        .route(
+            "/gec/observability/summary",
+            axum::routing::get(observability::summary),
+        )
         .route(
             "/gec/eval/contributions",
             axum::routing::post(optimization::contributions),
@@ -143,6 +193,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/gec/attribute", axum::routing::post(attribute::attribute))
         .route("/gec/analyze", axum::routing::post(analyze::analyze))
+        .route(
+            "/gec/recheck",
+            axum::routing::post(recheck::recheck_sentence),
+        )
         .route("/gec/explain", axum::routing::post(explain::explain))
         .route(
             "/gec/explain/stream",
@@ -360,6 +414,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/gec/history",
             axum::routing::get(history::list).delete(history::clear),
         )
+        .route("/gec/cache/clear", axum::routing::post(detect::clear_cache))
         .route(
             "/gec/history/:id",
             axum::routing::get(history::get).delete(history::remove),

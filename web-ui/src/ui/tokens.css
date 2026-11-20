@@ -1,0 +1,66 @@
+/* ── 设计 token v2(在 style.css 的语义色 token 之上叠加布局/控件/层级 token)──
+   原则:8pt 网格;Mac 紧凑控件(28px);表格 32px 行;红色只用于错误语义;
+   层级标签中性化;强调色优先跟随系统 AccentColor(WebKit),回退品牌靛。 */
+:root {
+  /* 尺度(8pt 网格) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 控件与骨架 */
+  --h-control: 28px;      /* 标准控件高度(Mac 紧凑档;EP 的 32-40px 一律不用) */
+  --h-control-sm: 22px;   /* 工具栏徽章 / 微型控件 */
+  --h-toolbar: 52px;
+  --h-table-row: 32px;
+  --rail-w: 400px;
+  --sidebar-w: 232px;
+  --radius-ctl: 6px;      /* 控件圆角(比卡片小) */
+  --radius-md: 8px;       /* 卡片/面板圆角 */
+  --shadow-pop: 0 4px 12px rgba(23, 30, 54, 0.12), 0 1px 3px rgba(23, 30, 54, 0.08);
+
+  /* 字阶(基准 13px,Mac UI 密度;正文校样 15px) */
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-ui: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --lh-ui: 1.5;
+  --lh-body: 1.75;
+
+  /* 字体:UI chrome = 系统栈(HIG §9.1);校样画布 = 同栈、大一号 */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* 校样标记色:danger/warn/violet/blue 的既有色值专用于「错误标记」这一种含义,
+     禁止用于装饰/强调;置信度用透明度深浅(把握大→实,小→虚)。 */
+  --mark-grammar: var(--danger);
+  --mark-spelling: var(--warn);
+  --mark-typography: var(--violet);
+  --mark-style: var(--blue);
+  --mark-ins: var(--ok); /* 修正后文本(采纳态) */
+
+  /* 层级轨迹:中性阶(层级=来源属性,不是重要度属性,不用彩虹色) */
+  --trace-track: var(--surface-2);
+  --trace-done: var(--text-2);
+  --trace-skip: color-mix(in srgb, var(--muted) 45%, var(--surface-2));
+
+  /* 焦点环 */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* 强调色:优先系统 AccentColor(macOS 系统设置联动);不支持时回退品牌靛 */
+:root { --accent: var(--primary); }
+@supports (color: AccentColor) {
+  :root { --accent: AccentColor; }
+}
+
+html.dark {
+  --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+}

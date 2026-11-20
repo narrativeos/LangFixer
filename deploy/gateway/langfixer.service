@@ -1,0 +1,22 @@
+# LangFixer 评测通道服务（网关形态）
+# 安装：cp 到 /etc/systemd/system/langfixer.service && systemctl enable --now langfixer
+# 前置：/srv/langfixer/langfixer.env（chmod 600）、bin/、decision-tables/、lexicons/、prompts/、data/
+# 数据保留清理是独立单元，见 langfixer-retention.{service,timer}
+
+[Unit]
+Description=LangFixer api-server (评测通道/网关形态)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/langfixer
+EnvironmentFile=/srv/langfixer/langfixer.env
+ExecStart=/srv/langfixer/bin/api-server
+Restart=always
+RestartSec=3
+MemoryMax=2G
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

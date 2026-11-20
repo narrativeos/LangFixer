@@ -1,26 +1,20 @@
 /**
  * 修正应用（纯函数，可单测）
  *
- * 与服务端 `apply_corrections` 同构：span 为 UTF-8 字节偏移 → 转 UTF-16 索引；
- * 排序 + 跳过重叠区间 + 从后往前替换。
+ * 与服务端 `apply_corrections` 同构：span 为 UTF-8 字节偏移 → 转 UTF-16 索引
+ * （口径转换唯一实现见 lib/span）；排序 + 跳过重叠区间 + 从后往前替换。
  * 用途：① 采纳沉淀（src_text → corrected_text 送服务端）；
  *      ② 「复制修正全文 / 替换为修正文本」（结果面板一键出口）。
  */
+import { byteToU16Map } from './span'
+
 export interface Correctable {
   span: [number, number]
   correction: string | null
 }
 
 export function applyCorrections(text: string, errors: Correctable[]): string {
-  const byteToU16 = new Map<number, number>()
-  let byte = 0
-  for (let u = 0; u < text.length; ) {
-    byteToU16.set(byte, u)
-    const cp = text.codePointAt(u) ?? 0
-    byte += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
-    u += cp > 0xffff ? 2 : 1
-  }
-  byteToU16.set(byte, text.length)
+  const byteToU16 = byteToU16Map(text)
   const items = errors
     .filter((e) => e.correction != null && e.span[1] > e.span[0])
     .map((e) => ({

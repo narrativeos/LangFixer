@@ -1,0 +1,7 @@
+[Unit]
+Description=LangFixer 评测通道数据保留清理
+
+[Service]
+Type=oneshot
+EnvironmentFile=/srv/langfixer/langfixer.env
+ExecStart=/srv/langfixer/bin/langfixer-retention.sh
