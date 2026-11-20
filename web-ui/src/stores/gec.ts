@@ -179,6 +179,13 @@ export const useGecStore = defineStore('gec', {
       meta: null,
       fallback: false,
     } as LlmExplainState,
+    /** 句级「待复查」条目的 LLM 复查状态（key = errors 下标）：
+     *  loading 进行中 / clean 已复查无错 / error 失败原因可重试；
+     *  复查有发现时条目合流成可操作项，该键移除（其余键随 splice 平移） */
+    verdictRecheck: {} as Record<
+      number,
+      { state: 'loading' | 'clean' | 'error'; msg?: string }
+    >,
     /** 结果快照：检测成功时的 text / lang（resultsStale 判定基准；null = 尚无结果） */
     resultText: null as string | null,
     resultLang: '',
@@ -291,7 +298,58 @@ export const useGecStore = defineStore('gec', {
       this.focusErrorIndex = -1
       this.resultText = null
       this.resultLang = ''
+      this.verdictRecheck = {}
       this.resetLlm()
+    },
+    /** 「待复查」句级条目的 LLM 复查（ErrorList 卡片按钮）：对该句字节区间做
+     *  定向 LLM 复查。有发现 → 替换该 verdict 项成具体可操作条目（共识 =
+     *  决策模型 + AI 复查）；无发现 → 标「已复查·无错」（大概率是句级误报，
+     *  放弃即反馈数据）；失败 → 展示原因可重试 */
+    async recheckVerdict(i: number) {
+      const e = this.errors[i]
+      if (!e) return
+      // 检测后文本被编辑过：span 坐标已失效，拒绝而非错检
+      if (this.resultsStale) {
+        this.verdictRecheck[i] = {
+          state: 'error',
+          msg: '检测后文本已编辑，句子定位已失效，请重新检测',
+        }
+        return
+      }
+      this.verdictRecheck[i] = { state: 'loading' }
+      try {
+        const found = await api.llmRecheck(this.lang, this.resultText ?? this.text, [
+          e.span[0],
+          e.span[1],
+        ])
+        if (found.length === 0) {
+          this.verdictRecheck[i] = { state: 'clean' }
+          return
+        }
+        const merged = found.map((f) => ({
+          ...f,
+          source: 'llm',
+          // verdict 项来自决策模型的句级判断，复查层再确认 → 多层共识
+          also_found_by: Array.from(new Set(['decision', ...(f.also_found_by ?? [])])),
+        }))
+        this.errors.splice(i, 1, ...merged)
+        // analyzed 里的 error 是另一份引用（analyze 流），必须同步 splice，
+        // 否则归因面 / 采纳与检测结果错位
+        if (this.analyzed.length > 0) {
+          this.analyzed.splice(i, 1, ...merged.map((error) => ({ error, attribution: null })))
+        }
+        // 本条退出复查面；后续键随 splice 平移，避免错位到其他卡片
+        const shift = merged.length - 1
+        const remapped: Record<number, { state: 'loading' | 'clean' | 'error'; msg?: string }> = {}
+        for (const [k, v] of Object.entries(this.verdictRecheck)) {
+          const ki = Number(k)
+          if (ki === i) continue
+          remapped[ki > i ? ki + shift : ki] = v
+        }
+        this.verdictRecheck = remapped
+      } catch (err) {
+        this.verdictRecheck[i] = { state: 'error', msg: errMsg(err) }
+      }
     },
     /** 三个检测动作的统一入口：重置状态 + 启动中止控制器 */
     beginDetect(kind: 'analyze' | 'detect' | 'detectLlm') {

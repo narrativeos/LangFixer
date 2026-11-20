@@ -8,9 +8,12 @@ import { LButton, LEmpty, LTag } from '../ui'
 
 const store = useGecStore()
 
-/** 句级怀疑（待复查）不进归因面：它没有具体错误点，归因只能落兜底桶，
- *  展示出来是误导；它的处置入口在「检测结果」（待复查标注 + 采纳/放弃） */
-const attributable = computed(() => store.analyzed.filter((a) => !isVerdictOnly(a.error)))
+/** 句级怀疑（待复查）不进归因面：它没有具体错误点，归因只能落兑底桶，
+ *  展示出来是误导；它的处置入口在「检测结果」（待复查标注 + 采纳/放弃）。
+ *  LLM 复查合流入的条目无归因（attribution=null），卡片会错显「暂无决策表」，同样排除 */
+const attributable = computed(() =>
+  store.analyzed.filter((a) => a.attribution && !isVerdictOnly(a.error)),
+)
 
 function label(key: string, table: Record<string, string>): string {
   return table[key] ?? key

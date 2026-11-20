@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod media;
 pub mod observability;
 pub mod optimization;
+pub mod recheck;
 pub mod reflection_center;
 pub mod rules;
 pub mod session;
@@ -192,6 +193,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/gec/attribute", axum::routing::post(attribute::attribute))
         .route("/gec/analyze", axum::routing::post(analyze::analyze))
+        .route(
+            "/gec/recheck",
+            axum::routing::post(recheck::recheck_sentence),
+        )
         .route("/gec/explain", axum::routing::post(explain::explain))
         .route(
             "/gec/explain/stream",

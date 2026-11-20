@@ -28,7 +28,7 @@ describe('layerStatusLabel', () => {
     expect(layerStatusLabel('ran')).toBe('已执行')
     expect(layerStatusLabel('abstained')).toBe('弃权')
     expect(layerStatusLabel('unavailable')).toBe('不可用已回退')
-    expect(layerStatusLabel('skipped')).toBe('未触发')
+    expect(layerStatusLabel('skipped')).toBe('跳过')
   })
   it('未知状态回落原文', () => {
     expect(layerStatusLabel('whatever')).toBe('whatever')

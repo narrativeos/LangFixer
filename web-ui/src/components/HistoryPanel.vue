@@ -82,7 +82,7 @@ function histLayerText(l: LayerReport): string {
   if (l.status === 'decided') return l.found > 0 ? `${base} 定案 ${l.found} 条` : `${base} 定案（无错）`
   if (l.status === 'abstained') return `${base} 未定`
   if (l.status === 'unavailable') return `${base} 不可用`
-  return `${base} 未触发`
+  return `${base} 跳过`
 }
 
 /** 历史参数标签（解析 params_json；旧记录无参数快照时显示「未记录参数」） */

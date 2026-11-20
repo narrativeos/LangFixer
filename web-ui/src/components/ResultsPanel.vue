@@ -23,7 +23,9 @@ const viewOptions = computed(() => [
 
 /** 句级怀疑（决策模型待复查项）不进归因面（服务端已 skip，此处兜底旧服务端数据），
  *  页签计数与自动切换都按可归因数计 */
-const attributableCount = computed(() => store.analyzed.filter((a) => !isVerdictOnly(a.error)).length)
+const attributableCount = computed(
+  () => store.analyzed.filter((a) => a.attribution && !isVerdictOnly(a.error)).length,
+)
 
 /** 「本次管线」摘要（T1-3）：检测完成后展示各层实际执行情况（跑了什么 / 各层耗时）。
  *  数据来自后端 timings（缓存命中等未实际检测时不返回 → 不显示本行） */

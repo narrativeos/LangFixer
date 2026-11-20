@@ -1231,6 +1231,35 @@ export const api = {
     }
   },
 
+  /** POST /gec/recheck — 对全文中某一句做定向 LLM 复查（「待复查」条目的 LLM 复查按钮）。
+   *  span 为该句在 text 中的字节区间（与 ErrorItem.span 同语义）。
+   *  失败（未配置 / 网关报错）抛错并携带服务端原因，由调用方展示并可重试；
+   *  桌面端走 invoke('recheck')，参数名 camelCase，返回 JSON 字符串。 */
+  async llmRecheck(
+    lang: string,
+    text: string,
+    span: [number, number],
+  ): Promise<ErrorItem[]> {
+    if (inTauri) {
+      const raw = await tauri!.invoke('recheck', { lang, text, span })
+      return JSON.parse(raw as string) as ErrorItem[]
+    }
+    try {
+      const r = await http.post<{ errors: ErrorItem[] }>(
+        '/gec/recheck',
+        { lang, text, span },
+        { timeout: 120000 },
+      )
+      return r.data.errors
+    } catch (e) {
+      // 服务端 ApiError 体是 { error: 人话原因 }；axios 自带的 message 只有状态码，
+      // 换成 body 里的原因供 store 展示（如「AI 复查未配置…」）
+      const body = (e as { response?: { data?: { error?: string } } })?.response?.data
+      if (body?.error) throw new Error(body.error)
+      throw e
+    }
+  },
+
   /** POST /gec/explain/stream — LLM 个性化讲解（SSE，逐 token 回调）；未配置时回退静态建议。
    *  桌面端无 SSE 通道：回退为非流式 explain，一次性投递 meta + 全文 */
   async explainStream(

@@ -50,6 +50,7 @@ fn main() {
             commands::dataset_clean,
             commands::record_error,
             commands::explain,
+            commands::recheck,
             commands::languages,
             commands::list_rules,
             commands::toggle_rule,

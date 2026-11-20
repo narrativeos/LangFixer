@@ -63,6 +63,19 @@ function confTone(e: ErrorItem) {
   const t = confBand(e).type
   return t === 'success' ? 'ok' : t === 'warning' ? 'warn' : 'neutral'
 }
+// ── 句级「待复查」的 LLM 复查（状态存在 store，新检测统一清空）──
+function recheckOf(i: number) {
+  return store.verdictRecheck[i]
+}
+function verdictHintText(i: number): string {
+  const st = recheckOf(i)
+  if (st?.state === 'loading') return 'AI 正在复查该句，稍候…'
+  if (st?.state === 'clean')
+    return '复查未发现错误，可能是决策模型误报；现在放弃会作为反馈数据记录，用于模型迭代'
+  if (st?.state === 'error') return `复查失败：${st.msg ?? '未知错误'}（可重试）`
+  return '决策模型判断该句有错但未定位错误点；送 AI 复查可定位并给出具体修改。直接采纳/放弃会作为反馈数据记录，用于模型迭代'
+}
+
 // 反思建议按钮形态：导航/重训练=主操作；停用规则=普通；删除类=破坏性（红）
 function suggestionVariant(kind: string) {
   if (kind === 'view_rule' || kind === 'retrain' || kind === 'exclude_word') return 'primary'
@@ -335,10 +348,14 @@ watch(
         </LTag>
         <LTag
           v-if="isVerdictOnly(g.first.e)"
-          tone="warn"
-          title="决策模型判断该句有错，但未定位具体错误点；待 AI 复查细化"
+          :tone="recheckOf(g.first.i)?.state === 'clean' ? 'ok' : 'warn'"
+          :title="
+            recheckOf(g.first.i)?.state === 'clean'
+              ? 'AI 复查未发现具体错误，可能是决策模型误报'
+              : '决策模型判断该句有错，但未定位具体错误点；待 AI 复查细化'
+          "
         >
-          待复查
+          {{ recheckOf(g.first.i)?.state === 'clean' ? '已复查·无错' : '待复查' }}
         </LTag>
       </div>
       <div class="fix">
@@ -350,7 +367,17 @@ watch(
       </div>
       <div class="message">{{ g.first.e.message }}</div>
       <div v-if="isVerdictOnly(g.first.e)" class="verdict-hint">
-        暂未定位具体错误点，AI 复查恢复后重新检测可得到具体修改建议；现在采纳/放弃会作为反馈数据记录，用于模型迭代
+        <span>{{ verdictHintText(g.first.i) }}</span>
+        <LButton
+          size="sm"
+          variant="ghost"
+          :loading="recheckOf(g.first.i)?.state === 'loading'"
+          :disabled="!store.llmEnabled"
+          :title="store.llmEnabled ? '送 AI 复查定位并给出修改' : 'AI 复查未配置（见设置）'"
+          @click="store.recheckVerdict(g.first.i)"
+        >
+          {{ recheckOf(g.first.i)?.state === 'error' ? '重试复查' : 'LLM 复查' }}
+        </LButton>
       </div>
       <div class="llm-feedback">
         <!-- 同类合并组（N>1）：卡级「采纳 ×N」批量按钮 + 放弃（两段式，作用于组内全部实例）+ 展开的实例清单 -->
@@ -651,6 +678,10 @@ watch(
   color: var(--muted);
 }
 .verdict-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
   margin-top: 2px;
   font-size: var(--fs-sm);
   color: var(--muted);

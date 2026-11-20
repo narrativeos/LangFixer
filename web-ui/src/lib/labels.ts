@@ -62,7 +62,9 @@ export const LAYER_STATUS_LABELS: Record<string, string> = {
   decided: '定案',
   abstained: '弃权',
   unavailable: '不可用已回退',
-  skipped: '未触发',
+  // skipped = 被评估但未执行（如标准模式下 LLM 门控未触发）；与 unavailable
+  // （服务失败已回退）语义不同，说「跳过」避免用户把两者混读成故障
+  skipped: '跳过',
 }
 
 export function layerStatusLabel(status: string): string {

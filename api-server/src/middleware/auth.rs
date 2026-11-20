@@ -180,7 +180,8 @@ async fn decide(
 /// `routes/mcp.rs` 把写档工具改成提案信封同一个立场（写不隔离共享状态）：
 /// - `/auth/*`：门禁页与会话（whoami / session / logout）；
 /// - `POST /gec/detect`、`POST /gec/:lang/detect`、`POST /gec/analyze`、
-///   `POST /gec/explain`(`/stream`)：检测与讲解本体，按字符数计配额（D2）；
+///   `POST /gec/recheck`、`POST /gec/explain`(`/stream`)：检测、句级定向复查与
+///   讲解本体，按字符数计配额（D2）；
 /// - `/gec/history*`、`/gec/sessions*`：本人历史与练习会话，跨账号可见性由
 ///   `Tenant` 归属守卫负责（这里不再判归属）；
 /// - `GET /gec/settings`、`GET /gec/languages`：只读的配置与语言列表；
@@ -216,7 +217,11 @@ fn review_denied(method: &axum::http::Method, path: &str) -> Option<&'static str
     if m == "POST"
         && matches!(
             path,
-            "/gec/detect" | "/gec/analyze" | "/gec/explain" | "/gec/explain/stream"
+            "/gec/detect"
+                | "/gec/analyze"
+                | "/gec/recheck"
+                | "/gec/explain"
+                | "/gec/explain/stream"
         )
     {
         return None;

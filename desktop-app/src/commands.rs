@@ -6,6 +6,7 @@ use std::sync::RwLock;
 use attribution_engine::{KnowledgeStore, StagingStore, TableStore};
 use gec_core::{
     ActionTier, LanguageRouter, LlmDetectConfig, LlmGecEngine, ModelRegistry, compose_detector,
+    targeted_llm_review,
 };
 use gec_en::{DetectorConfig as EnConfig, EnglishDetector};
 use gec_ja::{DetectorConfig as JaConfig, JapaneseDetector};
@@ -2731,6 +2732,35 @@ pub fn dataset_clean(
         "aux_removed": aux_removed,
         "staging_removed": staging_removed,
     }))
+}
+
+/// 对全文中某一句做定向 LLM 复查（「待复查」条目的 LLM 复查按钮）。
+///
+/// 复用 ③-T 的 targeted_llm_review：只复查 span 字节区间，返回定位到
+/// 全文坐标的具体错误（source='llm'）的 JSON。LLM 未配置时报错，
+/// 前端展示原因并可重试（与 api-server /gec/recheck 同构）。
+#[tauri::command]
+pub async fn recheck(
+    core: tauri::State<'_, Arc<Core>>,
+    lang: String,
+    text: String,
+    span: [usize; 2],
+) -> Result<String, String> {
+    if span[0] >= span[1] || span[1] > text.len() {
+        return Err(format!(
+            "复查区间不合法: [{}, {})（全文长度 {}）",
+            span[0],
+            span[1],
+            text.len()
+        ));
+    }
+    let llm = core
+        .llm_detect_engine(&lang)
+        .ok_or_else(|| "AI 复查未配置（请先在设置中配置 LLM）".to_string())?;
+    let (errors, _ledger) = targeted_llm_review(&llm, &text, &[span])
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&errors).map_err(|e| e.to_string())
 }
 
 /// LLM 个性化讲解（按 lang + cefr 选择提示词模板）
