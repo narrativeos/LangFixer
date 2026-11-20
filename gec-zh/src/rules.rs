@@ -198,6 +198,7 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_quant_dup(text));
     out.extend(detect_neg_dup(text));
     out.extend(detect_de_confuse(text));
+    out.extend(detect_subj_drowned(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -229,6 +230,7 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     out.extend(detect_quant_dup(text));
     out.extend(detect_neg_dup(text));
     out.extend(detect_de_confuse(text));
+    out.extend(detect_subj_drowned(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -947,6 +949,163 @@ fn detect_de_confuse(text: &str) -> Vec<Error> {
                 "程度补语标记应为「得」：动词/形容词后接程度补语用「得」（如：说得很好）"
                     .to_string(),
                 0.75,
+            );
+        }
+    }
+    out
+}
+
+/// 介词淹没主语与「是由于…的结果」杂糅（词表路径，不依赖 POS）
+///
+/// 三分支（gold 取证：CR 桶删「使」45/删「由于」25）：
+/// A1 前句段由介词短语（通过/经过/在/随着/为了/因为）引导或句中包「由于」，
+/// 本句段以「使/使得」开头→删「使」（前段句首即「由于」的由 A2 删「由于」，不重标）；
+/// A2 句段以「由于」开头且后句段以使/让/致使/造成开头，或对/为/给+带来了/提供了/
+/// 来说等→删「由于」（「对航班进行了调整」类主语可省不扰）；
+/// C 「是+由于…的结果/所致/引起的」句式杂糅→删「由于」（右分句无杂糅尾词即不触发，
+/// 「但是由于天气原因，比赛取消」类合法）。新规则 id 避免被停用开关
+/// ZH_MISSING_SUBJECT（Phase-1 审计 107/107 误报）在 apply_suppression_filters 误滤。
+fn detect_subj_drowned(text: &str) -> Vec<Error> {
+    const LEAD_SHI: &[&str] = &["通过", "经过", "在", "随着", "为了", "因为"];
+    const YU_HEAD: &[&str] = &["使", "使得", "让", "致使", "造成"];
+    const YU_OBJ: &[&str] = &["对", "为", "给"];
+    const YU_OBJ_V: &[&str] = &[
+        "带来了",
+        "造成了",
+        "提供了",
+        "给予了",
+        "奠定了",
+        "打下了",
+        "产生了",
+        "来说",
+        "注入了",
+    ];
+    const ZAW: &[&str] = &["的结果", "所致", "引起的", "造成的", "决定的", "的缘故"];
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut byte_at: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut acc = 0usize;
+    for c in &chars {
+        byte_at.push(acc);
+        acc += c.len_utf8();
+    }
+    byte_at.push(acc);
+    let is_delim = |c: char| matches!(c, '，' | ',' | '；' | ';' | '。' | '！' | '？' | '!' | '?');
+    let is_end = |c: char| matches!(c, '。' | '！' | '？' | '!' | '?');
+    let mut out: Vec<Error> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let push =
+        |s: usize, e: usize, out: &mut Vec<Error>, spans: &mut Vec<(usize, usize)>, msg: String| {
+            if spans.iter().any(|(ps, pe)| s < *pe && e > *ps) {
+                return;
+            }
+            spans.push((s, e));
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::GRAMMAR,
+                0.78,
+                [s, e],
+                text[s..e].to_string(),
+                Some(String::new()),
+                msg,
+                Some("grammar"),
+                Some("ZH_SUBJ_DROWNED"),
+                vec![Suggestion::new(String::new(), 0.78)],
+            ));
+        };
+    let mut starts: Vec<usize> = Vec::new();
+    if n > 0 && !is_delim(chars[0]) {
+        starts.push(0);
+    }
+    for i in 0..n {
+        if is_delim(chars[i]) && i + 1 < n && !is_delim(chars[i + 1]) {
+            starts.push(i + 1);
+        }
+    }
+    for (s, next_s) in starts
+        .iter()
+        .copied()
+        .zip(starts[1..].iter().copied().chain(std::iter::once(n)))
+    {
+        // A1：使(得) 句段首 + 前句段介词引导
+        if s > 0 && chars[s] == '使' {
+            // s 是句段首 ⇒ chars[s-1] 必为分隔符；再向前找前一句段起点
+            let d_prev = s - 1;
+            let mut q = d_prev;
+            while q > 0 && !is_delim(chars[q - 1]) {
+                q -= 1;
+            }
+            let p: String = chars[q..d_prev].iter().collect();
+            let due_at_head = p.starts_with("由于");
+            // 守卫：「经过了N年」的经过是谓语动词非介词；「在」引导的须是
+            // 方位短语（下/中/后…），若已包孕完整子句（在…教孩子唱儿歌）则使合法
+            let shi_lead = LEAD_SHI.iter().any(|w| {
+                p.starts_with(w)
+                    && !(*w == "经过" && p.chars().nth(2) == Some('了'))
+                    && !(*w == "在"
+                        && !p.ends_with(['下', '中', '后', '前', '上', '内', '里', '时']))
+            });
+            let lead = shi_lead || p.contains("由于");
+            let shi_ok = chars.get(s + 1) != Some(&'用'); // 「使用」是动词非使令词
+            if !p.is_empty() && lead && !due_at_head && shi_ok {
+                let ln = if chars.get(s + 1) == Some(&'得') {
+                    2
+                } else {
+                    1
+                };
+                let wd: String = chars[s..s + ln].iter().collect();
+                push(
+                    byte_at[s],
+                    byte_at[s + ln],
+                    &mut out,
+                    &mut spans,
+                    format!(
+                        "介词结构淹没主语：前一分句由介词短语引导，主句以「{wd}」开头缺主语，建议删「{wd}」"
+                    ),
+                );
+            }
+        }
+        // A2：由于 句段首 + 后句段无主语开头
+        if next_s < n && chars[s] == '由' && chars.get(s + 1) == Some(&'于') && next_s - s > 2 {
+            let t2: String = chars[next_s..std::cmp::min(next_s + 40, n)]
+                .iter()
+                .collect();
+            let direct = YU_HEAD.iter().any(|w| t2.starts_with(w));
+            let objv =
+                YU_OBJ.iter().any(|w| t2.starts_with(w)) && YU_OBJ_V.iter().any(|v| t2.contains(v));
+            if direct || objv {
+                push(
+                    byte_at[s],
+                    byte_at[s + 2],
+                    &mut out,
+                    &mut spans,
+                    "「由于」把主语淹没在介词结构里，其后分句无主语，建议删「由于」".to_string(),
+                );
+            }
+        }
+    }
+    // C：是+由于…的结果/所致/引起的 杂糅
+    for i in 0..n.saturating_sub(1) {
+        if chars[i] != '由' || chars.get(i + 1) != Some(&'于') {
+            continue;
+        }
+        let l0 = i.saturating_sub(8);
+        if chars[l0..i].iter().copied().any(is_end) || !chars[l0..i].contains(&'是') {
+            continue;
+        }
+        let mut j = i + 2;
+        let mut right = String::new();
+        while j < n && right.chars().count() < 80 && !is_end(chars[j]) {
+            right.push(chars[j]);
+            j += 1;
+        }
+        if ZAW.iter().any(|z| right.contains(z)) {
+            push(
+                byte_at[i],
+                byte_at[i + 2],
+                &mut out,
+                &mut spans,
+                "「是…的」与「由…引起/造成」两式杂糅，建议删「由于」".to_string(),
             );
         }
     }
@@ -2138,5 +2297,51 @@ mod tests {
         assert!(hits("有的人很有钱。").is_empty(), "有的成词");
         assert!(hits("他的慢慢是出了名的。").is_empty(), "的字结构非状语");
         assert!(hits("他高兴得跳起来。").is_empty(), "单侧合法");
+    }
+
+    #[test]
+    fn subj_drowned_fire_and_guards() {
+        let hits = |t: &str| detect_subj_drowned(t);
+        let one = |t: &str| {
+            let mut h = hits(t);
+            assert_eq!(h.len(), 1, "期望恰 1 命中: {t} → {h:?}");
+            let e = h.remove(0);
+            assert_eq!(e.correction.as_deref(), Some(""), "应为删除: {t}");
+            e.original
+        };
+        assert_eq!(one("通过赏析这首诗，使我感受到了惜别之情。"), "使");
+        assert_eq!(one("通过这次活动，使大家开阔了眼界。"), "使");
+        assert_eq!(one("在老师的帮助下，使我进步很快。"), "使");
+        assert_eq!(one("由于诗人善于绘景写情，使生活气息浓厚。"), "由于");
+        assert_eq!(one("由于他的加入，让团队更强了。"), "由于");
+        assert_eq!(
+            one("由于全社会厉行节约之风，对高端餐饮带来了很大的冲击。"),
+            "由于"
+        );
+        assert_eq!(one("这起事故的原因，是由于电线老化引起的。"), "由于");
+        assert_eq!(one("他语文成绩优秀，是由于平时多读多写的缘故。"), "由于");
+        // 守卫：合法用法不触发
+        assert!(
+            hits("由于天气原因，比赛延期举行。").is_empty(),
+            "后续有主语"
+        );
+        assert!(
+            hits("他通过了复试，使全家人欢欣鼓舞。").is_empty(),
+            "前句有主语"
+        );
+        assert!(
+            hits("他经常迟到，使老师非常不满。").is_empty(),
+            "从句作使主语"
+        );
+        assert!(
+            hits("通过这次活动，大家开阔了眼界。").is_empty(),
+            "无使字句"
+        );
+        assert!(
+            hits("但是由于天气原因，比赛取消了。").is_empty(),
+            "但是+由于合法"
+        );
+        assert!(hits("原因是由于他太粗心。").is_empty(), "无杂糅尾词");
+        assert!(hits("由于需要时间，实验推迟了。").is_empty(), "后续有主语");
     }
 }

@@ -41,4 +41,6 @@ IWC 单字替换 top：为→的27、倍→半14、于↔与12 → 功能字混�
 4. ✅ ZH_DE_DA_DE 复启用评审：维持停用（Phase-1 审计 18/18 误报，POS 标签噪声大），
    其 funcword 桶收益由新规则点 ZH_DE_CONFUSE 吸收（含单字动词左侧集，的→得子空间
    原位覆盖 0→15）
-5. `使/由于`+淹没主语并入 ZH_MISSING_SUBJECT 模式面
+5. ✅ `使/由于`+淹没主语：新建 ZH_SUBJ_DROWNED（不并入 ZH_MISSING_SUBJECT，
+   后者 Phase-1 审计 107/107 误报停用中，避免被停用开关误滤）；
+   v22 命中 122 跨度、onpos 召回 47/68，残余误报约 1%
