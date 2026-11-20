@@ -7,10 +7,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 BASE = os.environ.get("LANGFIXER_LLM_BASE", "http://192.168.1.130:4000/v1")
 KEY = os.environ.get("LANGFIXER_LLM_KEY", "")
+if not KEY:  # 退到项目设置里的网关 key（运行时读取，不落盘不外打印）
+    for _p in ("langfixer-settings.json", os.path.expanduser("~/github/narrativeos/LangFixer/langfixer-settings.json")):
+        try:
+            KEY = json.load(open(_p))["llm"]["api_key"]; break
+        except Exception:
+            pass
 MODEL = os.environ.get("LANGFIXER_LLM_MODEL", "Qwen3.8")
 SYS = "你是中文文本校对器。只修正句子中的错字与缺失字，除此之外一字不改：不增删标点，不改写措辞，不调整语序。直接输出修正后的句子，禁止任何解释。"
 
-def call(t, timeout=120, tries=3):
+def call(t, timeout=120, tries=5):
     body = {"model": MODEL, "messages": [{"role": "system", "content": SYS},
             {"role": "user", "content": "文本纠错：\n" + t}],
             "temperature": 0, "max_tokens": 512,
@@ -20,11 +26,13 @@ def call(t, timeout=120, tries=3):
         try:
             req = urllib.request.Request(BASE.rstrip("/") + "/chat/completions",
                 data=json.dumps(body).encode(),
-                headers={"Authorization": "***" + KEY, "content-type": "application/json"})
+                headers={"Authorization": "Bearer " + KEY, "content-type": "application/json"})
             d = json.load(urllib.request.urlopen(req, timeout=timeout))
             return (d["choices"][0]["message"].get("content") or "").strip()
         except Exception as e:
-            last = e; time.sleep(min(30, 2 ** a))
+            last = e
+            code = getattr(e, "code", None)
+            time.sleep(20 if code == 429 else min(30, 2 ** a))
     raise last
 
 def diff_ops(a, b):
