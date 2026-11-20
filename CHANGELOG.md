@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **zh 知识通道（归因面接检测规则点）**：检测命中的规则点 id（`Error.rule_id`）在
+  analyze 链路直通归因上下文 `grammarPoint`（api-server + desktop-app 同步接线），
+  zh 表新增 grammarPoint 输入与 8 行专属规则（ZH_QUANT_DUP/ZH_NEG_DUP/ZH_DE_CONFUSE/
+  ZH_SUBJ_DROWNED × novice/old_hand：新手→knowledge_gap、老手→rule_forgotten，均 cefr A2），
+  排在 grammar_novice 兜底行之前，命中具体规则点不再落「规则缺失」兜底桶；未命中规则点
+  行为不变。知识库新增内置公共源 src-lexicon-zh（中文规则点要览）与 points/zh.json
+  （4 点，remedial 取自词表规则讲解，examples 取自词表改错对）；knowledge_enabled
+  只 gate 富化，不 gate 表行（消融臂仍命中专属行）。en/ja 表与 points/en.json 零漂移。
 - **介词淹没主语规则点 ZH_SUBJ_DROWNED（`gec-zh/src/rules.rs` + 词表条目）**：三分支
   谓词。A1 前句段由介词短语（通过/经过/在…方位词/随着/为了/因为）引导或句中包
   「由于」且本句段以使/使得开头→删「使」；A2「由于」居句段首且后句段以使/让/致

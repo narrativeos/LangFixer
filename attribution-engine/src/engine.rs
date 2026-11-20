@@ -235,6 +235,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zh_grammar_point_novice_hits_specific_rule() {
+        // zh 知识通道：检测命中规则点 → 命中 grammarPoint 专属行，不再落 grammar_novice 兜底
+        let engine = load_zh().await;
+        let mut c = ctx("grammar", 0.9, 0);
+        c.grammar_point = Some("ZH_DE_CONFUSE".into());
+        let result = engine.attribute(&c).await.unwrap();
+        assert_eq!(result.trace.matched_rule, "zh_de_confuse_novice");
+        assert_eq!(result.attribution, attribution_labels::KNOWLEDGE_GAP);
+        assert_eq!(result.cefr, "A2");
+        assert!(result.remedial.iter().any(|r| r.contains("地")));
+    }
+
+    #[tokio::test]
+    async fn zh_grammar_point_old_hand() {
+        let engine = load_zh().await;
+        let mut c = ctx("grammar", 0.9, 3);
+        c.grammar_point = Some("ZH_QUANT_DUP".into());
+        let result = engine.attribute(&c).await.unwrap();
+        assert_eq!(result.trace.matched_rule, "zh_quant_dup_old_hand");
+        assert_eq!(result.attribution, attribution_labels::RULE_FORGOTTEN);
+    }
+
+    #[tokio::test]
+    async fn zh_grammar_point_absent_falls_back() {
+        // 未命中规则点（grammarPoint 为空）→ 仍走 grammar_novice 粗族兜底行，行为不变
+        let engine = load_zh().await;
+        let result = engine.attribute(&ctx("grammar", 0.9, 0)).await.unwrap();
+        assert_eq!(result.trace.matched_rule, "grammar_novice");
+        assert_eq!(result.attribution, attribution_labels::RULE_MISSING);
+    }
+
+    #[tokio::test]
     async fn zh_punctuation_novice() {
         let engine = load_zh().await;
         let result = engine.attribute(&ctx("punctuation", 0.9, 1)).await.unwrap();

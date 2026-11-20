@@ -30,6 +30,11 @@
             "id": "isNovice",
             "name": "isNovice",
             "field": "isNovice"
+          },
+          {
+            "id": "grammarPoint",
+            "name": "grammarPoint",
+            "field": "grammarPoint"
           }
         ],
         "outputs": [
@@ -106,6 +111,110 @@
             "weinerControllability": "\"controllable\"",
             "remedial": "\"复核提示：置信度较低，建议人工确认\"",
             "matchedRule": "\"spelling_low_conf\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_quant_dup_novice",
+            "grammarPoint": "== \"ZH_QUANT_DUP\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：约数表达「约/近/…余」与「左右/以上」二选一，不可叠用\"",
+            "matchedRule": "\"zh_quant_dup_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_quant_dup_old_hand",
+            "grammarPoint": "== \"ZH_QUANT_DUP\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：约数两种表达的二选一用法回顾\"",
+            "matchedRule": "\"zh_quant_dup_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_neg_dup_novice",
+            "grammarPoint": "== \"ZH_NEG_DUP\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：「避免/防止/杜绝/切忌」辖域内不得再出「不/不再」\"",
+            "matchedRule": "\"zh_neg_dup_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_neg_dup_old_hand",
+            "grammarPoint": "== \"ZH_NEG_DUP\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：预防类动词的否定辖域回顾\"",
+            "matchedRule": "\"zh_neg_dup_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_de_confuse_novice",
+            "grammarPoint": "== \"ZH_DE_CONFUSE\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：动词前状语修饰用「地」，动词后程度补语用「得」\"",
+            "matchedRule": "\"zh_de_confuse_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_de_confuse_old_hand",
+            "grammarPoint": "== \"ZH_DE_CONFUSE\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：的/地/得三分法判别流程回顾\"",
+            "matchedRule": "\"zh_de_confuse_old_hand\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_subj_drowned_novice",
+            "grammarPoint": "== \"ZH_SUBJ_DROWNED\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== true",
+            "attribution": "\"knowledge_gap\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"unstable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：介词结构不能淹没主语，删「使」或「由于」还原主语\"",
+            "matchedRule": "\"zh_subj_drowned_novice\"",
+            "cefrLevel": "\"A2\""
+          },
+          {
+            "_id": "zh_subj_drowned_old_hand",
+            "grammarPoint": "== \"ZH_SUBJ_DROWNED\"",
+            "errorType": "== \"grammar\"",
+            "isNovice": "== false",
+            "attribution": "\"rule_forgotten\"",
+            "weinerLocus": "\"internal\"",
+            "weinerStability": "\"stable\"",
+            "weinerControllability": "\"controllable\"",
+            "remedial": "\"规则讲解：淹主语/杂糅两式判别回顾\"",
+            "matchedRule": "\"zh_subj_drowned_old_hand\"",
             "cefrLevel": "\"A2\""
           },
           {

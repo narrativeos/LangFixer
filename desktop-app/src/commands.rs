@@ -1678,6 +1678,9 @@ pub async fn analyze(
                     } else {
                         fallback
                     }
+                } else if lang == "zh" {
+                    // zh：检测命中的规则点 id 即细粒度知识点 id（与 api-server analyze 同步）
+                    error.rule_id.clone()
                 } else {
                     None
                 };

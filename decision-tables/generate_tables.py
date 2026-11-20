@@ -21,6 +21,10 @@ INPUTS = [
     {"id": "history", "name": "studentHistoryCount", "field": "studentHistoryCount"},
     {"id": "isNovice", "name": "isNovice", "field": "isNovice"},
 ]
+
+# zh 表额外输入：检测命中的规则点 ID（词表 rules[].id）作为细粒度知识点标识，
+# 让已覆盖规则点的归因绕开 grammar_novice「规则缺失」兑底（见 zh_rules 专属行）。
+ZH_INPUTS = INPUTS + [{"id": "grammarPoint", "name": "grammarPoint", "field": "grammarPoint"}]
 OUTPUTS = [
     {"id": "attribution", "name": "attribution", "field": "attribution"},
     {"id": "weinerLocus", "name": "weinerLocus", "field": "weiner.locus"},
@@ -91,6 +95,35 @@ zh_rules = [
          "knowledge_gap", I, U, C, "规则讲解：同音字/形近字辨析", cefr="A2"),
     rule("spelling_low_conf", {"errorType": '== "spelling"', "confidence": "< 0.9"},
          "rule_forgotten", I, S, C, "复核提示：置信度较低，建议人工确认", cefr="A2"),
+    # ── zh 规则点专属归因行：grammarPoint = 检测命中的规则点 ID（analyze 从
+    #    error.rule_id 填入）。命中即说明产品已覆盖该规则点，归因不再是
+    #    「规则缺失」（grammar_novice）而是学习者侧知识缺口/遗忘；补救文案具体，
+    #    教材示例由内置规则点知识源（points/zh.json）富化。须排在兑底行之前
+    #    （hitPolicy=first）。后续新规则点按同一形态加行。
+    rule("zh_quant_dup_novice",
+         {"grammarPoint": '== "ZH_QUANT_DUP"', "errorType": '== "grammar"', "isNovice": "== true"},
+         KG, I, U, C, "规则讲解：约数表达「约/近/…余」与「左右/以上」二选一，不可叠用", cefr="A2"),
+    rule("zh_quant_dup_old_hand",
+         {"grammarPoint": '== "ZH_QUANT_DUP"', "errorType": '== "grammar"', "isNovice": "== false"},
+         RF, I, S, C, "规则讲解：约数两种表达的二选一用法回顾", cefr="A2"),
+    rule("zh_neg_dup_novice",
+         {"grammarPoint": '== "ZH_NEG_DUP"', "errorType": '== "grammar"', "isNovice": "== true"},
+         KG, I, U, C, "规则讲解：「避免/防止/杜绝/切忌」辖域内不得再出「不/不再」", cefr="A2"),
+    rule("zh_neg_dup_old_hand",
+         {"grammarPoint": '== "ZH_NEG_DUP"', "errorType": '== "grammar"', "isNovice": "== false"},
+         RF, I, S, C, "规则讲解：预防类动词的否定辖域回顾", cefr="A2"),
+    rule("zh_de_confuse_novice",
+         {"grammarPoint": '== "ZH_DE_CONFUSE"', "errorType": '== "grammar"', "isNovice": "== true"},
+         KG, I, U, C, "规则讲解：动词前状语修饰用「地」，动词后程度补语用「得」", cefr="A2"),
+    rule("zh_de_confuse_old_hand",
+         {"grammarPoint": '== "ZH_DE_CONFUSE"', "errorType": '== "grammar"', "isNovice": "== false"},
+         RF, I, S, C, "规则讲解：的/地/得三分法判别流程回顾", cefr="A2"),
+    rule("zh_subj_drowned_novice",
+         {"grammarPoint": '== "ZH_SUBJ_DROWNED"', "errorType": '== "grammar"', "isNovice": "== true"},
+         KG, I, U, C, "规则讲解：介词结构不能淹没主语，删「使」或「由于」还原主语", cefr="A2"),
+    rule("zh_subj_drowned_old_hand",
+         {"grammarPoint": '== "ZH_SUBJ_DROWNED"', "errorType": '== "grammar"', "isNovice": "== false"},
+         RF, I, S, C, "规则讲解：淹主语/杂糅两式判别回顾", cefr="A2"),
     rule("grammar_novice", {"errorType": '== "grammar"', "isNovice": "== true"},
          "rule_missing", I, U, C, "规则讲解：句子成分与语序", cefr="A2"),
     rule("grammar_high_conf_old_hand",
@@ -523,7 +556,36 @@ KB_SOURCES = [
         "lang": "en",
         "license_scope": "public",  # 自撰示例内容，可随仓库分发
     },
+    {
+        "source_id": "src-lexicon-zh",
+        "title": "LangFixer 中文规则点要览",
+        "author": "LangFixer Project",
+        "edition": "第一版",
+        "lang": "zh",
+        "license_scope": "public",  # 产品自撰规则点（FCGEC 语料取证），随仓库分发
+    },
 ]
+
+# zh 内置规则点知识源：point_id = 词表规则 id（grammarPoint 直连），
+# 教材示例从 lexicons/zh_gec_lexicon.json 对应条目的 examples 取数（单一数据源）。
+ZH_RULE_POINTS = [
+    ("ZH_QUANT_DUP", "约数词并置冗余", "规则讲解：约数表达在「约/近/…余」与「左右/以上」中二选一，不可叠用"),
+    ("ZH_NEG_DUP", "预防语境否定词冗余", "规则讲解：「避免/防止/杜绝/切忌」的辖域内不得再出现「不/不再」"),
+    ("ZH_DE_CONFUSE", "结构助词的/地/得混用", "规则讲解：动词前状语修饰用「地」，动词后程度补语用「得」"),
+    ("ZH_SUBJ_DROWNED", "介词结构淹没主语与句式杂糅", "规则讲解：介词结构不能淹没主语，删「使」或「由于」还原主语；「是…由于…所致」两式杂糅删「由于」"),
+]
+
+
+def _zh_lexicon_examples(rule_id):
+    """从词表规则条目取 wrong/right 示例（教材示例卡的数据源）。"""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                         "..", "lexicons", "zh_gec_lexicon.json")
+    with open(path, encoding="utf-8") as f:
+        lex = json.load(f)
+    for r in lex["rules"]:
+        if r["id"] == rule_id:
+            return [{"wrong": e["wrong"], "right": e["right"]} for e in r.get("examples", [])]
+    return []
 
 
 
@@ -570,7 +632,26 @@ def build_knowledge_base():
             all_points.append(point)
     with open(_os.path.join(KB_DIR, "points", "en.json"), "w", encoding="utf-8") as f:
         json.dump(all_points, f, ensure_ascii=False, indent=2)
-    print(f"knowledge-base written: {len(KB_SOURCES)} sources, {len(all_points)} points")
+    # zh：内置规则点知识源（点级补救/教材示例富化 zh 归因）
+    zh_points = []
+    for rid, title, remedial in ZH_RULE_POINTS:
+        point = {
+            "point_id": rid,
+            "lang": "zh",
+            "error_type": "grammar",
+            "section": rid,
+            "title": title,
+            "cefr": "A2",
+            "remedial": remedial,
+            "sources": [{"source_id": "src-lexicon-zh", "location": f"规则条目 {rid}"}],
+        }
+        corr = _zh_lexicon_examples(rid)
+        if corr:
+            point["corrections"] = corr
+        zh_points.append(point)
+    with open(_os.path.join(KB_DIR, "points", "zh.json"), "w", encoding="utf-8") as f:
+        json.dump(zh_points, f, ensure_ascii=False, indent=2)
+    print(f"knowledge-base written: {len(KB_SOURCES)} sources, {len(all_points)} en points, {len(zh_points)} zh points")
 
 def build_aux_files():
     """生成 aux 决策数据（资源包组件：随源导出/导入/删除）：
@@ -678,13 +759,13 @@ ja_rules = [
     rule("default_knowledge_gap", {}, "knowledge_gap", I, U, C, cefr="A1"),
 ]
 
-for name, rules in [
-    ("zh_gec_attribution", zh_rules),
-    ("en_gec_attribution", en_rules),
-    ("ja_gec_attribution", ja_rules),
+for name, rules, inputs in [
+    ("zh_gec_attribution", zh_rules, ZH_INPUTS),
+    ("en_gec_attribution", en_rules, INPUTS),
+    ("ja_gec_attribution", ja_rules, INPUTS),
 ]:
     with open(f"{name}.json", "w", encoding="utf-8") as f:
-        json.dump(table(name, rules), f, ensure_ascii=False, indent=2)
+        json.dump(table(name, rules, inputs), f, ensure_ascii=False, indent=2)
     print(name, "written,", len(rules), "rules")
 
 build_knowledge_base()

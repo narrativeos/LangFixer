@@ -222,6 +222,35 @@ async fn attribute_enriched_via_api() {
 }
 
 #[tokio::test]
+async fn attribute_zh_rule_point() {
+    // zh 知识通道：检测命中规则点直通归因表专属行，并由内置规则点要览源富化
+    let (base, _kb) = build_server().await;
+    let ctx = AttributionContext {
+        lang: "zh".into(),
+        error_type: "grammar".into(),
+        confidence: 0.9,
+        session_error_count: 0,
+        session_meta: None,
+        grammar_point: Some("ZH_SUBJ_DROWNED".into()),
+    };
+    let res: AttributionResult = client()
+        .post(format!("{base}/gec/attribute"))
+        .json(&ctx)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(res.trace.matched_rule, "zh_subj_drowned_novice");
+    assert_eq!(res.attribution, "knowledge_gap");
+    assert_eq!(res.cefr, "A2");
+    assert_eq!(res.sources.len(), 1, "规则点应关联内置要览源");
+    assert!(res.sources[0].title.contains("中文规则点要览"));
+    assert!(!res.examples.is_empty(), "应附词表改错对");
+}
+
+#[tokio::test]
 async fn knowledge_ablation_toggle_gates_enrichment() {
     // 测评消融臂 `knowledge: false`：PUT /gec/settings 关闭知识层 →
     // /gec/attribute 的知识库富化旁路；恢复开启 → 富化回来

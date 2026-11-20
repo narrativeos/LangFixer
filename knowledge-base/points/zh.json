@@ -1,0 +1,130 @@
+[
+  {
+    "point_id": "ZH_QUANT_DUP",
+    "lang": "zh",
+    "error_type": "grammar",
+    "section": "ZH_QUANT_DUP",
+    "title": "约数词并置冗余",
+    "cefr": "A2",
+    "remedial": "规则讲解：约数表达在「约/近/…余」与「左右/以上」中二选一，不可叠用",
+    "sources": [
+      {
+        "source_id": "src-lexicon-zh",
+        "location": "规则条目 ZH_QUANT_DUP"
+      }
+    ],
+    "corrections": [
+      {
+        "wrong": "约10余处树木倒伏。",
+        "right": "约10处树木倒伏。"
+      },
+      {
+        "wrong": "赏灯人数超过10万多人。",
+        "right": "赏灯人数超过10万人。"
+      },
+      {
+        "wrong": "参展出版物至少4500种以上。",
+        "right": "参展出版物至少4500种。"
+      },
+      {
+        "wrong": "大约来自近70个国家的记者。",
+        "right": "大约来自70个国家的记者。"
+      }
+    ]
+  },
+  {
+    "point_id": "ZH_NEG_DUP",
+    "lang": "zh",
+    "error_type": "grammar",
+    "section": "ZH_NEG_DUP",
+    "title": "预防语境否定词冗余",
+    "cefr": "A2",
+    "remedial": "规则讲解：「避免/防止/杜绝/切忌」的辖域内不得再出现「不/不再」",
+    "sources": [
+      {
+        "source_id": "src-lexicon-zh",
+        "location": "规则条目 ZH_NEG_DUP"
+      }
+    ],
+    "corrections": [
+      {
+        "wrong": "为了防止此类事故不再发生，我们加强了管理。",
+        "right": "为了防止此类事故再发生，我们加强了管理。"
+      },
+      {
+        "wrong": "行车切忌不要超速。",
+        "right": "行车切忌超速。"
+      },
+      {
+        "wrong": "禁止游客不得攀爬雕像。",
+        "right": "禁止游客攀爬雕像。"
+      },
+      {
+        "wrong": "为了避免今后不再发生类似问题，需建立台账。",
+        "right": "为了避免今后再发生类似问题，需建立台账。"
+      }
+    ]
+  },
+  {
+    "point_id": "ZH_DE_CONFUSE",
+    "lang": "zh",
+    "error_type": "grammar",
+    "section": "ZH_DE_CONFUSE",
+    "title": "结构助词的/地/得混用",
+    "cefr": "A2",
+    "remedial": "规则讲解：动词前状语修饰用「地」，动词后程度补语用「得」",
+    "sources": [
+      {
+        "source_id": "src-lexicon-zh",
+        "location": "规则条目 ZH_DE_CONFUSE"
+      }
+    ],
+    "corrections": [
+      {
+        "wrong": "他慢慢的走向讲台。",
+        "right": "他慢慢地走向讲台。"
+      },
+      {
+        "wrong": "他高兴的说了一句话。",
+        "right": "他高兴地说了一句话。"
+      },
+      {
+        "wrong": "他说的很好听。",
+        "right": "他说得很好听。"
+      },
+      {
+        "wrong": "我们要不停的练习钢琴。",
+        "right": "我们要不停地练习钢琴。"
+      }
+    ]
+  },
+  {
+    "point_id": "ZH_SUBJ_DROWNED",
+    "lang": "zh",
+    "error_type": "grammar",
+    "section": "ZH_SUBJ_DROWNED",
+    "title": "介词结构淹没主语与句式杂糅",
+    "cefr": "A2",
+    "remedial": "规则讲解：介词结构不能淹没主语，删「使」或「由于」还原主语；「是…由于…所致」两式杂糅删「由于」",
+    "sources": [
+      {
+        "source_id": "src-lexicon-zh",
+        "location": "规则条目 ZH_SUBJ_DROWNED"
+      }
+    ],
+    "corrections": [
+      {
+        "wrong": "通过赏析这首诗，使我感受到了惜别之情。",
+        "right": "通过赏析这首诗，我感受到了惜别之情。"
+      },
+      {
+        "wrong": "由于冷空气的持续影响，使民众在短短数日之内感受到了寒意。",
+        "right": "由于冷空气的持续影响，民众在短短数日之内感受到了寒意。"
+      },
+      {
+        "wrong": "这起事故的原因，是由于电线老化引起的。",
+        "right": "这起事故的原因是电线老化引起的。"
+      }
+    ]
+  }
+]

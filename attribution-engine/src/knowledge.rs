@@ -391,6 +391,38 @@ mod tests {
     }
 
     #[test]
+    fn enrich_zh_rule_point_from_lexicon() {
+        // zh 知识通道：内置规则点源 src-lexicon-zh 富化点级 remedial/例句
+        let store = load_real();
+        let mut result = base_result();
+        let mut c = ctx_with(Some("ZH_QUANT_DUP"));
+        c.lang = "zh".into();
+        c.error_type = "grammar".into();
+        store.enrich(&c, &mut result);
+        assert_eq!(result.sources.len(), 1, "ZH_QUANT_DUP 应关联 1 个知识源");
+        assert!(
+            result.sources[0].title.contains("中文规则点要览"),
+            "title 应从注册表解析: {:?}",
+            result.sources[0].title
+        );
+        assert!(
+            result.sources[0].location.contains("ZH_QUANT_DUP"),
+            "location 应指向规则条目: {:?}",
+            result.sources[0].location
+        );
+        assert!(
+            !result.remedial[0].contains("表级通用建议"),
+            "remedial 应被点级内容覆盖"
+        );
+        assert!(!result.examples.is_empty(), "examples 应从词表改错对生成");
+        assert!(
+            result.examples.iter().all(|e| e.contains('→')),
+            "改错对应为 ✗…→✓… 形式: {:?}",
+            result.examples
+        );
+    }
+
+    #[test]
     fn multi_source_point_resolves_all_refs() {
         // 同一知识点被两个知识源背书（1:N 关联）
         let store = KnowledgeStore::new();

@@ -152,6 +152,11 @@ pub async fn analyze(
                     } else {
                         fallback
                     }
+                } else if req.lang == "zh" {
+                    // zh：检测命中的规则点 id 即细粒度知识点 id，接归因表
+                    // grammarPoint 专属行与内置规则点源富化（未命中规则点时为空，
+                    // 仍走粗族兜底行）
+                    error.rule_id.clone()
                 } else {
                     None
                 };

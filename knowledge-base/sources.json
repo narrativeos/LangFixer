@@ -6,5 +6,13 @@
     "edition": "第一版",
     "lang": "en",
     "license_scope": "public"
+  },
+  {
+    "source_id": "src-lexicon-zh",
+    "title": "LangFixer 中文规则点要览",
+    "author": "LangFixer Project",
+    "edition": "第一版",
+    "lang": "zh",
+    "license_scope": "public"
   }
 ]
