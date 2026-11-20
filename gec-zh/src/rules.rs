@@ -850,6 +850,13 @@ fn detect_de_confuse(text: &str) -> Vec<Error> {
     const DEG: &[&str] = &["非常", "比较", "很"];
     // 成词守卫：的作实词语素或句末助词时不能改「得」（有的/目的/真的/是的/打的）
     const LEFT_GUARD: &[char] = &['有', '目', '真', '是', '确', '士', '的', '适', '白', '当'];
+    // B 分支左侧单字动词集：gold 的→得左侧字符取证（活过说来吃长变做现懂跳演），
+    // 多数字形单字动词不在 VERB 多字表内，故 ZH_DE_DA_DE（POS 路径，Phase-1
+    // 审计 18/18 误报）停用的补语侧价值在此吸收
+    const COMPL_LEFT: &[char] = &[
+        '活', '过', '说', '来', '吃', '长', '变', '做', '现', '懂', '跳', '演', '唱', '笑', '写',
+        '讲', '跑', '走', '看', '听', '想', '干', '飞', '哭',
+    ];
     let chars: Vec<char> = text.chars().collect();
     // 字符→字节前缀和，定位 span
     let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
@@ -927,7 +934,9 @@ fn detect_de_confuse(text: &str) -> Vec<Error> {
                     continue;
                 }
             }
-            let prev_is_verb = prev.is_some_and(|p| VERB.iter().any(|v| p.to_string() == *v));
+            let prev_is_verb = prev.is_some_and(|p| {
+                COMPL_LEFT.contains(&p) || VERB.iter().any(|v| p.to_string() == *v)
+            });
             if !prev_is_verb {
                 continue;
             }
@@ -2114,6 +2123,14 @@ mod tests {
         assert!(
             hits("这花美的有点不像话。").is_empty(),
             "单字形容词左部不入动词表（宁缺勿错）"
+        );
+        assert_eq!(
+            hits("他跑的很快。").remove(0).correction.as_deref(),
+            Some("得")
+        );
+        assert_eq!(
+            hits("他活的很有意义。").remove(0).correction.as_deref(),
+            Some("得")
         );
         // 守卫：成词的的/的字结构/叠词+名词不触发
         assert!(hits("他的目的很明确。").is_empty(), "目的成词");
