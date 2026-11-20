@@ -6,6 +6,16 @@
 
 ### 新增
 
+- **② 定位外部方案调研收口（GitHub 实测）**：内部取证 `gec-zh` 无任何 insert 候选
+  生成器（盲区坐实在定位侧，非判定侧）；pycorrector（6.5k★，词表/词频+PPL/ELECTRA
+  门控）、xmnlp、text_analysis_tools、funNLP 资源条目等逐一取证均为 S 型检测，
+  insert 定位无现成开源实现；LLM 整段重写差分无人做字级管线；arXiv 两论文路线
+  （deletion-augmentation、gap-filling×spell checking）均零命中、不引。外接引进线
+  关闭（EVOLUTION #17），瓶颈回到自造监督：候选 1 合成 I 监督臂（synthD 造「删 1 字」
+  行训 ② 定位臂，评测挂 gray380 真实 401 I 位+真实 FP 口径）立项待跑、候选 2 位级
+  Δ-PPL gap-filling 探针可并行（与 §13 #1 句级 OOV 旧案划界）、候选 3 差分独得提名
+  弃（23 句独得 FP）。README 调研节 D 落盘。
+
 - **漏字盲区外部方案调研收口**：生成式订正差分实测（shibing624/chinese-text-correction-1.5b
   本地 MPS）——D 侧 synthD exact 21/120=17.5%、漏字位边界（difflib 重算）25/120=20.8%，
   与 p_err 探针同水位；干净侧公文域 FP 句 3.0%（insert 型 0.25%）、新闻域 FP 句 38.8%

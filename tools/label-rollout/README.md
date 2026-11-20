@@ -202,6 +202,48 @@ B'（③ 协议改造）已实测 no-go（见上节），接入槽位作废。�
 另：本次排障发现旧会话落盘脚本里 Authorization 字面量被脱敏层写成 `"***"`
 （已在 `9fc01e0` 修正），提醒：**凡是旧会话写的带凭据字面量脚本，用前先查盘上字节**。
 
+### D ② 定位外部方案调研（GitHub 实测，2026-11-20）
+
+内部取证：`gec-zh/**/*.rs` 全库 grep `insert|漏字` **零匹配**——② 层目前没有任何
+insert 候选生成器，盲区坐实在定位侧（不在判定侧；B' 已排除判定协议因素）。
+与 A 线结论互证：TW-NLP difflib 自动打标对纯 insert 行 source 侧标签可全 0，
+业界监督语料本身就只标 S 型，公开数据里 I 型监督≈0（池内 0.3%，见 §12）。
+
+外部取证（GitHub search API 实测；中文关键词噪音巨大，按 description/README 逐仓判定，
+不按搜索 stars 序下结论）：
+
+| 仓库 | ★ | 技术路线 | 与 I 定位的关系 |
+|---|---|---|---|
+| pycorrector | 6.5k | 检测=词表/词频+词图+PPL(Kenlm)、ELECTRA 门控；订正=MacBERT MLM / T5 / ChatGLM3 | 检测清一色 S 型；订正侧有 MLM 填槽但无人做字级 insert 候选定位 |
+| xmnlp | 1.3k | 词典/规则+拼音特征文本纠错 | S 型 |
+| text_analysis_tools | 0.7k | 文本工具集内词典/规则纠错 | S 型 |
+| funNLP | 8.4万 | 资源列表（含「中文文本纠错模块代码」条目；汉字 featurizer 发音+字形特征路线） | 是资源不是方案；字形/拼音特征路线可记档 |
+| bob-plugin-openai-translator | – | LLM 整段重写 | 非纠错器；印证「LLM 差分」业界只以整段重写存在 |
+| Chinese_spelling_Correction | 7 | notebook 练习 | 不可用 |
+| cgec-pivot | 1 | 改写式 pivot | 不可用 |
+
+结论：**业界纠错检测层全部只做 S 型**（词表/词频/ELECTRA 门控），insert 定位无任何
+现成开源实现；「LLM 出订正句再差分」只以整段重写形式存在、无人做字级差分纠错管线；
+公开 insert 监督源不存在（与 #16 挂起原因一致）。论文路线 arXiv 复查
+（`"deletion augmentation"`×GEC、`"gap-filling"`×spell checking 两查询）当日均零命中，
+故本节**只引仓库证据、不引论文**。
+
+定位实验候选（下一步待拍板）：
+
+1. **合成 I 监督臂（主推）**：复用 synthD 生成器（`synth_nasgec.py`）从干净池
+   （`l3_pool_raw/`）造「删 1 字」行，训练 ②/③-F 定位臂，在 gray380 上两臂都漏的
+   401 个 I 位评 I 定位召回；FP 口径挂真实集（新闻净句 gap FP 或 gray380 负句）。
+   这等于把 A 线「等 insert 监督源出现」改写成「自造监督源」；本轮灰区 A/B 的教训
+   依旧有效：synthD 伪影会制造合成红利，评测必须挂真实灰区。
+2. **n-gram gap-filling 探针（零新模型）**：用 1M trigram 表（`feature-model/ngram_table.json`）
+   对每个字符间隙算 PPL(补最优单字 vs 原句)，Δ 过阈提名 insert 候选。与 §13 #1
+   已判否旧案划清界限：旧案是**句级**加权 OOV 门控（AUC 0.47），本探针是**位级**
+   Δ-PPL 候选提名，不是旧案重提。
+3. **差分独得提名+判定确认**：funnel 缓存差分臂独得 38 个 I 位作 ③ 判定候选。
+   已知代价 23 句独得 FP，收益太薄，弃。
+
+倾向 1（合成删字行直接命中 ② 定位臂的监督缺口）；2 可作零训练便宜探针并行；3 弃。
+
 ## 纪律（不可违反）
 
 1. 污染隔离：该标注器见过公开集，v2* 不得用于评测 Qwen 同族；
