@@ -54,10 +54,24 @@ pub fn emit(map: &Mutex<HashMap<String, Entry>>, id: &str, ev: StageEvent) {
     }
 }
 
-/// 无事件路径（缓存 / 历史命中）：直接标记完成，轮询端即时收敛
-pub fn finish(map: &Mutex<HashMap<String, Entry>>, id: &str) {
+/// 句表事件：与引擎侧 Units 同一序列化路径（同一全局切句器，前端矩阵行同源）
+fn units_event(text: &str) -> serde_json::Value {
+    let unit_spans = gec_core::docchunk::sentence_spans_with_origin(text);
+    serde_json::to_value(StageEvent::Units {
+        spans: unit_spans.iter().map(|(s, _)| *s).collect(),
+        origins: unit_spans.iter().map(|(_, o)| o.as_str()).collect(),
+    })
+    .unwrap_or_default()
+}
+
+/// 无事件路径（缓存 / 历史命中）：合成句表事件后标记完成，轮询端即时收敛，
+/// 块矩阵在缓存命中下同样有行（引擎已推送过事件则 finished，此处 no-op）
+pub fn finish(map: &Mutex<HashMap<String, Entry>>, id: &str, text: &str) {
     let Ok(mut g) = map.lock() else { return };
     if let Some(e) = g.get_mut(id) {
+        if !e.finished {
+            e.events.push(units_event(text));
+        }
         e.updated = Instant::now();
         e.finished = true;
     }
@@ -67,7 +81,12 @@ pub fn finish(map: &Mutex<HashMap<String, Entry>>, id: &str) {
 /// fresh 路径结束后若条目仍未落定，用本次 timings 合成 start/stage/end 序列，
 /// 使 Web 轮询侧同样收敛出阶段与耗时（缓存 / 历史路径已 `finish`，在此为 no-op；
 /// 支持事件的引擎已 `finished`，同样 no-op）
-pub fn fallback(map: &Mutex<HashMap<String, Entry>>, id: &str, timings: &gec_core::DetectTimings) {
+pub fn fallback(
+    map: &Mutex<HashMap<String, Entry>>,
+    id: &str,
+    text: &str,
+    timings: &gec_core::DetectTimings,
+) {
     let Ok(mut g) = map.lock() else { return };
     let Some(e) = g.get_mut(id) else { return };
     if e.finished {
@@ -102,6 +121,8 @@ pub fn fallback(map: &Mutex<HashMap<String, Entry>>, id: &str, timings: &gec_cor
     .unwrap_or_default();
     e.events.insert(0, start);
     e.events.extend(events);
+    // 句表先于 end，与引擎侧 Units→End 顺序一致
+    e.events.push(units_event(text));
     e.events.push(end);
     e.finished = true;
     e.updated = Instant::now();
@@ -208,25 +229,51 @@ mod tests {
             total_ms: 40,
             ..Default::default()
         };
-        fallback(&map, "p1", &timings);
+        fallback(&map, "p1", "甲。乙", &timings);
         let g = map.lock().unwrap();
         let e = g.get("p1").unwrap();
         assert!(e.finished);
-        assert_eq!(e.events.len(), 4);
+        assert_eq!(e.events.len(), 5);
         assert_eq!(e.events[0]["stages"].as_array().unwrap().len(), 2);
         assert_eq!(e.events[1]["stage"], "rule");
         assert_eq!(e.events[2]["stage"], "llm");
-        assert_eq!(e.events[3]["total_ms"], 40);
+        assert_eq!(e.events[3]["kind"], "units");
+        assert_eq!(e.events[4]["total_ms"], 40);
+        // 句表与全局切句器逐字同源（前端矩阵行不得自行切句）
+        let expected = gec_core::docchunk::sentence_spans_with_origin("甲。乙");
+        let spans: Vec<Vec<usize>> = expected.iter().map(|(s, _)| vec![s[0], s[1]]).collect();
+        assert_eq!(e.events[3]["spans"], serde_json::json!(spans));
+    }
+
+    #[test]
+    fn finish_synthesizes_units_and_is_idempotent() {
+        let map: Mutex<HashMap<String, Entry>> = Mutex::new(HashMap::new());
+        let text = "武汉大学图书馆闻名于世。东湖之滨建有新书馆。";
+        begin(&map, "p1");
+        finish(&map, "p1", text);
+        // 幂等：重复 finish 不重复合成
+        finish(&map, "p1", text);
+        let g = map.lock().unwrap();
+        let e = g.get("p1").unwrap();
+        assert!(e.finished);
+        assert_eq!(e.events.len(), 1);
+        assert_eq!(e.events[0]["kind"], "units");
+        let expected = gec_core::docchunk::sentence_spans_with_origin(text);
+        let spans: Vec<Vec<usize>> = expected.iter().map(|(s, _)| vec![s[0], s[1]]).collect();
+        assert_eq!(e.events[0]["spans"], serde_json::json!(spans));
     }
 
     #[test]
     fn fallback_noop_when_finished() {
         let map: Mutex<HashMap<String, Entry>> = Mutex::new(HashMap::new());
         begin(&map, "p1");
-        finish(&map, "p1");
-        fallback(&map, "p1", &gec_core::DetectTimings::default());
+        finish(&map, "p1", "甲。");
+        fallback(&map, "p1", "甲。", &gec_core::DetectTimings::default());
         let g = map.lock().unwrap();
-        assert!(g.get("p1").unwrap().events.is_empty());
+        // finish 已合成一条 units，fallback 不得重复合成
+        let e = g.get("p1").unwrap();
+        assert_eq!(e.events.len(), 1);
+        assert_eq!(e.events[0]["kind"], "units");
     }
 
     #[test]

@@ -136,7 +136,7 @@ watch(view, (v) => localStorage.setItem(VIEW_KEY, v))
 /** 块矩阵：行 = units 事件的句表（后端唯一切句器），列 = 本次参与层；
  * 单元格由错误项 span × 块区间重叠投影，不重复切句也不改后端结果 */
 const matrixText = computed(() => store.resultText ?? store.text)
-const matrixColumns = computed(() => matrixColumnsFromEvents(p.value.events))
+const matrixColumns = computed(() => matrixColumnsFromEvents(p.value.events, store.layers))
 const matrixRows = computed(() => {
   const units = unitsFromEvents(p.value.events)
   if (!units) return []
@@ -375,7 +375,7 @@ const stateText = computed(() => {
       </li>
     </ol>
     <div v-else-if="view === 'matrix'" class="flw-matrix" aria-label="块矩阵视图">
-      <div v-if="!matrixRows.length" class="cm-empty">暂无句表：块矩阵随检测完成事件流生成（缓存/历史命中与旧版服务端无此数据）</div>
+      <div v-if="!matrixRows.length" class="cm-empty">暂无句表：块矩阵随检测事件流生成（旧版服务端无此数据）</div>
       <table v-else class="cm-table">
         <thead>
           <tr>

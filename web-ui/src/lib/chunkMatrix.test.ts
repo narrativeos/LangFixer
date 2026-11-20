@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ErrorItem, StageEvent } from '../types'
+import type { ErrorItem, LayerReport, StageEvent } from '../types'
 import { buildChunkMatrix, matrixColumnsFromEvents, unitsFromEvents } from './chunkMatrix'
 
 const err = (span: [number, number], source: string, also?: string[]): ErrorItem => ({
@@ -35,6 +35,23 @@ describe('chunkMatrix 投影', () => {
       'knowledge',
       'llm',
     ])
+  })
+
+  it('无 start（缓存/历史命中）：列从 layers 派生，statistical/targeted 不单列；无 layers 空列', () => {
+    const layers: LayerReport[] = [
+      { layer: 'rule', status: 'ran', found: 1 },
+      { layer: 'knowledge', status: 'ran', found: 0 },
+      { layer: 'statistical', status: 'ran', found: 0 },
+      { layer: 'targeted', status: 'skipped', found: 0 },
+    ]
+    // 派生列按 STAGE_ORDER 排序（knowledge 在前、llm 在后，同层视图）
+    const noStart: StageEvent[] = [{ kind: 'end', total_ms: 1 }]
+    expect(matrixColumnsFromEvents(noStart, layers).map((c) => c.key)).toEqual([
+      'rule',
+      'knowledge',
+    ])
+    expect(matrixColumnsFromEvents(noStart, null)).toEqual([])
+    expect(matrixColumnsFromEvents(noStart, []).map((c) => c.key)).toEqual([])
   })
 
   it('单元格：命中→hit 计条数；层 skipped→灰；无 layers 报告时命中仍 hit、未命中 pending', () => {

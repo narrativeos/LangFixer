@@ -191,7 +191,7 @@ pub(crate) async fn run_detection(
     });
     let finish_progress = |id: Option<&str>| {
         if let Some(id) = id {
-            super::detect_progress::finish(&state.detect_progress, id);
+            super::detect_progress::finish(&state.detect_progress, id, text);
         }
     };
     // 网关形态：跳过进程级缓存与历史复用，每账号实时跑并自写历史（归属完整）
@@ -280,7 +280,7 @@ pub(crate) async fn run_detection(
 
     // 无事件引擎（纯规则默认配置等）的进度兜底：支持事件的引擎已自行 End / 缓存历史已 finish，均 no-op
     if let Some(id) = progress_id {
-        super::detect_progress::fallback(&state.detect_progress, id, &outcome.timings);
+        super::detect_progress::fallback(&state.detect_progress, id, text, &outcome.timings);
     }
 
     // 2. + 3. 过滤已禁用的规则 + 自定义词白名单（与 analyze 路由共用同一过滤，

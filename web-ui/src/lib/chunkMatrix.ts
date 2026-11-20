@@ -118,11 +118,20 @@ export function buildChunkMatrix(args: {
   return rows
 }
 
-/** 列 = 本次 start 事件声明的管线层（顺序与层视图一致）；③-T 不单列（归因 llm） */
-export function matrixColumnsFromEvents(events: StageEvent[]): MatrixColumn[] {
+/** 列 = 本次 start 事件声明的管线层（顺序与层视图一致）；③-T 不单列（归因 llm）。
+ * 无 start（缓存/历史命中无事件流）时从 layers 报告派生同一列集（显示层回退，
+ * 不复制检测逻辑）；statistical 并入 rule 列，与 countsForLayer 同一归因口径 */
+export function matrixColumnsFromEvents(
+  events: StageEvent[],
+  fallbackLayers?: LayerReport[] | null,
+): MatrixColumn[] {
   let plan: string[] | null = null
   for (const ev of events) if (ev.kind === 'start') plan = ev.stages
-  if (!plan) return []
+  if (!plan)
+    plan = (fallbackLayers ?? [])
+      .map((l) => l.layer)
+      .filter((k) => k !== 'targeted' && k !== 'statistical')
+  if (!plan?.length) return []
   const ordered = [
     ...STAGE_ORDER.filter((k) => plan!.includes(k)),
     ...plan!.filter((k) => !STAGE_ORDER.includes(k)),
