@@ -195,6 +195,7 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_colon_after_name(text));
     out.extend(detect_numeral(text));
     out.extend(detect_quantity_unit(text));
+    out.extend(detect_quant_dup(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -223,6 +224,7 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     out.extend(detect_colon_after_name(text));
     out.extend(detect_numeral(text));
     out.extend(detect_quantity_unit(text));
+    out.extend(detect_quant_dup(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -490,6 +492,201 @@ fn detect_time_mixed(text: &str) -> Vec<Error> {
             Some("ZH_TIME_MIX"),
             vec![Suggestion::new(correction, 0.75)],
         ));
+    }
+    out
+}
+
+/// 约数表达并置（不依赖 POS，token / 离线双路径共用）
+///
+/// 「约/超过/近/逾/至少…」与「左右/以上/余/多…」双重约数叠加，语义重复
+/// （参照《咬文嚼字》常见差错与 FCGEC 语料取证：gold 删「左右」107 条中
+/// 62 条带约数前缀；「以上」类实为「至少/逾」前缀，故前缀表必含二者）。
+/// 三形态：
+/// - A 紧邻：前缀+数字+后缀（「约10余处」→「约10处」）；
+/// - B 带单位词窗口：前缀+数字+单位+后缀（「至少4500种以上」→「至少4500种」）；
+/// - C 双前缀：两约数前缀隔 ≤6 非标点字且第二前缀直接带数字
+///   （「大约来自近70个国家」→ 删其一）。
+/// 守卫（取证支持的宁缺勿错项）：「近两年」「约两年」「近3年多（年头）」「N多万」
+/// 与前缀字符属于更大约数词（「大约」的「约」）时不触发；「高/低至」类前缀
+/// 语料有命中但 gold 零证据，故意不入表。
+fn detect_quant_dup(text: &str) -> Vec<Error> {
+    // 长形在前：regex 备选在同一位置按列出顺序取先匹配；叠加前一字守卫 ok_start，
+    // 防「大约/接近」的后字被单字形前缀重复认领
+    const PRE: &str = "大约|约莫|接近|超过|至少|突破|约|近|超|逾";
+    const SUF: &str = "左右|上下|光景|以上|余|多";
+    const DIG: &str = "0123456789一二三四五六七八九十百千万亿两";
+    // A：前缀+数字+后缀紧邻
+    let re_a = match regex::Regex::new(&format!("({PRE})[{DIG}\\.]+({SUF})")) {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_QUANT_DUP-A 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    // B：前缀+数字+≤2字单位+后缀（「至少4500种以上」；窗口限 2 字且不含
+    // 约数前缀字，防「约举行了近30万」「超标约8」类非约数用法）
+    let re_b = match regex::Regex::new(&format!(
+        "({PRE})[^0-9约近超逾，。；：、！？\\s]{{0,2}}?[0-9][0-9一二三四五六七八九十百千万亿\\.]*[^0-9约近超逾，。；：、！？\\s]{{0,2}}?({SUF})"
+    )) {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_QUANT_DUP-B 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    // C 骨架：两前缀隔 0-6 非标点非数字字（「超过近70」「至少约3」均隔 0 字）；
+    // 第二前缀直接带数字在守卫里验
+    let re_c = match regex::Regex::new(&format!("({PRE})[^0-9，。；：、！？\\s]{{0,6}}?({PRE})"))
+    {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_QUANT_DUP-C 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    let is_digit_char = |c: char| DIG.contains(c);
+    // 前一字守卫：数字粘连（「N多万」合法）与前缀字符属于更大约数词形
+    // （大约的约 / 接近的近 / 超过的超 / 至少的少 / 约莫的莫）
+    let ok_start = |start: usize| -> bool {
+        let Some(prev) = text[..start].chars().next_back() else {
+            return true;
+        };
+        !is_digit_char(prev) && !matches!(prev, '大' | '莫' | '接' | '超' | '至' | '约')
+    };
+    let mut out: Vec<Error> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut push = |s: usize, e: usize, whole: &str, fix: String, msg: String, conf: f64| {
+        if spans.iter().any(|(ps, pe)| s < *pe && e > *ps) {
+            return;
+        }
+        spans.push((s, e));
+        out.push(Error::new_with_meta(
+            "zh",
+            error_types::NUMERAL,
+            conf,
+            [s, e],
+            whole.to_string(),
+            Some(fix.clone()),
+            msg,
+            Some("numeric"),
+            Some("ZH_QUANT_DUP"),
+            vec![Suggestion::new(fix, conf)],
+        ));
+    };
+    for caps in re_a.captures_iter(text) {
+        let m = caps.get(0).expect("group 0 必然存在");
+        if !ok_start(m.start()) {
+            continue;
+        }
+        // 守卫：后缀紧跟数字（「8300多万」约数合法）或紧跟「年」（年头用法）不触发
+        let next = text[m.end()..].chars().next();
+        if next.is_some_and(is_digit_char) || next == Some('年') {
+            continue;
+        }
+        let suf = caps.get(2).map(|x| x.as_str()).unwrap_or("");
+        if matches!(suf, "多" | "余") && text[..m.end() - suf.len()].ends_with('年') {
+            continue;
+        }
+        let whole = m.as_str();
+        let fix = whole[..whole.len() - suf.len()].to_string();
+        push(
+            m.start(),
+            m.end(),
+            whole,
+            fix.clone(),
+            format!(
+                "约数表达并置：「{}」与「{suf}」语义重复，删其一（建议删「{suf}」）",
+                &caps[1]
+            ),
+            0.85,
+        );
+    }
+    for caps in re_b.captures_iter(text) {
+        let m = caps.get(0).expect("group 0 必然存在");
+        if !ok_start(m.start()) {
+            continue;
+        }
+        // 「超标 N 倍左右」：超为动词「超标」的一部分，后缀修饰倍数合法
+        if caps.get(1).is_some_and(|x| x.as_str() == "超")
+            && text[m.start() + 3..].starts_with('标')
+        {
+            continue;
+        }
+        let suf = caps.get(2).map(|x| x.as_str()).unwrap_or("");
+        // 同 A：后缀紧跟数字（「N多万」）不触发
+        if text[m.end()..].chars().next().is_some_and(is_digit_char) {
+            continue;
+        }
+        let suf = caps.get(2).map(|x| x.as_str()).unwrap_or("");
+        if matches!(suf, "多" | "余") && text[..m.end() - suf.len()].ends_with('年') {
+            continue;
+        }
+        let whole = m.as_str();
+        let fix = whole[..whole.len() - suf.len()].to_string();
+        push(
+            m.start(),
+            m.end(),
+            whole,
+            fix.clone(),
+            format!(
+                "约数表达并置：「{}」与「{suf}」语义重复，删其一（建议删「{suf}」）",
+                &caps[1]
+            ),
+            0.8,
+        );
+    }
+    for caps in re_c.captures_iter(text) {
+        let m = caps.get(0).expect("group 0 必然存在");
+        if !ok_start(m.start()) {
+            continue;
+        }
+        // 第一前缀 allowlist：近/超/逾/接近 句首多为非约数用法（近期、超市、
+        // 逾期、接近目标），作骨架首前缀误报多；约数证据集中在约/大约/约莫/
+        // 超过/至少/突破
+        if matches!(
+            caps.get(1).map(|x| x.as_str()).unwrap_or(""),
+            "近" | "超" | "逾" | "接近"
+        ) {
+            continue;
+        }
+        // 第一前缀若直接带数字，已由 A 分支管辖，不重报
+        if text[m.start() + caps[1].len()..]
+            .chars()
+            .next()
+            .is_some_and(is_digit_char)
+        {
+            continue;
+        }
+        // 第二前缀必须直接带数字（「逾期」「附近」的约数词不算）；
+        // 「两」开头为「约两年」类合法
+        let Some(first) = text[m.end()..].chars().next() else {
+            continue;
+        };
+        if !is_digit_char(first) || first == '两' {
+            continue;
+        }
+        // 完整词形归位：骨架把「接近/大约」拆成 gap+单字前缀时，修正建议须删整词
+        let pre2 = caps.get(2).map(|x| x.as_str()).unwrap_or("");
+        let mut c2 = m.end() - pre2.len();
+        let mut pre2_full = pre2.to_string();
+        let completing = if pre2 == "近" { '接' } else { '大' };
+        if matches!(pre2, "近" | "约") && text[..c2].chars().next_back() == Some(completing) {
+            pre2_full = format!("{completing}{pre2}");
+            c2 -= completing.len_utf8();
+        }
+        let whole = m.as_str();
+        let fix = whole[..c2 - m.start()].to_string();
+        push(
+            m.start(),
+            m.end(),
+            whole,
+            fix.clone(),
+            format!(
+                "约数前缀并置：「{}」与「{pre2_full}」语义重复，择一保留（建议删「{pre2_full}」）",
+                &caps[1]
+            ),
+            0.75,
+        );
     }
     out
 }
@@ -1567,5 +1764,52 @@ mod tests {
                 .all(|e| e.rule_id.as_deref() != Some("ZH_QUANTITY_UNIT")),
             "m 紧邻字母不算单位"
         );
+    }
+
+    #[test]
+    fn quant_dup_fire_and_guards() {
+        let hits = |t: &str| -> Vec<String> {
+            detect_quant_dup(t)
+                .into_iter()
+                .filter(|e| e.rule_id.as_deref() == Some("ZH_QUANT_DUP"))
+                .map(|e| format!("{}→{}", e.original, e.correction.unwrap_or_default()))
+                .collect()
+        };
+        // 正例：A 紧邻 / B 单位窗口 / C 双前缀
+        assert_eq!(hits("累计出现路树倒伏约10余处。"), ["约10余→约10"]);
+        assert_eq!(hits("赏灯人数超过10万多人。"), ["超过10万多→超过10万"]);
+        assert_eq!(
+            hits("我国已培养出至少4500种以上珍稀品种。"),
+            ["至少4500种以上→至少4500种"]
+        );
+        assert_eq!(hits("大约来自近70个国家的观众。"), ["大约来自近→大约来自"]);
+        assert_eq!(hits("到场观众约10万人左右。"), ["约10万人左右→约10万人"]);
+        assert_eq!(
+            hits("消费支出大约176.7亿多元。"),
+            ["大约176.7亿多→大约176.7亿"]
+        );
+        assert_eq!(hits("损失至少约3万元。"), ["至少约→至少"]);
+        // 守卫：宁缺勿错
+        assert!(hits("逾期缴纳的违约。").is_empty(), "逾期非约数前缀");
+        assert!(hits("超市附近客流大。").is_empty(), "附近/超市非约数并置");
+        assert!(hits("近期逾3万人到场。").is_empty(), "近期+逾=合法");
+        assert!(hits("接近目标还差约3成。").is_empty(), "接近动词用法非并置");
+        assert!(hits("到场观众10万人左右。").is_empty(), "单侧约数合法");
+        assert!(hits("合同已履行3年以上。").is_empty(), "N年以上单侧合法");
+        assert!(hits("近两年他连续创业。").is_empty(), "近两年=年头用法");
+        assert!(hits("大约两年前的一场雨。").is_empty(), "约两年=约+数量词");
+        assert!(
+            hits("冷库总容积约8300多万立方米。").is_empty(),
+            "N多万约数合法"
+        );
+        assert!(hits("近三年多，他连续创业。").is_empty(), "年多=年头用法");
+        assert!(
+            hits("河镉峰值降到超标25倍左右。").is_empty(),
+            "超标动词+倍数左右合法"
+        );
+        // span 必须是字节偏移且可按原文切片
+        let t = "赏灯人数超过10万多人。";
+        let e = detect_quant_dup(t).remove(0);
+        assert_eq!(&t[e.span[0]..e.span[1]], e.original);
     }
 }
