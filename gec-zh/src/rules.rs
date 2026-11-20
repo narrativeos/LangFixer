@@ -196,6 +196,7 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_numeral(text));
     out.extend(detect_quantity_unit(text));
     out.extend(detect_quant_dup(text));
+    out.extend(detect_neg_dup(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -225,6 +226,7 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     out.extend(detect_numeral(text));
     out.extend(detect_quantity_unit(text));
     out.extend(detect_quant_dup(text));
+    out.extend(detect_neg_dup(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -613,11 +615,10 @@ fn detect_quant_dup(text: &str) -> Vec<Error> {
             continue;
         }
         let suf = caps.get(2).map(|x| x.as_str()).unwrap_or("");
-        // 同 A：后缀紧跟数字（「N多万」）不触发
+        // 同 A：后缀紧跟数字（「N多万」）或紧跟「年」（年头）不触发
         if text[m.end()..].chars().next().is_some_and(is_digit_char) {
             continue;
         }
-        let suf = caps.get(2).map(|x| x.as_str()).unwrap_or("");
         if matches!(suf, "多" | "余") && text[..m.end() - suf.len()].ends_with('年') {
             continue;
         }
@@ -687,6 +688,125 @@ fn detect_quant_dup(text: &str) -> Vec<Error> {
             ),
             0.75,
         );
+    }
+    out
+}
+
+/// 否定冗余（预防性动词 + 辖域内否定词）（不依赖 POS，token / 离线双路径共用）
+///
+/// 「防止/避免/杜绝/切忌/禁止」等词自身已含否定语义，其辖域内再出现
+/// 「不/不再/不要/不可/不得」形成双重否定，语义反而说反
+/// （FCGEC 取证：删否定词编辑且左窗口含预防动词的共 79 条，其中
+/// 防止×不再 22、切忌×不要 19、避免×不/不再 20、切忌×不可/禁止×不得类余）。
+/// 窗口限 12 字且不含标点（防「避免事故，不再发生」类主句否定误删）；
+/// 「不+ lexical 形容词」（避免不必要损失）走守卫不触发。
+fn detect_neg_dup(text: &str) -> Vec<Error> {
+    const TRIG: &str = "防止|避免|杜绝|切忌|禁止|严防|以免|以防|预防";
+    // 长形在前：同一位置取先匹配；单字「不」兑后兼容「不受/不走过场」类
+    const NEG: &str = "不再|不要|不可|不得|不会|不被|不受|不能|勿|不";
+    let re = match regex::Regex::new(&format!(
+        "({TRIG})[^。！？；：、，,.;:!?\n]{{0,12}}?({NEG})"
+    )) {
+        Ok(re) => re,
+        Err(e) => {
+            tracing::warn!(error = %e, "ZH_NEG_DUP 模式编译失败，跳过");
+            return Vec::new();
+        }
+    };
+    // 「不+X」成词：不修饰的是词内语素而非辖域内谓语，删「不」语义反
+    // （「避免不必要损失」「防止不良现象」均合法）
+    const LEX_NEG: &[&str] = &[
+        "不良",
+        "不好",
+        "不利",
+        "不当",
+        "不便",
+        "不满",
+        "不少",
+        "不多",
+        "不大",
+        "不大",
+        "不均",
+        "不齐",
+        "不稳",
+        "不安",
+        "不妙",
+        "不错",
+        "不测",
+        "不妨",
+        "不论",
+        "不只",
+        "不仅",
+        "不但",
+        "不光",
+        "不雅观",
+        "不规则",
+        "不必要",
+        "不需要",
+        "不寻常",
+        "不健康",
+        "不合格",
+        "不足",
+        "不规范",
+        "不合法",
+        "不透明",
+        "不达标",
+        "不为",
+        "不了",
+        "不应",
+    ];
+    let mut out: Vec<Error> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for caps in re.captures_iter(text) {
+        let m = caps.get(0).expect("group 0 必然存在");
+        let neg = caps.get(2).expect("group 2 必然存在");
+        // 消息点名离否定词最近的触发词（嵌套时「防止…防止…不」取内层）
+        let matched = m.as_str();
+        let trig = TRIG
+            .split('|')
+            .map(|t| (matched.rfind(t), t))
+            .max_by_key(|(i, _)| *i)
+            .map(|(_, t)| t)
+            .unwrap_or("");
+        // 守卫：单字「不」+成词形容词跳过；「不」紧跟数字/字母跳（「不到10米」类）
+        if neg.as_str() == "不" {
+            let after = &text[neg.end()..];
+            if LEX_NEG.iter().any(|w| {
+                w.strip_prefix('不')
+                    .is_some_and(|tail| after.starts_with(tail))
+            }) {
+                continue;
+            }
+            if after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || c.is_ascii_alphabetic())
+            {
+                continue;
+            }
+        }
+        if spans
+            .iter()
+            .any(|(ps, pe)| neg.start() < *pe && neg.end() > *ps)
+        {
+            continue;
+        }
+        spans.push((neg.start(), neg.end()));
+        out.push(Error::new_with_meta(
+            "zh",
+            error_types::GRAMMAR,
+            0.85,
+            [neg.start(), neg.end()],
+            neg.as_str().to_string(),
+            Some(String::new()),
+            format!(
+                "否定冗余：「{trig}」已含否定语义，其后再用「{neg_s}」双重否定致语义说反，建议删「{neg_s}」",
+                neg_s = neg.as_str()
+            ),
+            Some("grammar"),
+            Some("ZH_NEG_DUP"),
+            vec![Suggestion::new(String::new(), 0.85)],
+        ));
     }
     out
 }
@@ -1811,5 +1931,31 @@ mod tests {
         let t = "赏灯人数超过10万多人。";
         let e = detect_quant_dup(t).remove(0);
         assert_eq!(&t[e.span[0]..e.span[1]], e.original);
+    }
+
+    #[test]
+    fn neg_dup_fire_and_guards() {
+        let hits = |t: &str| detect_neg_dup(t);
+        let e = hits("为了防止这类事故不再发生，我们加强了管理。").remove(0);
+        assert_eq!(e.original, "不再");
+        assert_eq!(e.correction.as_deref(), Some(""));
+        assert_eq!(hits("行车切忌不要超速。").remove(0).original, "不要");
+        assert_eq!(hits("禁止游客不得攀爬。").remove(0).original, "不得");
+        assert_eq!(
+            hits("为避免谈话不被误解，他提前声明。").remove(0).original,
+            "不被"
+        );
+        // 守卫：成词否定、主句分隔、单侧合法均不触发
+        assert!(hits("我们要避免不必要的损失。").is_empty(), "不必要成词");
+        assert!(hits("防止不良现象蔓延。").is_empty(), "不良成词");
+        assert!(
+            hits("避免事故发生，不再重演。").is_empty(),
+            "逗号隔开的不再属主句"
+        );
+        assert!(
+            hits("为了避免误会，他没有说话。").is_empty(),
+            "不属主句且隔标点"
+        );
+        assert!(hits("防止安全事故再发生。").is_empty(), "单侧合法");
     }
 }
