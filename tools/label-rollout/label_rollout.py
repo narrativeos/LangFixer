@@ -253,6 +253,7 @@ def main():
         for l in open(JRN, encoding="utf-8"):
             try:
                 d0 = json.loads(l)
+                if str(d0["state"].get("fin", "")).startswith("http_error"): continue  # 失败行不算已完成，重跑重试
                 done[d0["id"]] = d0["state"]
             except Exception:
                 pass
