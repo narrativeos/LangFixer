@@ -263,6 +263,117 @@ export function applyStageEvents(events: StageEvent[]): StageProgressView {
   return { stages, finished, totalMs }
 }
 
+/**
+ * 数据流视图（StageProgress 的视图切换）：同一份阶段事件流投影到
+ * DETECT_PIPELINE §2 的管线节点——S0 规范化与 S1 索引合并（亚毫秒、边界不可观测），
+ * S4 合并 / S5 归因 / S6 组装 / S7 提交合并为终节点（同在提交瞬间完成，无独立事件）。
+ * 不新增任何事件类型：纯派生，层视图与数据流视图是同一事件流的两个投影，随时可切换。
+ */
+export interface FlowStep {
+  key: string
+  /** 管线编号（S0·S1 / S2 / S3 / ②.5 / ③-T / ③ / S4–S7） */
+  no: string
+  label: string
+  status: StageView['status']
+  /** 副行：数据面推导事实（分块数 / 层数 / 回退耗时）；无则 '' */
+  note: string
+}
+
+export interface FlowOptions {
+  /** 检测进行中 */
+  active?: boolean
+  /** 响应已完成（事件里可能没有 End） */
+  finished?: boolean
+  /** 缓存 / 历史命中：无事件瞬时返回 */
+  instant?: boolean
+  /** 已取消 / 出错且未收到 End */
+  canceled?: boolean
+  /** 无事件时的兜底：计时合成完成视图（见 stageViewsFromTimings） */
+  stages?: StageView[]
+}
+
+const FLOW_META: { key: string; no: string; label: string }[] = [
+  { key: 's0', no: 'S0·S1', label: '规范化 · 索引' },
+  { key: 's2', no: 'S2', label: '段规划' },
+  { key: 's3', no: 'S3', label: '层执行 · 并行组' },
+]
+const FLOW_TAIL: FlowStep = {
+  key: 's47',
+  no: 'S4–S7',
+  label: '合并 · 归因 · 提交',
+  status: 'pending',
+  note: '',
+}
+
+export function applyFlowEvents(events: StageEvent[], opts: FlowOptions = {}): FlowStep[] {
+  if (opts.instant)
+    return FLOW_META.map((m) => ({ ...m, status: 'done' as const, note: '' })).concat({
+      ...FLOW_TAIL,
+      status: 'done',
+      note: '缓存/历史回放',
+    })
+  // 是否已进入管线主体：收到过事件，或有计时合成兜底
+  const started = events.length > 0 || Boolean(opts.stages?.length)
+  const v = events.length
+    ? applyStageEvents(events)
+    : { stages: opts.stages ?? [], finished: !opts.active && Boolean(opts.stages?.length), totalMs: null }
+  const done = v.finished || opts.finished === true
+  const byk = new Map(v.stages.map((s) => [s.key, s]))
+  // 中断收尾：未落定一律转 canceled
+  const fin = (st: StageView['status']): StageView['status'] =>
+    !done && opts.canceled && (st === 'running' || st === 'pending') ? 'canceled' : st
+  const out: FlowStep[] = []
+  const push = (key: string, no: string, label: string, status: StageView['status'], note = '') =>
+    out.push({ key, no, label, status: fin(status), note })
+  // S0·S1：检测已发起而事件未达 = 规范化/索引进行中
+  push('s0', 'S0·S1', '规范化 · 索引', started ? 'done' : opts.active ? 'running' : 'pending')
+  // S2：Start 事件前即完成；副行 = 物理切块次数（§3.1：句级恒 ×1 + 段级每预算层 ×1）
+  const chunkStages = new Set<string>()
+  for (const ev of events)
+    if (ev.kind === 'chunk_begin' || ev.kind === 'chunk_end') chunkStages.add(ev.stage)
+  push(
+    's2',
+    'S2',
+    '段规划',
+    started ? 'done' : 'pending',
+    started ? (chunkStages.size ? `句级 ×1 · 段级 ×${chunkStages.size}` : '句级 ×1') : '',
+  )
+  // S3 并行组聚合：任一 running → running；全部落定 → done
+  const par = v.stages.filter((s) => PARALLEL_STAGES.has(s.key))
+  const s3: StageView['status'] = !started
+    ? 'pending'
+    : par.some((s) => s.status === 'canceled')
+      ? 'canceled'
+      : par.length && par.every((s) => isSettled(s))
+        ? 'done'
+        : 'running'
+  push(
+    's3',
+    'S3',
+    '层执行 · 并行组',
+    s3,
+    started ? `${par.filter((s) => s.status === 'done').length}/${par.length} 层` : '',
+  )
+  for (const key of ['knowledge', 'targeted', 'llm'] as const) {
+    const s = byk.get(key)
+    if (!s) continue
+    const meta =
+      key === 'knowledge'
+        ? { no: '②.5', label: '知识召回' }
+        : key === 'targeted'
+          ? { no: '③-T', label: '灰区定向复查' }
+          : { no: '③', label: 'LLM 复核' }
+    push(key, meta.no, meta.label, s.status, s.status === 'done' && s.ms != null ? `${s.ms}ms` : '')
+  }
+  push(
+    's47',
+    FLOW_TAIL.no,
+    FLOW_TAIL.label,
+    done ? 'done' : opts.canceled ? 'canceled' : 'pending',
+  )
+  return out
+}
+
 /** 把未落定阶段标记为已取消/失败（检测中断或出错时的收尾视图） */
 export function markStagesCanceled(stages: StageView[]): StageView[] {
   return stages.map((s) => (s.status === 'running' || s.status === 'pending' ? { ...s, status: 'canceled' } : s))

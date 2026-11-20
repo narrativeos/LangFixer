@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  applyFlowEvents,
   applyStageEvents,
   computePipelineLayers,
   markStagesCanceled,
@@ -329,5 +330,78 @@ describe('markStagesCanceled / stageViewsFromTimings（收尾视图）', () => {
       ['llm', 'done', 800],
     ])
     expect(out[0].no).toBe('①')
+  })
+})
+
+const byKeyF = (evs: StageEvent[], opts = {}) =>
+  Object.fromEntries(applyFlowEvents(evs, opts).map((s) => [s.key, s]))
+
+describe('applyFlowEvents（数据流视图：S0–S7 投影，与层视图同源事件）', () => {
+  it('检测已发起而事件未达：S0·S1 running，其余排队', () => {
+    const out = applyFlowEvents([], { active: true })
+    expect(out.map((s) => s.key)).toEqual(['s0', 's2', 's3', 's47'])
+    expect(out.map((s) => s.status)).toEqual(['running', 'pending', 'pending', 'pending'])
+  })
+
+  it('Start 骨架：S0·S1 / S2 已落定，S3 进行中，终节点排队', () => {
+    const m = byKeyF([start(['rule', 'decision', 'knowledge', 'llm'])], { active: true })
+    expect(m.s0.status).toBe('done')
+    expect(m.s2).toMatchObject({ status: 'done', note: '句级 ×1' })
+    expect(m.s3).toMatchObject({ status: 'running', note: '0/2 层' })
+    expect(m.knowledge.status).toBe('pending')
+    expect(m.s47.status).toBe('pending')
+  })
+
+  it('层落定聚合进 S3；串行位随层视图同步点亮；End 后终节点落定', () => {
+    const evs: StageEvent[] = [
+      start(['rule', 'decision', 'knowledge', 'llm']),
+      stage('rule', 'ran'),
+      stage('decision', 'ran'),
+    ]
+    const m = byKeyF(evs, { active: true })
+    expect(m.s3).toMatchObject({ status: 'done', note: '2/2 层' })
+    expect(m.knowledge.status).toBe('running')
+    evs.push(stage('knowledge', 'ran', 5), stage('llm', 'ran', 80), end(150))
+    const m2 = byKeyF(evs)
+    expect(m2.knowledge.note).toBe('5ms')
+    expect(m2.llm.note).toBe('80ms')
+    expect(m2.s47.status).toBe('done')
+  })
+
+  it('段级事件计入 S2 副行：段级 ×预算层数', () => {
+    const m = byKeyF([start(['rule', 'llm']), chunkBegin('llm', 1, 3)], { active: true })
+    expect(m.s2.note).toBe('句级 ×1 · 段级 ×1')
+  })
+
+  it('③-T 在计划才出现；中断时未落定节点转 canceled，已落定保持', () => {
+    const planned = byKeyF([start(['rule', 'knowledge', 'targeted', 'llm'])], { active: true })
+    expect(planned.targeted.status).toBe('pending')
+    expect(applyFlowEvents([start(['rule', 'knowledge', 'llm'])]).map((s) => s.key)).not.toContain('targeted')
+    const m = byKeyF([start(['rule', 'decision', 'llm']), stage('rule', 'ran', 8)], {
+      active: false,
+      canceled: true,
+    })
+    expect(m.s0.status).toBe('done')
+    expect(m.s3.status).toBe('canceled')
+    expect(m.llm.status).toBe('canceled')
+    expect(m.s47.status).toBe('canceled')
+  })
+
+  it('瞬时（缓存 / 历史）：全部落定，终节点标注回放', () => {
+    const out = applyFlowEvents([], { instant: true })
+    expect(out.every((s) => s.status === 'done')).toBe(true)
+    expect(out[out.length - 1].note).toBe('缓存/历史回放')
+  })
+
+  it('无事件兜底：由计时合成完成视图（S3 有层即落定）', () => {
+    const m = byKeyF([], { active: false, stages: stageViewsFromTimings({ rule_ms: 12, total_ms: 15 }) })
+    expect(m.s0.status).toBe('done')
+    expect(m.s3.status).toBe('done')
+    expect(m.s47.status).toBe('done')
+  })
+
+  it('响应完成但事件缺 End：终节点仍落定', () => {
+    const m = byKeyF([start(['rule'])], { finished: true })
+    expect(m.s47.status).toBe('done')
   })
 })

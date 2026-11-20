@@ -7,14 +7,17 @@
  * → ③LLM复核；L3 特征模型另有两虚线边：部分定案留有灰区句 → 触发 ③-T；
  * 高置信定案 → LLM 跳过。步骤条式的线性顺序无法表达并行组，故弃用。
  *
- * 数据面 = store.progress（与线性版相同的事件收敛逻辑，见 lib/pipeline）；
- * 节点副行 = 贡献度：检出条数（layers[].found）· 共识（also_found_by）· 耗时；
- * 边：上游落定即点亮，上游落定且下游进行中 → 流动动画；
+ * 数据面 = store.progress（两视图同一事件流派生，见 lib/pipeline 的 applyStageEvents /
+ * applyFlowEvents）；层视图节点副行 = 贡献度：检出条数（layers[].found）· 共识
+ * （also_found_by）· 耗时；边：上游落定即点亮，上游落定且下游进行中 → 流动动画；
+ * 数据流视图 = DETECT_PIPELINE §2 的 S0–S7 投影（S0·S1 合并且无事件时即 running，
+ * S2 副行显物理切块数，S4–S7 在提交瞬间一并落定，无独立事件）；
  * 缓存 / 历史命中无阶段事件 → 「瞬时返回」；未收到 End 即中断 → 节点转灰 ✕。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useGecStore } from '../stores/gec'
-import type { StageView } from '../lib/pipeline'
+import { applyFlowEvents, type FlowStep, type StageView } from '../lib/pipeline'
+import { LSegmented } from '../ui'
 
 const store = useGecStore()
 
@@ -98,7 +101,7 @@ const stateWord: Record<StageView['status'], string> = {
   canceled: '已中断',
 }
 
-function icon(s: StageView): string {
+function icon(s: { status: StageView['status'] }): string {
   switch (s.status) {
     case 'done':
       return '✓'
@@ -110,6 +113,36 @@ function icon(s: StageView): string {
     default:
       return ''
   }
+}
+
+/* ---------- 视图切换：层流程图 ⇄ 数据流视图（同一事件流两个投影） ---------- */
+
+type StageViewMode = 'layers' | 'flow'
+const VIEW_KEY = 'lfl.stageProgress.view'
+const view = ref<StageViewMode>(localStorage.getItem(VIEW_KEY) === 'flow' ? 'flow' : 'layers')
+watch(view, (v) => localStorage.setItem(VIEW_KEY, v))
+
+const flowSteps = computed(() =>
+  applyFlowEvents(p.value.events, {
+    active: p.value.active,
+    finished: p.value.finished,
+    instant: p.value.instant,
+    canceled: p.value.canceled,
+    stages: p.value.stages,
+  }),
+)
+
+function flowSub(st: FlowStep): string {
+  if (st.status === 'skipped' || st.status === 'unavailable' || st.status === 'canceled')
+    return stateWord[st.status]
+  return st.note || stateWord[st.status]
+}
+
+function flowTooltip(st: FlowStep): string {
+  const base = `${st.no} ${st.label}：${stateWord[st.status]}${st.note ? ` · ${st.note}` : ''}`
+  return st.key === 's47'
+    ? `${base}（合并/归因/组装/提交在提交瞬间完成，无独立进度事件；仅 quality=full 写缓存/历史）`
+    : base
 }
 
 function subText(s: StageView): string {
@@ -281,7 +314,7 @@ const stateText = computed(() => {
     role="status"
     :aria-label="`检测进度：${settledCount}/${p.stages.length}`"
   >
-    <svg v-if="layout" class="flw-svg" :viewBox="`0 0 ${layout.w} ${layout.h}`" aria-hidden="true">
+    <svg v-if="view === 'layers' && layout" class="flw-svg" :viewBox="`0 0 ${layout.w} ${layout.h}`" aria-hidden="true">
       <g>
         <path
           v-for="e in layout.edges"
@@ -302,7 +335,22 @@ const stateText = computed(() => {
       </g>
       <text v-for="g in gateLabels" :key="g.text" class="flw-gate-label" :x="g.x" :y="g.y" text-anchor="middle">{{ g.text }}</text>
     </svg>
+    <ol v-else-if="view === 'flow'" class="flw-rows" aria-label="数据流视图">
+      <li v-for="st in flowSteps" :key="st.key" :class="'st-' + st.status" :title="flowTooltip(st)">
+        <span class="fr-no">{{ st.no }}</span>
+        <span class="fr-label">{{ st.label }}</span>
+        <span class="fr-note">{{ flowSub(st) }}</span>
+        <span class="fr-icon">{{ icon(st) }}</span>
+      </li>
+    </ol>
     <div class="flw-foot">
+      <LSegmented
+        v-model="view"
+        :options="[
+          { value: 'layers', label: '层流程图' },
+          { value: 'flow', label: '数据流视图' },
+        ]"
+      />
       <span v-if="stateText" class="flw-note">{{ stateText }}</span>
       <span class="flw-total">{{ totalText }}</span>
     </div>
@@ -436,5 +484,61 @@ const stateText = computed(() => {
 }
 .flw-total {
   color: var(--muted);
+}
+/* 数据流视图：紧凑行式清单（事件不足处诚实呈现，不做假流动） */
+.flw-rows {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 560px;
+}
+.flw-rows li {
+  display: grid;
+  grid-template-columns: 52px 1fr auto 16px;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.flw-rows .fr-no {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+}
+.flw-rows .fr-label {
+  color: var(--text);
+}
+.flw-rows .fr-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+.flw-rows .fr-icon {
+  text-align: right;
+  font-weight: 700;
+  color: var(--muted);
+}
+.flw-rows li.st-done .fr-icon {
+  color: var(--ok);
+}
+.flw-rows li.st-running .fr-label,
+.flw-rows li.st-running .fr-icon {
+  color: var(--primary);
+}
+.flw-rows li.st-running {
+  animation: flw-pulse 1.4s ease-in-out infinite alternate;
+}
+.flw-rows li.st-unavailable .fr-icon,
+.flw-rows li.st-canceled .fr-icon {
+  color: var(--danger, #c0392b);
+}
+.flw-rows li.st-pending {
+  opacity: 0.55;
+}
+.flw-foot :deep(.l-segmented) {
+  font-size: 11px;
 }
 </style>

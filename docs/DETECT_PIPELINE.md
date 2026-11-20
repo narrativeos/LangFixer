@@ -125,6 +125,7 @@ flowchart TD
 ## 7. 可观测性与告警
 
 - 进度事件（`X-Progress-Id` 现通道）扩到**段级**：`chunk:begin / chunk:end`——**已实现**（`StageEvent::ChunkBegin/ChunkEnd`，wire kind `chunk_begin`/`chunk_end`；③ LLM 整文档分块与 stat 滑窗两条预算路径；短文本单块不推）；**层键事件另含 ③-T**（`stage=targeted`，入 Start 计划骨架；L3 部分定案留有灰区句时记 `ran`，未触发记 `skipped`；结果层归因仍记 `layers.llm`（§5 layers 契约不含 targeted），此时全文 ③ 未触发记 `skipped`）；
+- **Web UI 双视图投影**——**已实现**（`StageProgress` 分段切换「层流程图 / 数据流视图」：后者把同一事件流投影到 §2 节点，S0·S1 合并且事件未达即 running，S2 副行显物理切块数（§3.1 口径），S4–S7 合并且仅在提交瞬间落定；未新增事件类型，纯前端派生）；
 - 每请求一行结构化 summary（含版本向量 + quality + chunks + dropped）——**已实现**（api-server `request_summary` SQLite 账本：detect / analyze 每次实检在 `run_pipeline` 内无条件落行，回放行 quality 置 NULL；按天 × 版本聚合见 summary 端点。**残余**：doc-jobs / media / 桌面不写行）；
 - **两个必设告警**——**已实现**（`GET /gec/observability/alerts`，24h 窗口）：
   1. `unowned_chars ≠ 0` 或发生任何静默截断（dropped 四桶非零）→ 完整性回归（本类事故的探测器；写行处同时 `tracing::error!` 即时点名）；
