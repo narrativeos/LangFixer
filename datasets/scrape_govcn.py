@@ -42,38 +42,59 @@ def get(url: str, timeout: int = 25) -> bytes:
     return urllib.request.urlopen(req, timeout=timeout).read()
 
 
-def list_docs(t: str, cap_pages: int) -> list[tuple[str, str]]:
-    out = []
-    p = 1
-    while p <= cap_pages:
-        url = (f"https://sousuo.www.gov.cn/search-gov/data?t={t}&q=&timetype=timeqb"
-               f"&sort=pubtime&sortType=1&p={p}&n=100")
-        d = None
-        for attempt in range(3):
-            try:
-                d = json.loads(get(url))
-                break
-            except Exception:
-                time.sleep(1.5 * (attempt + 1))
-        if d is None:
-            print(f"[list] {t} p{p} 连续 3 次失败，停止该源")
-            break
-        vo = (d.get("searchVO") or {}).get("catMap") or {}
-        rows = []
-        for v in vo.values():
-            rows += (v or {}).get("listVO") or []
-        if not rows:
-            break
-        for it in rows:
-            u, ti = it.get("url") or "", (it.get("title") or "").strip()
-            if u.startswith("http"):
-                out.append((u, ti))
-        tp = (d["searchVO"] or {}).get("totalpage") or 1
-        if p >= tp:
-            break
-        p += 1
-        time.sleep(0.5)
-    return out
+def list_page(t: str, p: int):
+    url = (f"https://sousuo.www.gov.cn/search-gov/data?t={t}&q=&timetype=timeqb"
+           f"&sort=pubtime&sortType=1&p={p}&n=100")
+    for attempt in range(3):
+        try:
+            return json.loads(get(url))
+        except Exception:
+            time.sleep(1.5 * (attempt + 1))
+    return None
+
+
+def extend_list(cache: Path, srcs: dict[str, int], need: int) -> list[tuple[str, str]]:
+    """清单增量维护：urls.tsv 缓存 (src,page,url,title)；只补页缺口，坏页跳过。"""
+    docs: list[tuple[str, str]] = []
+    seen_url = set()
+    have = {t: [1, cap] for t, cap in srcs.items()}
+    if cache.exists():
+        for l in cache.read_text(encoding="utf-8").splitlines():
+            parts = l.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            t, p, u, ti = parts
+            if t in have:
+                have[t][0] = max(have[t][0], int(p) + 1)
+            if u not in seen_url:
+                seen_url.add(u)
+                docs.append((u, ti))
+    with cache.open("a", encoding="utf-8") as fc:
+        while len(docs) < need and any(h[0] <= h[1] for h in have.values()):
+            for t, h in have.items():
+                if h[0] > h[1]:
+                    continue
+                p = h[0]
+                d = list_page(t, p)
+                h[0] += 1
+                if d is None:
+                    print(f"[list] {t} p{p} 连续 3 次失败，跳页", flush=True)
+                    continue
+                sv = d.get("searchVO") or {}
+                rows = []
+                for v in (sv.get("catMap") or {}).values():
+                    rows += (v or {}).get("listVO") or []
+                tp = sv.get("totalpage") or h[1]
+                h[1] = min(h[1], int(tp))
+                for it in rows:
+                    u, ti = it.get("url") or "", (it.get("title") or "").strip()
+                    if u.startswith("http") and u not in seen_url:
+                        seen_url.add(u)
+                        fc.write(f"{t}\t{p}\t{u}\t{ti}\n")
+                        docs.append((u, ti))
+                fc.flush()
+                time.sleep(0.5)
+    return docs
 
 
 def sentences(doc_html: str) -> list[str]:
@@ -107,12 +128,14 @@ def main() -> None:
     a = ap.parse_args()
     out = Path(a.out)
     state = out.parent / "state.tsv"
+    cache = out.parent / "urls.tsv"
     out.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if state.exists():
         done = {l.split("\t", 1)[0] for l in state.read_text(encoding="utf-8").splitlines() if l}
 
-    docs = list_docs("zhengcelibrary_bm", 130) + list_docs("zhengcelibrary_gw", 70)
+    docs = extend_list(cache, {"zhengcelibrary_bm": 130, "zhengcelibrary_gw": 70},
+                       len(done) + a.docs + 100)
     rng = random.Random(a.seed)
     rng.shuffle(docs)
     print(f"[govcn] 清单 {len(docs):,} 篇（已抓 {len(done):,}）")
@@ -136,6 +159,7 @@ def main() -> None:
                 n_new += len(sents)
             except Exception as e:
                 fs.write(f"{u}\tERR\t{type(e).__name__}\n")
+            fo.flush(); fs.flush()
             if n_try % 100 == 0:
                 print(f"[govcn] 已抓 {n_try} 篇 · 新句 {n_new:,} · 池 ≈{len(seen):,}", flush=True)
             time.sleep(a.delay)
