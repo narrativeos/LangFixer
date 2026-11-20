@@ -6,6 +6,13 @@
 
 ### 新增
 
+- **rollout v2.4 合成配方（`tools/label-rollout/synth_nasgec.py` + label_rollout SYNTH 通道）**：
+  NaSGEC 式 S/D/I/T 四操作已知位置注入（S=混淆字替换，D/I=虚词增删，T=分句语序交换），
+  每行单注入且 op 以 intended 为权威（重复字句 difflib 对齐会走样），span 字节口径；
+  合成行不走门控定位、id `set#i`、provenance.synth 随行。`datasets/gold_error_dist.py
+  --pairs` 同源审计判非同源（S30/D40/I30 vs gold S~99%）——仅用于定位/判定校准，
+  不入句级训练池与评测。
+
 - **zh 知识通道（归因面接检测规则点）**：检测命中的规则点 id（`Error.rule_id`）在
   analyze 链路直通归因上下文 `grammarPoint`（api-server + desktop-app 同步接线），
   zh 表新增 grammarPoint 输入与 8 行专属规则（ZH_QUANT_DUP/ZH_NEG_DUP/ZH_DE_CONFUSE/

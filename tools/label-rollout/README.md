@@ -1,4 +1,4 @@
-# label-rollout — 金集标注 rollout（v2 → v2.1 → v2.2 → v2.3）
+# label-rollout — 金集标注 rollout（v2 → v2.1 → v2.2 → v2.3 → v2.4）
 
 `label_rollout.py` 是 dataset_v2* 系列的生成机件（门控定位 → LLM 判定 → 汇总
 分档队列）。原稿在 `~/tmp/gate-probe/`（未版本化）；本副本为**权威版本**，
@@ -24,6 +24,19 @@ v2.3=v2.2 + ①判无错的 why 预筛单片段重试 ②单片段截断拉高 m
 - **③parse_fail**：v2.2 里 `nfail += not got` 把「合法全无误」行计成解析失败
   （stats 的 parse_fail 虚高）；现按 JSON 解析成否计，snip_anomaly 只剩
   no-diff 一种。
+
+## v2.4 合成配方（NaSGEC 式已知位置注入）
+
+- 生成器 `synth_nasgec.py`：四操作 S（混淆字替换，源 datasets/augment_domain 词表）/
+  D（虚词漏字）/ I（虚词多字）/ T（分句语序交换）；每行一个注入，自测
+  `--selftest`（roundtrip + 字节 span 往返 + op 标签）；`--format pairs` 可接同源审计。
+- 接线：`SYNTH=a.jsonl,b.jsonl`（逗号多文件）；合成行不参与 SUBSET 抽样，id 为
+  `set#序号`（与真实行 `set-序号` 不碍撞）；注入 span 即候选，不走门控定位；
+  行级 `provenance.synth` 随数据传递，stats/README 增 synth 坐实/漏判段。
+- 同源审计：`datasets/gold_error_dist.py --pairs`——合成样本 S30/D40/I30、同音 25%
+  vs 真实 gold S~99%、同音 ~65-70% → **非同源坐实**。定位：合成行只用于定位/判定
+  校准（坐实率 = 注入真实度 × 判定召回），**不入句级训练池与评测**，不得为过闸门
+  而改配方。
 
 ## 纪律（不可违反）
 

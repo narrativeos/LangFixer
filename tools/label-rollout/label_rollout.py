@@ -17,20 +17,23 @@ CONC = int(os.environ.get("CONC", "16"))
 TAU = float(os.environ.get("TAU", "0.5"))
 CAP = int(os.environ.get("CAP", "12"))
 VER = os.environ.get("VER", "v2.1")
+# v2.4 合成配方（NaSGEC 式）：synth_nasgec.py 产出的已知位置注入行 jsonl（逗号分隔可多文件）；
+# 注入位置即候选，不走门控定位；行级 synth 元数据随 provenance 传递
+SYNTH = os.environ.get("SYNTH", "")
 NORMAL = {"logic": "cohesion", "word": "grammar", "lexical": "grammar",
           "搭配": "grammar", "标点": "punct", "错别字": "typo", "语法": "grammar"}
 DEVICE = os.environ.get("DEVICE", "mps")
 PUNCTCH = set("，。、；：？！“”‘’（）《》〈〉【】〔〕—…·,.;:?!()<>[]{}~·")
 TYPES = "typo|grammar|punct|consistency|fact|cohesion"
 ENUM = set(TYPES.split("|"))
-MODE_SNIP = VER.replace(".", "") in ("v22", "v23")   # 片段+整句提问 + 第二召回通道
+MODE_SNIP = VER.replace(".", "") in ("v22", "v23", "v24")   # 片段+整句提问 + 第二召回通道
 REPO = os.environ.get("REPO", os.path.expanduser("~/github/narrativeos/LangFixer"))
 RAD, RARE = 6, int(os.environ.get("RARE", "15"))
 PUNCT_HALF = set(',.;:?!()[]{}<>"\'')
 PUNCT_TERM = set("，。、；：？！")
 DELWHY = __import__("re").compile(r"删|多余|冗余|多出|重复")
 WHYHIT = re.compile(r"删|多余|冗余|多出|重复|漏|语序|搭配|少了|多了")   # v2.3①预筛
-MODE_FINE = VER.replace(".", "") == "v23"                # v2.3：why预筛+单片段重试
+MODE_FINE = VER.replace(".", "") in ("v23", "v24")        # v2.3：why预筛+单片段重试（v2.4 沿用）
 SYS_SNIP = ("你是中文纠错判定器。用户给出整句和若干**片段**（用「」括出）。判断每个片段内是否含错误，"
             '只输出严格 JSON：{"decisions":[{"no":片段序号,"err":true,"type":'
             '"' + TYPES + '","fix":"该片段的修正","why":"≤20字"}]}。'
@@ -183,27 +186,48 @@ def main():
         import random
         random.seed(3)
         rows = random.sample(rows, int(os.environ["SUBSET"]))
+    synth_rows = []
+    if SYNTH:                                       # v2.4：合成行不参与 SUBSET 抽样
+        for p in SYNTH.split(","):
+            with open(os.path.expanduser(p), encoding="utf-8") as f:
+                for j, l in enumerate(f):
+                    r = json.loads(l)
+                    assert r.get("src") and r.get("edits") and r.get("synth"), \
+                        f"SYNTH 行缺 src/edits/synth: {p} 第{j}行"
+                    synth_rows.append(r)
+        for i, r in enumerate(synth_rows):          # “#”与真实行 id（set-序号）不碰撞
+            r["set"] = r.get("set", "synth")
+            r["id"] = f"{r['set']}#{i}"
+        rows += synth_rows
+        log(f"[0/4] 合成配方注入行 {len(synth_rows):,}（位置已知，不走门控定位）")
+    real = [r for r in rows if not r.get("synth")]
     if os.path.exists(os.path.join(GP, "gate_charscores.json")):
         scores = json.load(open(os.path.join(GP, "gate_charscores.json"), encoding="utf-8"))
         log(f"[1/4] 复用门控字级分数 {len(scores):,} 条")
     else:
-        scores = stage1_gate(rows)
+        scores = stage1_gate(real)
         json.dump(scores, open(os.path.join(GP, "gate_charscores.json"), "w"))
-    assert all(r["id"] in scores and len(scores[r["id"]]) == len(r["src"]) for r in rows[:50])
+    assert all(r["id"] in scores and len(scores[r["id"]]) == len(r["src"]) for r in real[:50])
 
     cands = {}
-    for r in rows:
+    for r in real:
         sc = scores[r["id"]]
         c = [i for i in range(len(r["src"])) if sc[i] >= TAU
              and ("\u4e00" <= r["src"][i] <= "\u9fff" or r["src"][i] in PUNCTCH)]
         cands[r["id"]] = sorted(c)          # 不截断：多的候选分窗问（见 job）
+    for r in synth_rows:                    # 已知位置：编辑 span 即候选
+        ps = set()
+        for e in r["edits"]:
+            a, b = b2c(r["src"], *e["span"])
+            ps.update(range(a, max(b, a + 1)))
+        cands[r["id"]] = sorted(p for p in ps if p < len(r["src"])) or [0]
     if MODE_SNIP:
         tri = json.load(open(os.path.join(REPO, "feature-model", "ngram_table.json"), encoding="utf-8"))
         bg = frozenset(json.load(open(os.path.join(REPO, "feature-model", "bigram_table_zh.json"), encoding="utf-8")))
         from collections import Counter
-        freq = Counter(c for r in rows for c in r["src"] if "\u4e00" <= c <= "\u9fff")
+        freq = Counter(c for r in real for c in r["src"] if "\u4e00" <= c <= "\u9fff")
         unseen = cov = n2 = new_rows = 0
-        for r in rows:
+        for r in real:
             g = set()
             for e in r.get("edits") or []:
                 a, b = b2c(r["src"], *e["span"])
@@ -361,6 +385,7 @@ def main():
                                    "type": {}, "rows": 0, "chars": 0, "parse_fail": sum(
                                        1 for v in done.values() for _ in [0] * bool(v.get("parse_fail"))),
                                    "snip_anomaly": sum(v.get("anomaly", 0) for v in done.values())}
+    if synth_rows: stat["synth"] = {"rows": len(synth_rows), "confirm": 0, "miss": 0}
     for r in rows:
         src, d = r["src"], done.get(r["id"], {"dec": [], "fin": "no_cand"})
         gold = []
@@ -381,11 +406,16 @@ def main():
         miss = len(gset - mset)
         tier = "auto_clean" if not d["dec"] and not gset else ("mixed" if new and miss else
                ("new_only" if new else ("model_miss" if miss else "agrees")))
+        if r.get("synth"):
+            rec_synth = r["synth"]
+            stat["synth"]["confirm"] += cons
+            stat["synth"]["miss"] += miss
         rec = {"id": r["id"], "set": r["set"], "src": src, "gold_edits": gold,
                "model_errors": d["dec"], "consensus": cons, "model_new": len(new), "model_miss": miss,
                "gate_cands": cands[r["id"]], "tier": tier,
                "provenance": {"labeler": MODEL, "prompt_sha": phash, "gate_tau": TAU,
                               "recipe": RECIPE, "version": VER, "at": int(time.time())}}
+        if r.get("synth"): rec["provenance"]["synth"] = rec_synth["recipe"]
         by_set.setdefault(r["set"], []).append(rec)
         stat["rows"] += 1
         stat["chars"] += len(src)
@@ -424,6 +454,7 @@ def main():
 版本 {VER} · 行 {stat['rows']:,} · 字 {stat['chars']:,} · 共识 {stat['consensus']:,} · 解析失败行 {stat['parse_fail']:,} ·
 模型新增 {stat['model_new']:,} · 模型漏标 {stat['model_miss']:,} · 门控判无需处理 {stat['auto_clean']:,}
 类型分布 {stat['type']}
+{("合成配方（v2.4）：行 " + str(stat['synth']['rows']) + " · 坐实 " + str(stat['synth']['confirm']) + " · 注入被判无错 " + str(stat['synth']['miss']) + "；NaSGEC 式已知位置注入，gold_error_dist 审计判非同源——仅用于定位/判定校准，不入句级训练池与评测。") if stat.get('synth') else ''}
 """)
     log(f"      写出 {len(by_set)} 个 jsonl → {OUT}")
     log(f"      共识 {stat['consensus']:,} · 新增 {stat['model_new']:,}（队列待抽检）· 漏标 {stat['model_miss']:,} · "
