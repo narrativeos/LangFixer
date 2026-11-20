@@ -34,11 +34,16 @@ PUNCT_TERM = set("，。、；：？！")
 DELWHY = __import__("re").compile(r"删|多余|冗余|多出|重复")
 WHYHIT = re.compile(r"删|多余|冗余|多出|重复|漏|语序|搭配|少了|多了")   # v2.3①预筛
 MODE_FINE = VER.replace(".", "") in ("v23", "v24")        # v2.3：why预筛+单片段重试（v2.4 沿用）
+D_HINT = bool(os.environ.get("D_HINT"))   # v2.4 A/B：判定 prompt 追加虚词漏字提示（默认关，零漂移）
 SYS_SNIP = ("你是中文纠错判定器。用户给出整句和若干**片段**（用「」括出）。判断每个片段内是否含错误，"
             '只输出严格 JSON：{"decisions":[{"no":片段序号,"err":true,"type":'
             '"' + TYPES + '","fix":"该片段的修正","why":"≤20字"}]}。'
             "必须结合整句判断；没有错就 err:false。若该处应删除，fix 给出去掉该字后的片段；"
             "若是漏字/语序调整，fix 给出补全或调整后的片段。宁可 err:false 也不要乱改。")
+if D_HINT:
+    SYS_SNIP += ("特别注意虚词漏字：片段语义读得通但结构搭配不顺（定语或状语与中心语直接相连、"
+                 "多项并列成分末项前缺连接词这类），往往是漏了「的/地/得/了/着/过/在」，"
+                 "此时应 err:true 并在 fix 里补出该字，不要因句子大致通顺就判无错。")
 RECIPE = ("gate+lex2_localize → llm_snippet_adjudicate(片段±" + str(RAD) + "+整句,分窗,可答无错)"
           if MODE_SNIP else "gate_localize → llm_adjudicate(分窗,含标点)")
 if MODE_FINE:
@@ -246,7 +251,7 @@ def main():
         f"（{ncand*1000/max(1,sum(len(r['src']) for r in rows)):.1f}/千字）· 需判定 {len(todo):,} 行 · "
         f"无候选 {len(rows)-len(todo):,} 行按门控判「无需处理」")
 
-    phash = hashlib.sha256(SYS.encode()).hexdigest()[:12]
+    phash = hashlib.sha256((SYS_SNIP if MODE_SNIP else SYS).encode()).hexdigest()[:12]
     log(f"[3/4] LLM 判定（{MODEL}, prompt {phash}, 并发 {CONC}）…")
     done, t0, lock = {}, time.time(), __import__("threading").Lock()
     if os.path.exists(JRN):                                  # 断点续跑
