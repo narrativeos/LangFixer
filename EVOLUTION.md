@@ -1526,6 +1526,8 @@ provenance 字段就是为这一步留的）。
 | 12 | word_order 在标签侧全量降级 rule_decide（--wo-exempt × gold 侧型标签，补四处方的完整形态） | **否** | 降级 12→106 行后 45.7/65.6 → 44.6/64.1（cache/oracle 锚点，均 FAIL）；word_order 分层自身 26.9→25.0；WO 每句期望为正（41.7%×80.6%），63.1% 预算处腾预算≈边际 1:1 抵不过跳过可检句 | §11.12 补五；降级收益的正确出口 = Cycle 2 收益矩阵按型条件化/型头，非标签开关 |
 | 13 | ZEN v2 冲突谓词（straddle_pair/num_same_unit_diff/year_pair/conj_pair_break）作独立路由/定案通道 | **否**（通道不养；present 证据口径保留） | must 召回 0–3.1%；gold 锚定 vs clean 基线无 lift（pron 0.1%<1.87%、conj 4.3%<7.57% 反信号；仅 year_pair 1.8%>0.18% 但召回 0.4%）；打扰任一命中行 9.64%（强配对 4.75%）超 ≤2% 闸门 | §11.14 补六；复现 `python3 tools/zen-trajectory/trajectory.py` |
 | 14 | jev 类决策模型重定位为「直接判错/改错的兜底模型」（含「微调 Qwen 找错改错模型 = 决策模型」的叫法） | **否**（角色拆分：微调 Qwen = 生成式 GEC，占兜底/llm_review 臂执行者位；决策模型维持路由闸，不持兜底触发权） | 外部定义锁死决策模型 = 非生成、题型问题→校准概率；兜底触发权已定 level-3 全 LLM（11-13 教训）；微调 Qwen 属兜底执行位新线（generic 提示 F0.5≈0.005 vs cec3 0.805） | §11.15；外部核对 arXiv 2610.34626、2609.28940、2610.29961、2610.18610；CEC_ADOPTION §5 |
+| 15 | 生成式订正差分直连作漏字通道（本地 shibing624/chinese-text-correction-1.5b；零样本网关差分臂；7B/4B 本地臂） | **否**（直连关闭；本地大臂不续） | 两臂 FP 不过关：1.5B 新闻净句 insert 型 FP 8.8%/句 + 29% replace-only 改写（公文域 3.0%/0.25%）；零样本 Qwen3.8 公文 8.5%/新闻 11.5% insert 型；D 侧 1.5B 边界 25/120=20.8% 与 p_err 同水位 | `tools/label-rollout/README.md`「漏字盲区外部方案调研」；复现 `eval_ctc.py`/`probe_gendiff.py`；**后续**：零样本差分协议 D 边界 59/120=49.2% vs ③ 判定协议≈11%——缺口在协议不在模型，出口=在 ② 灰区集上把 ③ 改订正差分协议，量 D 召回涨幅 vs precision 跌幅（未跑） |
+| 16 | 句级序列标注 insert 打标补漏字盲区（② 门控重训获 insert 能力） | **挂起**（无现成破法） | TW-NLP 官方 difflib 打标自认纯 insert 行 source 侧标签可全 0（业界打标同盲区）；池内 I 型监督≈0.3%（cscdns，§12）；合成行不入池 + 真实流量漏字率极低→飞轮死锁；重启需先有非循环 insert 监督源 | 同上节；TW-NLP/ELECTRA 门控与我们②同构 |
 
 > #1 是最容易复发的一条：**「灰区率下降」不等于收益**。任何扩表/换语料的提案，
 > 验收口径必须是「**等漏检下的放行率**」——先跑 `eval_ngram_table_ab.py`（AUC 不升或
