@@ -197,6 +197,7 @@ pub fn detect_with_tokens(text: &str, tokens: &[Token], lexicon: &Lexicon) -> Ve
     out.extend(detect_quantity_unit(text));
     out.extend(detect_quant_dup(text));
     out.extend(detect_neg_dup(text));
+    out.extend(detect_de_confuse(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -227,6 +228,7 @@ pub fn detect_local(text: &str, lexicon: &Lexicon) -> Vec<Error> {
     out.extend(detect_quantity_unit(text));
     out.extend(detect_quant_dup(text));
     out.extend(detect_neg_dup(text));
+    out.extend(detect_de_confuse(text));
     out.extend(detect_serial_no(text));
     out.extend(detect_anomalies(text, lexicon));
     out
@@ -807,6 +809,137 @@ fn detect_neg_dup(text: &str) -> Vec<Error> {
             Some("ZH_NEG_DUP"),
             vec![Suggestion::new(String::new(), 0.85)],
         ));
+    }
+    out
+}
+
+/// 「的 / 地 / 得」误用的词表路径（不依赖 POS，token / 离线双路径共用）
+///
+/// 与 POS 版 detect_de_da_de（ZH_DE_DA_DE，停用中）并存但互不影响开关：
+/// 本谓词走封闭词表，取证自 FCGEC 虚词功能字桶（的→地 199、的→得 53）：
+/// - A 状语标记：叠词（好好/慢慢…）或副词性形容词（不断/努力/认真…）+
+///   的 + 纯动词表（说/进行/发现…，名词歧义大的「发展/提高/保护」不入）
+///   → 改「地」；
+/// - B 补语标记：的 + 程度词（很/非常/比较/有点/越来越…）→ 改「得」；
+///   左侧「有的/目的/真的/是的」类成词守卫。
+/// 左侧为比较级的「更好/很好」类 gold 有判例（「能够更好的V」）但语料
+/// 「更好的发展」类名词化高频合法，宁缺勿错不入表。
+fn detect_de_confuse(text: &str) -> Vec<Error> {
+    const ADV: &[&str] = &[
+        "不断", "不停", "一直", "渐渐", "逐渐", "逐步", "慢慢", "默默", "悄悄", "狠狠", "紧紧",
+        "牢牢", "好好", "快快", "匆匆", "默默", "迟迟", "久久", "缓缓", "苦苦", "白白", "生生",
+        "深深", "大大", "静静", "努力", "认真", "专心", "精心", "细心", "耐心", "开心", "高兴",
+        "兴奋", "激动", "焦急", "犹豫", "简单", "容易", "随意", "随便", "反复", "频繁", "持续",
+        "稳定", "直接", "刻意", "故意", "擅自", "公然", "公开", "秘密", "亲自", "尽情", "大肆",
+        "大胆", "勇敢", "坚决", "顺利", "快速", "迅速", "缓慢", "猛烈", "剧烈", "强烈", "温柔",
+        "巧妙", "完美", "彻底", "完整", "清晰", "清楚", "明显", "确切", "定期", "频繁",
+    ];
+    const VERB: &[&str] = &[
+        "说", "讲", "做", "干", "看", "听", "走", "跑", "想", "回答", "解释", "说明", "证明",
+        "描述", "记录", "介绍", "评价", "总结", "反思", "回应", "回复", "告别", "等待", "陪伴",
+        "守护", "庆祝", "道歉", "承认", "承诺", "保证", "开展", "举办", "沟通", "挑战", "超越",
+        "突破", "解决", "应对", "参与", "加入", "保持", "坚持", "珍惜", "享受", "面对", "对待",
+        "尊重", "理解", "帮助", "鼓励", "表扬", "批评", "支持", "接受", "拒绝", "处理", "安排",
+        "准备", "继续", "停止", "完成", "照顾", "长大", "成长", "努力", "学习", "进行", "发现",
+        "选择", "使用", "欺骗", "认为", "决定", "知道", "喜欢", "阻止", "规划", "观察", "寻找",
+        "练习", "审视", "推动", "促进", "维护", "走向", "走到", "站在", "追寻",
+    ];
+    // 程度词限 gold 右侧有判例且无「的字结构+量词/程度词」歧义的三个；
+    // 好/多/特别兼形容词语素，有点/越来越在语料中主为「V的(东西)越来越多」类
+    // 的字结构，均不入表
+    const DEG: &[&str] = &["非常", "比较", "很"];
+    // 成词守卫：的作实词语素或句末助词时不能改「得」（有的/目的/真的/是的/打的）
+    const LEFT_GUARD: &[char] = &['有', '目', '真', '是', '确', '士', '的', '适', '白', '当'];
+    let chars: Vec<char> = text.chars().collect();
+    // 字符→字节前缀和，定位 span
+    let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut acc = 0usize;
+    for c in &chars {
+        byte_at.push(acc);
+        acc += c.len_utf8();
+    }
+    byte_at.push(acc);
+    let is_cjk = |c: char| ('\u{4e00}'..='\u{9fff}').contains(&c);
+    let mut out: Vec<Error> = Vec::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '的' {
+            continue;
+        }
+        let prev = i.checked_sub(1).map(|j| chars[j]);
+        let next = chars.get(i + 1).copied();
+        let push = |out: &mut Vec<Error>,
+                    spans: &mut Vec<(usize, usize)>,
+                    fix: &str,
+                    msg: String,
+                    conf: f64| {
+            let (s, e) = (byte_at[i], byte_at[i + 1]);
+            if spans.iter().any(|(ps, pe)| s < *pe && e > *ps) {
+                return;
+            }
+            spans.push((s, e));
+            out.push(Error::new_with_meta(
+                "zh",
+                error_types::GRAMMAR,
+                conf,
+                [s, e],
+                "的".to_string(),
+                Some(fix.to_string()),
+                msg,
+                Some("grammar"),
+                Some("ZH_DE_CONFUSE"),
+                vec![Suggestion::new(fix, conf)],
+            ));
+        };
+        // A 状语：前接叠词或副词表 + 后接动词表首字（非句末/标点）
+        let Some(nxt) = next else { continue };
+        let verb_hit = is_cjk(nxt) && VERB.iter().any(|v| text[byte_at[i + 1]..].starts_with(v));
+        if verb_hit {
+            let mut adv_hit = false;
+            if i >= 2 && chars[i - 1] == chars[i - 2] && is_cjk(chars[i - 1]) {
+                adv_hit = true;
+            }
+            if !adv_hit {
+                let left = &text[..byte_at[i]];
+                adv_hit = ADV.iter().any(|w| left.ends_with(w));
+            }
+            if adv_hit {
+                push(
+                    &mut out,
+                    &mut spans,
+                    "地",
+                    "状语标记应为「地」：副词性成分修饰动词用「地」（如：慢慢地走）".to_string(),
+                    0.8,
+                );
+                continue;
+            }
+        }
+        // B 补语：后接程度词；左侧须动词性（gold 的→得 左侧全为动词，
+        // 「好坏的非常好」类定语「的」不触发）；程度词紧跟「多」跳
+        // （「买的比较多」类「V的+数量」的字结构合法）
+        if is_cjk(nxt) && DEG.iter().any(|d| text[byte_at[i + 1]..].starts_with(d)) {
+            if prev.is_some_and(|p| LEFT_GUARD.contains(&p)) {
+                continue;
+            }
+            let deg_hit = DEG.iter().find(|d| text[byte_at[i + 1]..].starts_with(**d));
+            if let Some(d) = deg_hit {
+                if text[byte_at[i + 1] + d.len()..].starts_with('多') {
+                    continue;
+                }
+            }
+            let prev_is_verb = prev.is_some_and(|p| VERB.iter().any(|v| p.to_string() == *v));
+            if !prev_is_verb {
+                continue;
+            }
+            push(
+                &mut out,
+                &mut spans,
+                "得",
+                "程度补语标记应为「得」：动词/形容词后接程度补语用「得」（如：说得很好）"
+                    .to_string(),
+                0.75,
+            );
+        }
     }
     out
 }
@@ -1957,5 +2090,36 @@ mod tests {
             "不属主句且隔标点"
         );
         assert!(hits("防止安全事故再发生。").is_empty(), "单侧合法");
+    }
+
+    #[test]
+    fn de_confuse_fire_and_guards() {
+        let hits = |t: &str| detect_de_confuse(t);
+        assert_eq!(
+            hits("他慢慢的走向讲台。").remove(0).correction.as_deref(),
+            Some("地")
+        );
+        assert_eq!(
+            hits("他高兴的说了一句话。").remove(0).correction.as_deref(),
+            Some("地")
+        );
+        assert_eq!(
+            hits("他不停的练习钢琴。").remove(0).correction.as_deref(),
+            Some("地")
+        );
+        assert_eq!(
+            hits("他说的很好听。").remove(0).correction.as_deref(),
+            Some("得")
+        );
+        assert!(
+            hits("这花美的有点不像话。").is_empty(),
+            "单字形容词左部不入动词表（宁缺勿错）"
+        );
+        // 守卫：成词的的/的字结构/叠词+名词不触发
+        assert!(hits("他的目的很明确。").is_empty(), "目的成词");
+        assert!(hits("这个电影真的很好看。").is_empty(), "真的成词");
+        assert!(hits("有的人很有钱。").is_empty(), "有的成词");
+        assert!(hits("他的慢慢是出了名的。").is_empty(), "的字结构非状语");
+        assert!(hits("他高兴得跳起来。").is_empty(), "单侧合法");
     }
 }
