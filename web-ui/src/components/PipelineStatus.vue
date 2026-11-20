@@ -53,7 +53,18 @@ const items = computed<StatusItem[]>(() => {
       hint: '内置规则与词表，即时运行，始终可用',
       anchor: 'dirs',
     },
-    // ② 决策模型待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：状态条不再列示
+    // ② 决策模型：启用时逐句参与每次检测，状态条必须如实列示（含服务运行模式），
+    // 不能再按「待发布不列示」隐藏一个实际在影响结果的引擎
+    {
+      key: 'decision',
+      label: '决策模型',
+      state: store.decisionEnabled ? 'ok' : 'off',
+      hint: store.decisionEnabled
+        ? store.deps.find((d) => d.id === 'decision')?.reason ||
+          '逐句送检，结果按实际置信度产出（采纳/放弃反馈用于模型迭代）'
+        : '未启用：该层不参与检测（待发布层；可在设置依赖服务卡片查看服务状态）',
+      anchor: 'deps',
+    },
     {
       key: 'embedding',
       label: plainLayerLabel('knowledge'),

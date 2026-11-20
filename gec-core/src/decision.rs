@@ -313,36 +313,35 @@ impl DecisionGecEngine {
         })?;
         self.breaker.on_success();
 
-        // 1. 服务返回 span 级错误（微调后细化）→ 映射后产出；
-        //    置信度低于弃权阈值的报错属噪声级（降级服务对任意句都报 ~0.5），
-        //    不定案，转为弃权信号交由兜底（level 2）判定
+        // 1. 服务返回 span 级错误 → 全部按实际置信度照实产出（能力真实原则：
+        //    不因置信低而掩盖或转弃权，低置信以把握程度呈现，
+        //    采纳/放弃反馈进入数据积累供模型迭代）；
+        //    服务 span 为字符偏移（Python 语义），换算为字节偏移后入 `Error.span`
         if !body.errors.is_empty() {
-            let mut errors = Vec::new();
-            let mut uncertain = false;
-            for e in body.errors {
-                if e.confidence < self.config.abstain_threshold {
-                    uncertain = true;
-                    continue;
-                }
-                let mut err = Error::new(
-                    &self.lang,
-                    map_error_type(e.error_type()),
-                    e.confidence,
-                    char_span_to_bytes(text, e.span),
-                    e.original,
-                    e.correction,
-                    if e.message.is_empty() {
-                        "决策模型检出错误"
-                    } else {
-                        &e.message
-                    },
-                );
-                err.source = Some(sources::DECISION.to_string());
-                errors.push(err);
-            }
+            let errors = body
+                .errors
+                .into_iter()
+                .map(|e| {
+                    let mut err = Error::new(
+                        &self.lang,
+                        map_error_type(e.error_type()),
+                        e.confidence,
+                        char_span_to_bytes(text, e.span),
+                        e.original,
+                        e.correction,
+                        if e.message.is_empty() {
+                            "决策模型检出错误"
+                        } else {
+                            &e.message
+                        },
+                    );
+                    err.source = Some(sources::DECISION.to_string());
+                    err
+                })
+                .collect();
             return Ok(DecideOutcome {
-                abstained: uncertain && errors.is_empty(),
                 errors,
+                abstained: false,
             });
         }
 
@@ -1087,8 +1086,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decide_span_error_below_threshold_abstains() {
-        // 服务报 span 级错误但置信度低于弃权阈值（噪声级）→ 不定案，按弃权处理交给兜底
+    async fn decide_span_error_low_confidence_still_emitted() {
+        // 能力真实原则：服务报的 span 级错误即使置信度低也照实产出（不转弃权、不静默丢弃），
+        // 低置信以把握程度在结果中呈现，采纳/放弃反馈进入数据积累供模型迭代
         let endpoint = mock_decide_server(std::sync::Arc::new(|_| {
             serde_json::json!({
                 "has_error": true,
@@ -1109,19 +1109,14 @@ mod tests {
         .await;
         let engine = DecisionGecEngine::new("zh", config(endpoint));
         let outcome = engine.decide("这个句子正确。").await.unwrap();
-        assert!(
-            outcome.errors.is_empty(),
-            "低于阈值的置信度不应产出定案错误"
-        );
-        assert!(
-            outcome.abstained,
-            "声称有错但置信不足应弃权（交由兜底判定）"
-        );
+        assert_eq!(outcome.errors.len(), 1, "低置信错误也要产出，不做掩盖");
+        assert_eq!(outcome.errors[0].confidence, 0.4, "置信度原样携带");
+        assert!(!outcome.abstained, "已产出错误不算弃权");
     }
 
     #[tokio::test]
-    async fn decide_span_errors_mixed_confidence_keeps_confident_only() {
-        // 同一句多个 span 错误：仅保留置信达标的，低置信丢弃且不算弃权
+    async fn decide_span_errors_all_confidences_emitted() {
+        // 同一句多个 span 错误：无论置信高低全部照实产出
         let endpoint = mock_decide_server(std::sync::Arc::new(|_| {
             serde_json::json!({
                 "has_error": true,
@@ -1150,8 +1145,8 @@ mod tests {
         .await;
         let engine = DecisionGecEngine::new("zh", config(endpoint));
         let outcome = engine.decide("甲是个噪声句。").await.unwrap();
-        assert_eq!(outcome.errors.len(), 1, "仅保留置信达标的错误");
+        assert_eq!(outcome.errors.len(), 2, "全部 span 级错误按实际置信度产出");
         assert_eq!(outcome.errors[0].correction.as_deref(), Some("乙"));
-        assert!(!outcome.abstained, "已有定案错误不算弃权");
+        assert!(!outcome.abstained);
     }
 }
