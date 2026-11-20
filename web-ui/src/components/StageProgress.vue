@@ -176,18 +176,27 @@ function cellIcon(c: MatrixCell): string {
  *  （深度扫描 L3 保留「不可用已回退」），tooltip 始终给出真实说明 */
 const matrixColState = computed(() => {
   const statusOf = new Map((store.layers ?? []).map((l) => [l.layer, l.status]))
-  const out: Record<string, { word: string; quiet: boolean }> = {}
+  const out: Record<string, { word: string; note: string }> = {}
   for (const c of matrixColumns.value) {
     const raw = statusOf.get(c.key)
     const quiet = c.key === 'llm' && raw === 'unavailable' && llmSkippedInFlow.value
-    out[c.key] = { word: raw === undefined ? '' : layerStatusLabel(quiet ? 'skipped' : raw), quiet }
+    let note = quiet ? '（送 LLM 复核未成功，本轮结果按无 LLM 路径给出）' : ''
+    // 未执行层（skipped/unavailable/弃权）若复查合流已命中，在 tooltip 里同步真实产出
+    if (raw !== undefined && raw !== 'ran' && raw !== 'decided') {
+      const merged = matrixRows.value.reduce((n, r) => {
+        const cell = r.cells[c.key]
+        return cell && cell.status === 'hit' ? n + cell.hits : n
+      }, 0)
+      if (merged > 0) note += `（复查合流已命中 ${merged} 处，本层未执行）`
+    }
+    out[c.key] = { word: raw === undefined ? '' : layerStatusLabel(quiet ? 'skipped' : raw), note }
   }
   return out
 })
 function matrixColTip(c: MatrixColumn): string {
   const st = matrixColState.value[c.key]
   if (!st?.word) return ''
-  return `${c.no} ${c.label}：${st.word}${st.quiet ? '（送 LLM 复核未成功，本轮结果按无 LLM 路径给出）' : ''}`
+  return `${c.no} ${c.label}：${st.word}${st.note}`
 }
 
 const flowSteps = computed(() =>

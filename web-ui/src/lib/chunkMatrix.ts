@@ -72,11 +72,22 @@ function overlaps(e: [number, number], c: [number, number]): boolean {
   return e[1] > c[0] && e[0] < c[1]
 }
 
+/** source/共识层的列归一口径：③-T 归因 llm；statistical 并入 rule */
+function normLayer(s: string): string {
+  return s === 'targeted' ? 'llm' : s === 'statistical' ? 'rule' : s
+}
+
+/** 产出层命中：错误项由该层直接产出（source 属本列）。人工定向复查合流入的
+ * source='llm' 错误属此类——即使 ③ 层报告 skipped/unavailable 也要如实投影，
+ * 否则复查命中的错误在矩阵里凭空消失；纯共识命中（also_found_by）不算。 */
+function sourceHit(e: ErrorItem, layer: string): boolean {
+  return e.source !== undefined && normLayer(e.source) === layer
+}
+
 /** 该错误计名该层的次数（产出层或共识层；③-T 归因 llm；statistical 并入 rule） */
 function countsForLayer(e: ErrorItem, layer: string): boolean {
-  const norm = (s: string) => (s === 'targeted' ? 'llm' : s === 'statistical' ? 'rule' : s)
-  if (e.source && norm(e.source) === layer) return true
-  return (e.also_found_by ?? []).some((s) => norm(s) === layer)
+  if (e.source && normLayer(e.source) === layer) return true
+  return (e.also_found_by ?? []).some((s) => normLayer(s) === layer)
 }
 
 export function buildChunkMatrix(args: {
@@ -100,10 +111,16 @@ export function buildChunkMatrix(args: {
     const cells: Record<string, MatrixCell> = {}
     for (const col of args.columns) {
       const active = layerActive(statusOf.get(col.key))
-      const hits = args.errors.filter((err) => overlaps(err.span, [s, e]) && countsForLayer(err, col.key)).length
+      const over = args.errors.filter((err) => overlaps(err.span, [s, e]))
+      const hits = over.filter((err) => countsForLayer(err, col.key)).length
+      // 未执行层若 source 属本列（人工定向复查/③-T 合流），命中如实显示不随层灰化；
+      // 纯共识命中不点亮未执行列，保持「本层未执行」语义
+      const merged = active === false && over.some((err) => sourceHit(err, col.key))
       cells[col.key] =
         active === false
-          ? { status: 'skipped', hits: 0 }
+          ? merged
+            ? { status: 'hit', hits }
+            : { status: 'skipped', hits: 0 }
           : active === null
             ? { status: hits ? 'hit' : 'pending', hits }
             : { status: hits ? 'hit' : 'pass', hits }

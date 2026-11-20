@@ -109,6 +109,36 @@ describe('chunkMatrix 投影', () => {
     expect(rows[0].cells.llm.hits).toBe(1)
   })
 
+  it('未执行层复查合流同步：source 属本列→hit 投影；纯共识命中不点亮', () => {
+    const cols = [
+      { key: 'decision', no: '②', label: '决策模型' },
+      { key: 'llm', no: '③', label: 'LLM 复核' },
+    ]
+    const layers: LayerReport[] = [
+      { layer: 'decision', status: 'ran', found: 1 },
+      { layer: 'llm', status: 'skipped', found: 0 },
+    ]
+    // 人工定向复查合流入的 source='llm' 错误：③ 层 skipped 也要如实投影
+    const merged = buildChunkMatrix({
+      text: 'abcdefgh',
+      units: { spans: [[0, 8]], origins: ['punct'] },
+      errors: [err([0, 8], 'llm', ['decision'])],
+      columns: cols,
+      layers,
+    })
+    expect(merged[0].cells.llm).toEqual({ status: 'hit', hits: 1 })
+    expect(merged[0].cells.decision).toEqual({ status: 'hit', hits: 1 })
+    // 纯共识命中（also_found_by llm）在不执行的 ③ 列仍灰：保持「本层未执行」语义
+    const consensusOnly = buildChunkMatrix({
+      text: 'abcdefgh',
+      units: { spans: [[0, 8]], origins: ['punct'] },
+      errors: [err([0, 8], 'decision', ['llm'])],
+      columns: cols,
+      layers,
+    })
+    expect(consensusOnly[0].cells.llm).toEqual({ status: 'skipped', hits: 0 })
+  })
+
   it('CJK 字节 span 预览不错位（字节→UTF-16 口径转换）', () => {
     // 本用例是错位 bug 的回归测试：直接 slice 字节位会在纯中文文本上成倍偏移
     const text = '武汉大学图书馆。' + '东湖风光很好。' // 字节：首句 8 字 24B，次句 7 字 21B

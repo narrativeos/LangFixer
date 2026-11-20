@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Json, State};
 use serde_json::json;
+use shared_model::sources;
 
 use gec_core::targeted_llm_review;
 
@@ -22,6 +23,20 @@ pub struct SentenceRecheckRequest {
     pub text: String,
     /// 待复查句在全文中的字节区间 [start, end)（与 Error.span 同语义）
     pub span: [usize; 2],
+}
+
+/// 取字节区间的句子原文并对齐字符边界（与 targeted_llm_review 同一钓制口径：
+/// 起点后退、终点前进；span 来自句切分器本就在边界上，钓制只防越界/错位输入 panic）。
+fn sentence_slice<'a>(text: &'a str, span: &[usize; 2]) -> &'a str {
+    let mut a = span[0].min(text.len());
+    while a > 0 && !text.is_char_boundary(a) {
+        a -= 1;
+    }
+    let mut b = span[1].min(text.len());
+    while b < text.len() && !text.is_char_boundary(b) {
+        b += 1;
+    }
+    &text[a.min(b)..b]
 }
 
 /// span 合法性校验（纯函数，便于单测）：非空且落在 text 字节范围内。
@@ -54,12 +69,43 @@ pub async fn recheck_sentence(
     if !ledger.is_empty() {
         tracing::warn!(?ledger, "定向复查丢弃了部分 LLM 检出");
     }
+    // 复查结果落反馈日志（决策路径迭代数据）：句级 verdict 经 LLM 复查后
+    // 命中 = 确证（error 样本）/ 未命中 = 句级误报（clean 样本）；来源层记
+    // decision（被复查的判定出自决策层），训练池 build_domain_pool 按 action
+    // 收录为 feedback_recheck 样本；失败仅告警不阻断返回（同 log_feedback）
+    let sentence = sentence_slice(&req.text, &req.span);
+    let (action, error_type, correction, reason) = match errors.split_first() {
+        None => (
+            "recheck_clean",
+            String::new(),
+            String::new(),
+            "定向复查未命中（句级判定疑似误报）".to_string(),
+        ),
+        Some((first, rest)) => (
+            "recheck_found",
+            first.error_type.clone(),
+            first.correction.clone().unwrap_or_default(),
+            format!("定向复查命中 {} 处", rest.len() + 1),
+        ),
+    };
+    if let Err(fe) = state.feedback_log.insert(
+        &req.lang,
+        sources::DECISION,
+        None,
+        &error_type,
+        sentence,
+        &correction,
+        action,
+        &reason,
+    ) {
+        tracing::warn!(error = %fe, "复查反馈日志写入失败（不影响返回结果）");
+    }
     Ok(Json(json!({ "errors": errors })))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_span;
+    use super::{sentence_slice, validate_span};
 
     #[test]
     fn span_合法通过() {
@@ -82,5 +128,14 @@ mod tests {
         let text = "abc";
         let err = validate_span(text, &[0, 4]).unwrap_err();
         assert!(err.contains("越界"), "{err}");
+    }
+
+    #[test]
+    fn 句子切片对齐字符边界不panic() {
+        let text = "这是一句话。";
+        // 正常：句切分器 span 本就在边界上
+        assert_eq!(sentence_slice(text, &[0, text.len()]), text);
+        // 错位输入：起点后退（1→0）、终点前进（7→9），不得 panic
+        assert_eq!(sentence_slice(text, &[1, 7]), "这是一");
     }
 }
