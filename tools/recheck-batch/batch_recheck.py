@@ -46,10 +46,18 @@ def main() -> None:
     ap.add_argument("--lang", default="zh")
     ap.add_argument("--target", type=int, default=20, help="feedback_recheck 样本目标条数")
     ap.add_argument("--token", default=None, help="网关形态 Bearer；单机形态留空")
+    ap.add_argument("--token-db", default=None,
+                    help="从该 auth.db 的 gw_meta.admin_token 读超管密钥（明文不进命令行）")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
     db = sqlite3.connect(a.db)
+    if a.token is None and a.token_db:
+        row = sqlite3.connect(a.token_db).execute(
+            "select value from gw_meta where key='admin_token'").fetchone()
+        if not row:
+            sys.exit(f"{a.token_db} 里没有 gw_meta.admin_token（未生成超管密钥？）")
+        a.token = row[0]
     n_have = db.execute(
         "select count(*) from feedback_log where action in ('recheck_found','recheck_clean')"
     ).fetchone()[0]

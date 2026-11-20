@@ -13,7 +13,8 @@
   多字/成分赘余 2,066 为头号靶子，约数词并置/否定冗余两个规则点可直接落地；
   虚词 268 条对应 ZH_DE_DA_DE 停用中）；`batch_recheck.py` 把 detect_history 里
   句级判断灰区句批量送 /gec/recheck 凑 P3 决策表要的 ≥20 条 feedback_recheck
-  样本（现有 6，候选去重后 26，需登录门形态带 --token）。
+  样本（现有 6，候选去重后 26；实跑达标 20：found 3 : clean 17，句级判断
+  误报率 86%；`--token-db` 直读安装期生成的超管密钥，免手工取）。
 - **依赖服务监督器（`api-server/src/deps.rs` + `routes/deps.rs`）**：api-server 启动即自检六项依赖
   （decision:4804 / l3:4806 / char_gate:4811 / hanlp / LLM 网关 / 嵌入），本机可管服务在
   loopback 地址 + 仓内 venv + 资源门槛（decision/l3 300MB、char_gate 2048MB，可用内存读
