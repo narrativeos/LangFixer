@@ -78,6 +78,68 @@ v2.3=v2.2 + ①判无错的 why 预筛单片段重试 ②单片段截断拉高 m
    CSCD 法律+医答净句 0.045 / CSCDNS 新闻净句 0.156），② p_err 门控若在
    开放域输入上按公文校准阈值会大面积误触，② owner 需单独复核。
 
+## 漏字盲区外部方案调研（A 标注 / B 生成式差分 / C 边界接受）
+
+判决背景（747fad7）：漏字坐实为架构真实盲区——③ 判定 D 召回≈11%、p_err 两步
+探针边界 19/120 且净句 FP 公文 47/新闻 129 每400、池内 I 型监督极稀
+（cscdns I=0.3%，EVOLUTION §12）。三路候选取证如下。
+
+### A 句级序列标注 insert 打标：无现成破法，暂关
+
+1. 取证：TW-NLP 官方打标就是 difflib 对齐，且自认「纯 insert 行在 source 侧
+   标签可全 0」——业界标准打标与我们的盲区同构，insert 监督学不到漏字定位；
+2. 监督稀：公开池 I 型≈0.3%（cscdns 3 万抽样，EVOLUTION §12），S 型占绝对主体；
+3. 死锁：合成行按同源审计不入池，真实流量漏字率又极低——打标飞轮循环依赖，
+   需先有非循环的 insert 监督源才谈得上训练。
+4. 旁证：TW-NLP 现役架构=ELECTRA 字级门控+4B LLM 生成，与我们的②门控+③LLM
+   同构，即 B 路线存在业界先例（其门控同样不含 insert 能力）。
+
+### B 生成式订正差分：1.5B 实测不达标，整线关闭
+
+臂1（本地，`tools/label-rollout/eval_ctc.py`）：shibing624/chinese-text-correction-1.5b
+（Qwen2.5-1.5B，Apache-2.0，百度真实场景订正含多字少字；模型卡协议
+「文本纠错：\n{句}」chat template，do_sample=False，repetition_penalty=1.08；
+hf-mirror 下载 3.1GB，MPS bf16 batch=8）：
+
+| 集 | 指标 | 数值 |
+|---|---|---|
+| synthD 120 行 | 句级 exact | 21/120=17.5% |
+| synthD 120 行 | 漏字位边界（difflib src→clean ±2 容差） | 25/120=20.8% |
+| 公文/医答净句 400 | changed 句 | 12=3.0% |
+| 公文/医答净句 400 | insert 型 FP 句 | 1=0.25% |
+| 新闻净句 400 | changed 句 | 155=38.8% |
+| 新闻净句 400 | insert 型 FP 句 | 35=8.8% |
+
+勘误：首跑报的 boundary_ins=1/120 是指标 bug——`edits[].span` 坐标系与 src
+不符，上表边界已改按 difflib(src→clean) 现算；exact 数字不受影响。
+
+构成与形态：新闻域 155 changed 中 replace-only 改写 117（模型在改文风，非纠错）、
+纯 insert 13、纯 delete 10、ins+del 8、ins+replace 4，另有 1 条漂移出英文词
+（幻觉例）。数据卫生：新闻「决不仅→绝不仅」类坐实说明 cscdns correct 列自带
+残留错字，clean 参照非绝对干净。
+
+对照行：③ 判定 D 召回≈11%；p_err 探针 D 19-27/120 且 FP 47+129/800；
+CTC 1.5B D 边界 25/120 与 p_err 同水位、D 增量≤+10pp 且合成 D 对生成模型
+OOD（虚词删字≠其训练分布），而新闻域 insert 型 FP 8.8%/句 + 29% 改写率
+不可接受。判：**1.5B 臂 FP 不过关 → 7B（15GB 本地不可行）与 4B 臂不续，
+B 整线关闭**；若未来重启（如 twnlp/ChineseErrorCorrector3-4B，F1 avg 0.8521），
+门槛=新闻净句 insert 型 FP ≤1%/句 且 D 边界 ≥p_err+10pp。
+
+臂2（网关零样本差分对照，`tools/label-rollout/probe_gendiff.py`）：待跑——
+需要网关 key 完整值（交接中已被截断）。预期不高于臂1（零样本更爱改写），
+仅补数据点用。
+
+### C 接受边界 + 产品诚实标注：当前兜底
+
+检测路径文案明确「漏字型错误（少字）为当前覆盖限制」，与③-F 特征模型槽位
+并存；待有合格 insert 监督源（真实流量积累或外部授权数据）再回 A。
+
+### 推荐
+
+短期 C（零风险）；A 挂起等同源 insert 监督源出现；B 已按实测数字关闭。
+接入槽位（若 B 复活）：server.py L3_CHAR_GATE_URL 旁路新增③-F 漏字通道，
+块矩阵与数据流视图可见，且只接受 insert-only diff（改写型输出整句丢弃）。
+
 ## 纪律（不可违反）
 
 1. 污染隔离：该标注器见过公开集，v2* 不得用于评测 Qwen 同族；
