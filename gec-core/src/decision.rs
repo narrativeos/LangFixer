@@ -163,8 +163,8 @@ pub struct DecisionGecEngine {
 impl DecisionGecEngine {
     pub fn new(lang: impl Into<String>, config: DecisionConfig) -> Self {
         #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs.max(1)));
+        let mut builder =
+            reqwest::Client::builder().timeout(Duration::from_secs(config.timeout_secs.max(1)));
         #[cfg(test)]
         {
             // mock 全在 127.0.0.1，不走系统代理，见 statistical.rs 根因注释
@@ -236,7 +236,42 @@ impl DecisionGecEngine {
         })
     }
 
-    /// 调用决策模型服务，返回错误列表 + 弃权标记
+    /// 调用决策模型服务逐句送检，返回错误列表 + 弃权标记。
+    ///
+    /// 决策服务是句级分类器：整篇文本一次送检会把「某一句有错」合成成
+    /// `[0, 全文]` 的整篇错误。这里按 `docchunk::sentence_spans` 切句（与块矩阵
+    /// 句表同一切句器），逐句并发送检，句内 span 按句字节起点平移回全文。
+    /// 任一请求失败整体报错（调用方按既有回退路径降级）。
+    pub async fn decide(&self, text: &str) -> Result<DecideOutcome, DetectorError> {
+        let units: Vec<[usize; 2]> = crate::docchunk::sentence_spans(text)
+            .into_iter()
+            .filter(|[s, e]| !text[*s..*e].trim().is_empty())
+            .collect();
+        if units.is_empty() {
+            return Ok(DecideOutcome::default());
+        }
+        let results = futures_util::future::join_all(
+            units
+                .iter()
+                .map(|[s, e]| async { self.decide_unit(&text[*s..*e]).await.map(|o| (*s, o)) }),
+        )
+        .await;
+        let mut errors = Vec::new();
+        let mut any_abstained = false;
+        for r in results {
+            let (base, o) = r?;
+            any_abstained |= o.abstained;
+            for mut err in o.errors {
+                err.span = [err.span[0] + base, err.span[1] + base];
+                errors.push(err);
+            }
+        }
+        // 不变式：弃权 ⇒ 整体无错（任一句弃权且全文未产出错误才触发 level 2）
+        let abstained = any_abstained && errors.is_empty();
+        Ok(DecideOutcome { errors, abstained })
+    }
+
+    /// 对单个句子单元调用决策模型服务（`decide` 的内部拆分，逻辑与单句送检等价）。
     ///
     /// 弃权判定（三级响应 level 2 的触发信号）：
     /// - 显式 `abstain` 标志（服务方按契约输出）；
@@ -244,7 +279,7 @@ impl DecisionGecEngine {
     ///   `[GRAY_ZONE_LOW, abstain_threshold)`（不输出 abstain 字段的旧服务的兜底判定）。
     ///
     /// 概率低于灰区下界视为「明确无错」，不触发兜底。
-    pub async fn decide(&self, text: &str) -> Result<DecideOutcome, DetectorError> {
+    async fn decide_unit(&self, text: &str) -> Result<DecideOutcome, DetectorError> {
         // 熔断器：服务宕机跳闸后冷却期内立即失败（毫秒级），
         // 避免每次调用都等满超时（调用方按既有回退路径处理）
         if !self.breaker.allow_request() {
@@ -966,5 +1001,85 @@ mod tests {
         assert!(!outcome.abstained, "明确有错不应视为弃权");
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].source.as_deref(), Some("decision"));
+    }
+
+    #[tokio::test]
+    async fn decide_multi_sentence_localizes_to_sentence() {
+        // 句级模型逐句送检：句级合成错误落在出错句上，而非全文
+        let endpoint = mock_decide_server(std::sync::Arc::new(|t| {
+            if t.contains("使我") {
+                serde_json::json!({
+                    "has_error": true, "has_error_prob": 0.9,
+                    "error_type": "grammar", "abstain": false, "errors": []
+                })
+            } else {
+                serde_json::json!({ "has_error": false, "has_error_prob": 0.1, "abstain": false })
+            }
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let text = "今天天气很好。通过这次活动使我学到了很多。公园里花开了。";
+        let outcome = engine.decide(text).await.unwrap();
+        assert_eq!(outcome.errors.len(), 1);
+        let expect = crate::docchunk::sentence_spans(text)
+            .into_iter()
+            .find(|[s, e]| text[*s..*e].contains("使我"))
+            .unwrap();
+        assert_eq!(
+            outcome.errors[0].span, expect,
+            "句级错误应落在出错句字节区间，而非整篇文档"
+        );
+        assert_ne!(outcome.errors[0].span, [0, text.len()]);
+        assert_eq!(outcome.errors[0].original, text[expect[0]..expect[1]]);
+        assert!(!outcome.abstained);
+    }
+
+    #[tokio::test]
+    async fn decide_span_errors_offset_to_document() {
+        // span 级错误：服务字符偏移相对单句，换算字节后需按该句字节起点平移回全文
+        let endpoint = mock_decide_server(std::sync::Arc::new(|t| {
+            if t.contains("语病") {
+                serde_json::json!({
+                    "has_error": true, "has_error_prob": 0.9,
+                    "errors": [{
+                        "span": [0, 3], "error_type": "grammar",
+                        "confidence": 0.9, "message": "片段错误"
+                    }]
+                })
+            } else {
+                serde_json::json!({ "has_error": false, "has_error_prob": 0.1 })
+            }
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let text = "第一句没有错。这句话有语病。";
+        let outcome = engine.decide(text).await.unwrap();
+        assert_eq!(outcome.errors.len(), 1);
+        let unit = crate::docchunk::sentence_spans(text)
+            .into_iter()
+            .find(|[s, e]| text[*s..*e].contains("语病"))
+            .unwrap();
+        // 全 CJK：1 字 = 3 字节，服务字符偏移 [0,3] → 句内字节 [0,9] → 平移句起点
+        assert_eq!(outcome.errors[0].span, [unit[0], unit[0] + 9]);
+    }
+
+    #[tokio::test]
+    async fn decide_multi_sentence_any_abstain_reports_abstained() {
+        // 多句聚合：任一句灰区弃权且整体未检出→弃权（保持 abstained⇒无错误项不变式）
+        let endpoint = mock_decide_server(std::sync::Arc::new(|t| {
+            if t.contains("模糊") {
+                serde_json::json!({ "has_error": true, "has_error_prob": 0.3, "abstain": false })
+            } else {
+                serde_json::json!({ "has_error": false, "has_error_prob": 0.1, "abstain": false })
+            }
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let outcome = engine
+            .decide("正常句子甲。这句很模糊难判断。正常句子乙。")
+            .await
+            .unwrap();
+        assert!(outcome.abstained, "任一灰区句应上报弃权");
+        assert!(outcome.errors.is_empty());
     }
 }
