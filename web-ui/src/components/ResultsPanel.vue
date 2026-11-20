@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { summarizeRun } from '../lib/pipeline'
 import { layerStatusLabel, plainLayerLabel } from '../lib/labels'
+import { isVerdictOnly } from '../lib/errorDisplay'
 import { useGecStore } from '../stores/gec'
 import { toast, LButton, LSegmented } from '../ui'
 import type { LayerReport } from '../types'
@@ -16,9 +17,13 @@ const view = ref<PanelView>('errors')
 /** 三个页签:标签带计数,数量即工作台的注意力信号 */
 const viewOptions = computed(() => [
   { value: 'errors' as const, label: store.errors.length ? `检测结果 ${store.errors.length}` : '检测结果' },
-  { value: 'attribution' as const, label: store.analyzed.length ? `错误归因 ${store.analyzed.length}` : '错误归因' },
+  { value: 'attribution' as const, label: attributableCount.value ? `错误归因 ${attributableCount.value}` : '错误归因' },
   { value: 'llm' as const, label: 'AI 讲解' },
 ])
+
+/** 句级怀疑（决策模型待复查项）不进归因面（服务端已 skip，此处兜底旧服务端数据），
+ *  页签计数与自动切换都按可归因数计 */
+const attributableCount = computed(() => store.analyzed.filter((a) => !isVerdictOnly(a.error)).length)
 
 /** 「本次管线」摘要（T1-3）：检测完成后展示各层实际执行情况（跑了什么 / 各层耗时）。
  *  数据来自后端 timings（缓存命中等未实际检测时不返回 → 不显示本行） */
@@ -66,7 +71,7 @@ const qualityBadge = computed(() => {
 watch(
   () => store.resultsVersion,
   () => {
-    if (store.analyzed.length > 0) view.value = 'attribution'
+    if (attributableCount.value > 0) view.value = 'attribution'
     else if (store.errors.length > 0) view.value = 'errors'
   },
 )

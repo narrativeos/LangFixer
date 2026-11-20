@@ -49,6 +49,14 @@ export function confBand(e: ErrorItem): { label: string; type: 'success' | 'warn
   return { label: '把握较小', type: 'info' }
 }
 
+/** 句级怀疑（待复查）：决策模型的 verdict 判断——声称该句有错但未定位
+ *  错误点、无修改建议（典型：句级分类器产出 + AI 复查未完成/回退）。
+ *  它还不是可操作错误：不进归因（避免落进新手兜底桶冒充知识缺口），
+ *  在检测结果里标「待复查」；采纳/放弃仍记录为反馈数据供模型迭代 */
+export function isVerdictOnly(e: ErrorItem): boolean {
+  return e.source === 'decision' && !e.correction
+}
+
 /** 多层共识徽章文案：source + also_found_by 的全部命中层 */
 export function consensusText(e: ErrorItem): string {
   const layers = [e.source, ...(e.also_found_by ?? [])].filter(Boolean) as string[]

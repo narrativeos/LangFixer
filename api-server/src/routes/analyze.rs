@@ -126,8 +126,10 @@ pub async fn analyze(
 
     let mut analyzed = Vec::with_capacity(outcome.errors.len());
     for error in outcome.errors {
+        // 句级怀疑（决策模型 verdict、无改正）无具体错误点，归因只能落兜底桶：
+        // 跳过归因（错误仍保留在检测结果面展示/积累，待 AI 复查细化）
         let attribution = match &engine {
-            Some(engine) => {
+            Some(engine) if !is_verdict_only(&error) => {
                 // 英文错误：按 (error_type, original, correction) 推断具体知识点，
                 // 让决策表命中细粒度规则（如 article.3 不定冠词）。
                 // 数据优先：已发布知识点的改错对精确命中优先（新导入书自动参与归点），
@@ -174,7 +176,8 @@ pub async fn analyze(
                 }
                 Some(result)
             }
-            None => None,
+            // None（无归因引擎）或被 guard 拦下的句级怀疑
+            _ => None,
         };
         analyzed.push(AnalyzedError { error, attribution });
     }
@@ -253,4 +256,48 @@ pub async fn analyze(
         sentences: outcome.sentences,
         version,
     }))
+}
+
+/// 句级怀疑：决策模型产出、判句有错但未定位具体错误点（无 correction）。
+/// 这类条目不进归因面：归因只能落 grammar_novice 兜底桶，会掺水 §7 质量告警
+/// 与落库归因数据；错误本身仍随检测结果展示与积累，处置入口是采纳/放弃反馈。
+fn is_verdict_only(error: &shared_model::Error) -> bool {
+    error.source.as_deref() == Some(shared_model::sources::DECISION) && error.correction.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_verdict_only;
+
+    fn err(source: Option<&str>, correction: Option<&str>) -> shared_model::Error {
+        let mut e = shared_model::Error::new(
+            "zh",
+            shared_model::error_types::GRAMMAR,
+            0.5,
+            [0, 3],
+            "原文",
+            correction.map(str::to_string),
+            "msg",
+        );
+        e.source = source.map(str::to_string);
+        e
+    }
+
+    #[test]
+    fn verdict_only_predicate() {
+        // 决策模型 + 无改正 → 句级怀疑，跳过归因
+        assert!(is_verdict_only(&err(
+            Some(shared_model::sources::DECISION),
+            None
+        )));
+        // 决策模型 + 有改正（如 LLM 合流后）→ 正常归因
+        assert!(!is_verdict_only(&err(
+            Some(shared_model::sources::DECISION),
+            Some("改正")
+        )));
+        // 非决策来源不进此分支
+        assert!(!is_verdict_only(&err(Some("rule"), None)));
+        // 无来源（旧数据）不进此分支
+        assert!(!is_verdict_only(&err(None, None)));
+    }
 }

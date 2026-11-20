@@ -12,6 +12,7 @@ import {
   confBand,
   consensusText,
   instanceContext,
+  isVerdictOnly,
 } from '../lib/errorDisplay'
 import {
   buildMergedGroups,
@@ -332,6 +333,13 @@ watch(
         >
           {{ confBand(g.first.e).label }}
         </LTag>
+        <LTag
+          v-if="isVerdictOnly(g.first.e)"
+          tone="warn"
+          title="决策模型判断该句有错，但未定位具体错误点；待 AI 复查细化"
+        >
+          待复查
+        </LTag>
       </div>
       <div class="fix">
         <span class="original">{{ g.first.e.original }}</span>
@@ -341,6 +349,9 @@ watch(
         </template>
       </div>
       <div class="message">{{ g.first.e.message }}</div>
+      <div v-if="isVerdictOnly(g.first.e)" class="verdict-hint">
+        暂未定位具体错误点，AI 复查恢复后重新检测可得到具体修改建议；现在采纳/放弃会作为反馈数据记录，用于模型迭代
+      </div>
       <div class="llm-feedback">
         <!-- 同类合并组（N>1）：卡级「采纳 ×N」批量按钮 + 放弃（两段式，作用于组内全部实例）+ 展开的实例清单 -->
         <template v-if="g.items.length > 1">
@@ -636,6 +647,11 @@ watch(
   gap: var(--space-2);
 }
 .recall-test-note {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.verdict-hint {
+  margin-top: 2px;
   font-size: var(--fs-sm);
   color: var(--muted);
 }

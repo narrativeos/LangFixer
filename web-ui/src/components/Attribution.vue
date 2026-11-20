@@ -2,9 +2,15 @@
 import { useGecStore } from '../stores/gec'
 import { ATTRIBUTION_LABELS, WEINER_LABELS } from '../types'
 import { errorTypeLabel } from '../lib/labels'
+import { isVerdictOnly } from '../lib/errorDisplay'
+import { computed } from 'vue'
 import { LButton, LEmpty, LTag } from '../ui'
 
 const store = useGecStore()
+
+/** 句级怀疑（待复查）不进归因面：它没有具体错误点，归因只能落兜底桶，
+ *  展示出来是误导；它的处置入口在「检测结果」（待复查标注 + 采纳/放弃） */
+const attributable = computed(() => store.analyzed.filter((a) => !isVerdictOnly(a.error)))
 
 function label(key: string, table: Record<string, string>): string {
   return table[key] ?? key
@@ -19,7 +25,7 @@ function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
 
 <template>
   <LEmpty
-    v-if="store.analyzed.length === 0"
+    v-if="attributable.length === 0"
     :text="store.detectCompleted ? '检测完成，未发现需要归因的错误' : '暂无归因结果'"
     :hint="
       store.detectCompleted
@@ -28,7 +34,7 @@ function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
     "
   />
   <div v-else class="attr-list">
-    <div v-for="(item, i) in store.analyzed" :key="i" class="attr-card" :class="{ novice: isNoviceBucket(item) }">
+    <div v-for="(item, i) in attributable" :key="i" class="attr-card" :class="{ novice: isNoviceBucket(item) }">
       <div class="attr-head">
         <LTag>{{ errorTypeLabel(item.error.error_type) }}</LTag>
         <div class="fix">

@@ -89,11 +89,12 @@ export function modeLabel(level: number): string {
  * 层级人话词表（UX_REVIEW 原则 2「术语说人话」+ 桌面 HIG 渐进披露）：
  * 主界面（检测路径 / 历史详情 / 管线摘要）统一用它；内部键名（rule/feature/llm…）
  * 与引擎名只出现在 tooltip、设置页与运营页。一个概念一个名字：
- * decision/feature 同为「快速定案」，rule/statistical 同为「本地检查」。
+ * decision 是句级判断的「决策模型」，feature 是定案门控的「快速定案」，
+ * 两者职责不同不可同词；rule/statistical 同为「本地检查」。
  */
 export const PLAIN_LAYER_LABELS: Record<string, string> = {
   rule: '本地检查',
-  decision: '快速定案',
+  decision: '决策模型',
   knowledge: '知识查询',
   feature: '快速定案',
   llm: 'AI 复查',
