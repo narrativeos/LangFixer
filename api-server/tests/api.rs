@@ -418,6 +418,48 @@ async fn analyze_one_stop() {
 }
 
 #[tokio::test]
+async fn analyze_cache_hit_omits_timings() {
+    let base = start_server().await;
+    let body = serde_json::json!({
+        "lang": "en",
+        "text": "I saw a apple.",
+        "session_id": "cache-timings",
+    });
+    // 首次：实际执行检测，timings 随响应返回
+    let first: serde_json::Value = client()
+        .post(format!("{base}/gec/analyze"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(first.get("timings").is_some(), "实际检测应带 timings");
+    // 二次：LRU/历史命中（结果非本次实检）→ 不得返回 timings/layers，
+    // 否则前端「检测方式」会拿全零计时伪造出 ①规则 0ms / 其余层未运行的假执行轨迹
+    let second: serde_json::Value = client()
+        .post(format!("{base}/gec/analyze"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        second["errors"].as_array().unwrap().len(),
+        first["errors"].as_array().unwrap().len()
+    );
+    assert!(
+        second.get("timings").is_none(),
+        "缓存/历史命中不应返回 timings: {:?}",
+        second.get("timings")
+    );
+    assert!(second.get("layers").is_none(), "缓存命中不应返回 layers");
+}
+
+#[tokio::test]
 async fn session_get_and_record() {
     let base = start_server().await;
     let c = client();
@@ -3812,6 +3854,10 @@ async fn detect_failure_leaves_summary_row_and_alert() {
         .json()
         .await
         .unwrap();
-    assert_eq!(alerts["failure"]["rows"].as_i64(), Some(1), "仅引擎级失败计入: {alerts}");
+    assert_eq!(
+        alerts["failure"]["rows"].as_i64(),
+        Some(1),
+        "仅引擎级失败计入: {alerts}"
+    );
     assert_eq!(alerts["failure"]["triggered"].as_bool(), Some(true));
 }

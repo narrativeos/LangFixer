@@ -37,8 +37,10 @@ pub struct AnalyzeResponse {
     /// 决策模型是否弃权（仅决策层启用时有意义）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decision_abstained: bool,
-    /// 各阶段计时（规则 / NLP（含预热）/ 决策 / L3 / 召回 / LLM / 总耗时）
-    #[serde(default)]
+    /// 各阶段计时（规则 / NLP（含预热）/ 决策 / L3 / 召回 / LLM / 总耗时）；
+    /// 缓存命中等未实际检测时不返回（与 DetectResponse 同一口径，
+    /// 避免前端拿全零计时渲染出假的「检测方式」执行轨迹）
+    #[serde(default, skip_serializing_if = "gec_core::DetectTimings::is_empty")]
     pub timings: gec_core::DetectTimings,
     /// 本次结果来自历史复用（同文本 + 参数一致 + 无 LLM 的近期记录；
     /// 前端可展示「来自历史」提示）
