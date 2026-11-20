@@ -21,8 +21,10 @@ use crate::table::DecisionTableMeta;
 /// 切换切句器（如接入 HanLP）或改变边界规则都必须递增此版本，使句级层的
 /// 缓存键 / 历史复用自动漂移（Detect Pipeline v2 §3.1：句级分块的确定性只随本
 /// 版本变）。punct-v2：英文句号作边界（小数/省略号/文件名守卫）、引号收尾归句、
-/// 软换行不断句、空行分段（此前 punct-v1 仅 。！？；!?; 与每个换行）。
-pub const SPLITTER_VERSION: &str = "punct-v2";
+/// 软换行不断句、空行分段（此前 punct-v1 仅 。！？；!?; 与每个换行）；
+/// punct-v3：超长无标点段（>200 字）自动断句——分句线索优先（篇章标记 >
+/// 语气词/冒号/换行 > 顿逗）+ 字数兜底，确定性边界（见 docchunk::auto_break）。
+pub const SPLITTER_VERSION: &str = "punct-v3";
 
 /// 检测参数快照（存入历史 `params_json`；重复检测复用历史的比对依据）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

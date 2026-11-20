@@ -14,6 +14,9 @@
 pub const DEFAULT_CHUNK_CHARS: usize = 1500;
 /// 缺省上下文前缀长度（字符数）：上一块尾部送作只读上下文
 pub const DEFAULT_CONTEXT_CHARS: usize = 120;
+/// 句表句段字数上限：单段超过此值（缺标点/无终结符长串）进入自动断句路径
+/// （见 [`auto_break`]；正常有标点文本完全不受此 cap 影响）
+pub const SENTENCE_HARD_CAP: usize = 200;
 /// 段落超过 `target * LONG_PARA_FACTOR` 时按句切分；单句仍超过同阈值按字数硬切
 const LONG_PARA_FACTOR: usize = 2;
 
@@ -114,9 +117,121 @@ pub fn split_document_with_context(
 /// （知识召回层亦委派至此；版本向量的 splitter 成分即本实现的版本号）；句级
 /// 切分是全局唯一的一次结构切分（句表），供句覆盖统计、③-T 定向复查消费方复用；
 /// 其确定性只随 `shared_model::SPLITTER_VERSION` 变。空文本 → 空列表。
+///
+/// 超过 [`SENTENCE_HARD_CAP`] 字的无标点/无终结符长段进入自动断句（`auto_break`：
+/// 分句线索优先、字数兜底）；边界来源见 [`sentence_spans_with_origin`]。
 pub fn sentence_spans(text: &str) -> Vec<[usize; 2]> {
-    // target 取半上限：hard_cap = target×2 不溢出，且任何句子都不会超预算被硬切
-    split_sentences(text, 0, text.len(), usize::MAX >> 1)
+    sentence_spans_with_origin(text)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
+}
+
+/// 句段右边界来源（块矩阵/分块视图的「切分依据」展示用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryOrigin {
+    /// 句末标点串 / 空行段落边界 / 区段收尾（常规标点切句路径）
+    Punct,
+    /// 自动断句：篇章标记词（然而/但是/因此…）前切
+    Marker,
+    /// 自动断句：句末语气词 / 冒号 / 换行 / 顿逗后切，或英文句首大写字母前切
+    Pause,
+    /// 自动断句：窗口内无任何线索，字数硬切兜底
+    Fallback,
+}
+
+/// [`sentence_spans`] 的带来源标注版本：返回 (字节 span, 右边界来源)。
+/// 正常标点句段一律 [`BoundaryOrigin::Punct`]；超 cap 长段内部边界标
+/// Marker/Pause/Fallback。铺满/不重叠/字符边界不变式与 [`sentence_spans`] 相同。
+pub fn sentence_spans_with_origin(text: &str) -> Vec<([usize; 2], BoundaryOrigin)> {
+    punct_segments(text, 0, text.len())
+        .into_iter()
+        .flat_map(|[s, e]| {
+            if text[s..e].chars().count() > SENTENCE_HARD_CAP {
+                auto_break(text, s, e, SENTENCE_HARD_CAP)
+            } else {
+                vec![([s, e], BoundaryOrigin::Punct)]
+            }
+        })
+        .collect()
+}
+
+/// 自动断句的分句强线索词（须处从句首位；在其前切分）
+const MARKERS: &[&str] = &[
+    "然而", "但是", "可是", "因此", "所以", "于是", "而且", "并且", "不过", "此外", "另外", "其次",
+    "最后", "总之", "反之", "否则",
+];
+
+/// 超长无标点段自动断句：在字数窗口 `(cap/2, cap]` 内取**得分最高**的分句线索点
+/// （篇章标记 3 分 > 语气词/冒号/换行 2 分 > 顿逗/英文句首大写 1 分，同分取最靠后），
+/// 窗口无候选则在 cap 字处硬切兜底。**确定性纯函数**：同一输入边界恒同，铺满且
+/// 互不重叠；只在 [`SENTENCE_HARD_CAP`] 超限处触发，有标点文本零影响。
+fn auto_break(
+    text: &str,
+    start: usize,
+    end: usize,
+    cap: usize,
+) -> Vec<([usize; 2], BoundaryOrigin)> {
+    let chars: Vec<(usize, usize, char)> = text[start..end]
+        .char_indices()
+        .map(|(o, c)| (start + o, start + o + c.len_utf8(), c))
+        .collect();
+    let total = chars.len();
+    // 切点候选（下一片首字符下标 j，分数，来源）；按 j 非降序生成（供 partition_point）
+    let mut cands: Vec<(usize, u8, BoundaryOrigin)> = Vec::new();
+    for (i, &(bs, _, ch)) in chars.iter().enumerate() {
+        if i > 0 {
+            let prev = chars[i - 1].2;
+            // 篇章标记从句首前切（标记须完整落在本段内）
+            if MARKERS.iter().any(|m| text[bs..end].starts_with(m)) {
+                cands.push((i, 3, BoundaryOrigin::Marker));
+            }
+            // 空白后的英文句首大写字母前切
+            if ch.is_ascii_uppercase() && prev == ' ' {
+                cands.push((i, 1, BoundaryOrigin::Pause));
+            }
+        }
+        // 语气词/冒号/换行/顿逗在其后切
+        let after: Option<(u8, BoundaryOrigin)> = match ch {
+            '吗' | '呢' | '吧' | '嘛' | '：' | '、' | '，' | '\n' => {
+                Some((2, BoundaryOrigin::Pause))
+            }
+            ',' => Some((1, BoundaryOrigin::Pause)),
+            _ => None,
+        };
+        if let Some((score, origin)) = after {
+            if i + 1 < total {
+                cands.push((i + 1, score, origin));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut cur = 0usize;
+    while cur < total {
+        if total - cur <= cap {
+            out.push(([chars[cur].0, end], BoundaryOrigin::Punct));
+            break;
+        }
+        let lo = cur + cap / 2;
+        let hi = cur + cap;
+        let ci = cands.partition_point(|(j, _, _)| *j <= lo);
+        let cj = cands.partition_point(|(j, _, _)| *j <= hi);
+        match cands[ci..cj]
+            .iter()
+            .max_by_key(|(j, score, _)| (*score, *j))
+        {
+            Some(&(j, _, origin)) => {
+                out.push(([chars[cur].0, chars[j].0], origin));
+                cur = j;
+            }
+            None => {
+                // 无任何线索：字数兜底硬切（cap ≥ 2 且剩余 > cap ⇒ cur+cap ≤ total）
+                out.push(([chars[cur].0, chars[cur + cap].0], BoundaryOrigin::Fallback));
+                cur += cap;
+            }
+        }
+    }
+    out
 }
 
 /// 段级所有权铺满校验（截断探测器，Detect Pipeline v2 §7 告警①）：
@@ -194,7 +309,24 @@ pub fn is_sentence(text: &str, span: &[usize; 2]) -> bool {
 }
 
 /// 段落内按句边界切分；单句仍超过 `target * LONG_PARA_FACTOR` 时按字数硬切
+/// （预算块路径专用兜底；句表路径的自动断句见 [`auto_break`]）
 fn split_sentences(text: &str, start: usize, end: usize, target: usize) -> Vec<[usize; 2]> {
+    let hard_cap = target * LONG_PARA_FACTOR;
+    punct_segments(text, start, end)
+        .into_iter()
+        .flat_map(|[s, e]| {
+            if text[s..e].chars().count() > hard_cap {
+                hard_split(text, s, e, hard_cap)
+            } else {
+                vec![[s, e]]
+            }
+        })
+        .collect()
+}
+
+/// 标点边界切分（无字数兜底）：句末标点串（含英文句号守卫）+ 空行分段；
+/// 软换行不断句。返回铺满且互不重叠的 span 序列
+fn punct_segments(text: &str, start: usize, end: usize) -> Vec<[usize; 2]> {
     let chars: Vec<(usize, usize, char)> = text[start..end]
         .char_indices()
         .map(|(o, c)| (start + o, start + o + c.len_utf8(), c))
@@ -244,16 +376,7 @@ fn split_sentences(text: &str, start: usize, end: usize, target: usize) -> Vec<[
     if seg_start < end {
         segs.push([seg_start, end]);
     }
-    let hard_cap = target * LONG_PARA_FACTOR;
-    segs.into_iter()
-        .flat_map(|[s, e]| {
-            if text[s..e].chars().count() > hard_cap {
-                hard_split(text, s, e, hard_cap)
-            } else {
-                vec![[s, e]]
-            }
-        })
-        .collect()
+    segs
 }
 
 /// 按字符数硬切（UTF-8 边界安全）
@@ -478,5 +601,110 @@ mod tests {
         assert_eq!(sp.len(), 1);
         assert_eq!(&t[sp[0][0]..sp[0][1]], "abc");
         assert!(!is_sentence("好。\n", &[6, 7]));
+    }
+
+    // ── 自动断句（punct-v3）──
+
+    /// 不变式：铺满、不重叠、字符边界对齐、每段 ≤ SENTENCE_HARD_CAP 字
+    fn assert_spans_tile(t: &str, sp: &[[usize; 2]], capped: bool) {
+        assert_eq!(sp[0][0], 0);
+        assert_eq!(sp.last().unwrap()[1], t.len());
+        for w in sp.windows(2) {
+            assert_eq!(w[0][1], w[1][0], "铺满且互不重叠");
+        }
+        assert_eq!(unowned_bytes(t.len(), sp), 0);
+        for s in sp {
+            assert!(t.is_char_boundary(s[0]) && t.is_char_boundary(s[1]));
+            if capped {
+                assert!(t[s[0]..s[1]].chars().count() <= SENTENCE_HARD_CAP, "超 cap");
+            }
+        }
+    }
+
+    #[test]
+    fn auto_break_caps_punctuation_free_run() {
+        let t = "内容".repeat(225); // 450 字无任何线索
+        let sp = sentence_spans(&t);
+        assert!(sp.len() >= 3, "450 字应切成 ≥3 段: {}", sp.len());
+        assert_spans_tile(&t, &sp, true);
+        // 兜底硬切在 cap 处，末段收尾在段尾
+        let o = sentence_spans_with_origin(&t);
+        assert_eq!(o[0].1, BoundaryOrigin::Fallback);
+        assert_eq!(o.last().unwrap().1, BoundaryOrigin::Punct);
+    }
+
+    #[test]
+    fn auto_break_prefers_discourse_marker() {
+        let t = format!("{}然而{}", "一".repeat(150), "二".repeat(100));
+        let o = sentence_spans_with_origin(&t);
+        assert_eq!(o.len(), 2);
+        assert_eq!(o[0].1, BoundaryOrigin::Marker);
+        // 切点在「然」前：首段不含然而，次段以然而开头
+        assert!(!t[o[0].0[0]..o[0].0[1]].contains("然而"));
+        assert!(t[o[1].0[0]..].starts_with("然而"));
+        assert_spans_tile(&t, &o.iter().map(|x| x.0).collect::<Vec<_>>(), true);
+    }
+
+    #[test]
+    fn auto_break_beats_pause_over_comma_and_prefers_higher_score() {
+        // 顿逗在窗口内但篇章标记分更高 → 选标记；无标记时选顿逗
+        let both = format!(
+            "{}，{}然而{}",
+            "甲".repeat(110),
+            "乙".repeat(50),
+            "丙".repeat(40)
+        );
+        let o = sentence_spans_with_origin(&both);
+        assert_eq!(o[0].1, BoundaryOrigin::Marker, "同窗口内高分优先");
+
+        let comma = format!("{}，{}", "甲".repeat(150), "乙".repeat(120));
+        let o2 = sentence_spans_with_origin(&comma);
+        assert_eq!(o2[0].1, BoundaryOrigin::Pause);
+        // 顿逗归属前段
+        assert!(comma[o2[0].0[0]..o2[0].0[1]].ends_with('，'));
+    }
+
+    #[test]
+    fn auto_break_modal_particle_ends_sentence() {
+        let t = format!("{}吗 {}", "甲".repeat(140), "乙".repeat(120));
+        let o = sentence_spans_with_origin(&t);
+        assert_eq!(o[0].1, BoundaryOrigin::Pause);
+        assert!(t[o[0].0[0]..o[0].0[1]].ends_with('吗'));
+    }
+
+    #[test]
+    fn under_cap_text_boundaries_unchanged_and_marked_punct() {
+        // cap 以下的有标点文本：边界与标点切句一致，来源全 Punct
+        let t = format!("{}。{}", "甲".repeat(120), "乙".repeat(130));
+        let o = sentence_spans_with_origin(&t);
+        assert_eq!(
+            o.len(),
+            2,
+            "cap 不切正常标点句: {:?}",
+            o.iter().map(|x| x.0).collect::<Vec<_>>()
+        );
+        assert!(o.iter().all(|x| x.1 == BoundaryOrigin::Punct));
+        let p: Vec<[usize; 2]> = o.iter().map(|x| x.0).collect();
+        assert_spans_tile(&t, &p, false);
+    }
+
+    #[test]
+    fn auto_break_is_deterministic() {
+        let t = format!(
+            "{}。{}，{}然而{}{}",
+            "甲".repeat(60),
+            "乙".repeat(320),
+            "丙".repeat(90),
+            "丁".repeat(50),
+            "。\n\n".repeat(3) + &"戊".repeat(240)
+        );
+        let a = sentence_spans_with_origin(&t);
+        let b = sentence_spans_with_origin(&t);
+        assert_eq!(
+            a.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(),
+            b.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>()
+        );
+        let p: Vec<[usize; 2]> = a.iter().map(|x| x.0).collect();
+        assert_spans_tile(&t, &p, true);
     }
 }

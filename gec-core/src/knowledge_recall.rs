@@ -187,6 +187,19 @@ mod tests {
     }
 
     #[test]
+    fn split_sentences_splits_overlong_run_without_punctuation() {
+        // 委派口径：超 cap 无标点长段自动断句（punct-v3）；span 铺满不重叠
+        let s = "内容".repeat(150); // 300 字
+        let out = split_sentences(&s);
+        assert!(out.len() >= 2, "超长无标点段应被自动断句: {}", out.len());
+        assert_eq!(out[0].1, 0);
+        assert_eq!(out.last().unwrap().2, s.len());
+        for w in out.windows(2) {
+            assert_eq!(w[0].2, w[1].1);
+        }
+    }
+
+    #[test]
     fn split_sentences_skips_empty() {
         // 纯标点片段不算句子
         let out = split_sentences("。。。abc");
