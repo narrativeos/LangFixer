@@ -17,6 +17,15 @@
   A 线（句级标注 insert 打标）无现成破法挂起；采 C 线（接受边界+诚实标注）为当前兜底。
   附：`eval_ctc.py`/`probe_gendiff.py` 入库，边界指标改按 difflib(src→clean) 现算
   （旧 `edits[].span` 坐标系与 src 不符，首跑 boundary_ins=1/120 作废）。
+- **灰区 ③ 协议 A/B 实测 no-go**：真实 ② 灰区集（MuCGEC funnel 缓存 llm_ran
+  380 句）上把 ③ 从判定协议换成订正差分协议：I-content 召回 12.9% vs
+  判定臂 53-55%，句级 29.6% vs 71-72%，S 27.2%/D 21.8% 均塔陷；gold 级
+  增量仅 I +3.9pp（差分臂独得 38/976）、S +4.6pp、D +4.3pp，代价 23 句独得
+  FP——synthD 协议红利系合成伪影（真实灰区 I 位已由 ② 定位，去候选后模型
+  自主发现漏字能力极低），盲区瓶颈定位回 ② 定位与 insert 监督；两臂都漏的
+  401 个 I 位为后续主攻面。`eval_diff_protocol.py` 入库（字节坐标统一，
+  生成缓存可续跑）。报告 `datasets/eval_reports/
+  20261120T101244Z_mucgec_gray380_diff-protocol.md`。
 
 - **rollout D 类取证判决**：「的」漏字规则点不立（NACGEC 漏「的」仅 0.45%、true_gold 2 例、
   多落可省位，谓词精度不可达）；盲区复测 `--d-exclude` 120 行非-的虚词坐实 11%，

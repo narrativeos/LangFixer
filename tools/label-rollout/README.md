@@ -132,6 +132,55 @@ temperature=0，SYS「只修错字与缺失字…一字不改」，已跑完）�
 
 FP 形态：标点补插、「的」文风插、空白插入为主（另见真实漏「有限公司」补回例）。
 
+### B' 灰区 ③ 协议 A/B：实测 no-go（真实灰区上判定协议全面占优）
+
+B 节「缺口在协议不在模型」信号系在**合成** synthD 120 句上测得。本轮把它落到
+真实 ② 灰区集：MuCGEC funnel 缓存 `llm_ran=true` 380 句（= ② 在生产路径上
+真实交给 ③ 的灰区），gold 为字节坐标（与 `make_gold_zh.py` 及 Rust 预测同口径）。
+三臂（`eval_diff_protocol.py`）：判定臂 funnel27b=缓存 ③ 预测（带 ② 候选，
+模型 qwen3.8-27b）；判定臂 Qwen3.8=capability 缓存 `source==llm` 预测（与差分
+臂同模型）；差分臂 Qwen3.8=同句同模型去 ② 候选只换协议（SYS 照搬臂 2，
+temperature=0，difflib src→out 字级 diff）。
+
+| 指标 | 判定臂 funnel27b | 判定臂 Qwen3.8 | 差分臂 Qwen3.8 |
+|---|---|---|---|
+| I-content 句级召回 | 225/311=72.3% | 222/311=71.4% | 92/311=29.6% |
+| I-content 召回 | 537/976=55.0% | 517/976=53.0% | 126/976=12.9% |
+| I-punct 召回 | 41/74=55.4% | 43/74=58.1% | 10/74=13.5% |
+| S 召回 | 615/935=65.8% | 564/935=60.3% | 254/935=27.2% |
+| D 召回 | 364/582=62.5% | 353/582=60.7% | 127/582=21.8% |
+| FP wide（含零宽插入） | 24 | 57 | 31 |
+| FP prod（宽度>0） | 21 | 43 | 20 |
+
+增量口径（gold 级逐条判，funnel 臂 vs 差分臂）：I-content 差分臂独立贡献仅
+38/976=+3.9pp（判定臂独得 449、两臂同得 88、双双漏掉 401）；S +4.6pp、
+D +4.3pp；代价是差分臂独有 FP 句 23 句（判定臂 18）。
+
+判：**no-go**。三点收获：
+
+1. synthD 差分涨幅（≈49%）不迁移到真实灰区：真实灰区 I 位大多已被 ② 定位
+   带进 ③，去掉 ② 候选后模型在真实学习者句上自主发现漏字的能力极低（12.9%）；
+   synthD「整句被删字、通读即可补」是灰区里少数形态，协议红利系合成伪影；
+2. 两臂都漏的 401 个 I 位才是当前 ② 定位下真实灰区的漏字盲区真身——瓶颈在
+   ② 定位与 insert 监督（回 A 线前提），不在 ③ 协议；判定协议 55% 即 ③ 对
+   灰区 I 的现实上限；
+3. 混合（判定∩差集并集）以 +3.9pp I 换 23 句新 FP，不值。
+
+caveats：funnel 臂模型为 qwen3.8-27b（本轮网关该模型上游不可用，差分臂只能
+跑 Qwen3.8，跨模型对比看 capability 臂更净）；I 命中容差 ±2 为字节坐标
+（≈字边界严格匹配）；灰区选取=funnel 缓存中 ③ 真实跑过的句。
+
+复现：语料 `gray380.jsonl` 每行 `{text,gold,judge_a,judge_b}`——text/gold 取
+`datasets/eval_reports/cache/mucgec_current_none_funnel.jsonl` 中 `llm_ran=true`
+的句（gold 对齐 `datasets/mucgec_gold.json` 去重编辑，字节坐标），judge_a=该
+缓存 ③ 预测，judge_b=`mucgec_current_none_capability.jsonl` 同句
+`preds[source==llm]`；跑 `python3 tools/label-rollout/eval_diff_protocol.py
+--model Qwen3.8 --cache <生成缓存>`（生成可断点续跑）；报告
+`datasets/eval_reports/20261120T101244Z_mucgec_gray380_diff-protocol.md`。
+排障：差分臂首跑 span 用工符坐标与字节坐标 gold 错位，召回被误判为 1-5%；
+改字节坐标后重跑。灰区评测务必统一字节坐标（与 747fad7 勘误 `eval_ctc.py`
+坐标系 bug 同源）。
+
 判：整句无条件接入两臂均 FP 不过关，**B 直连路线关闭，7B/4B 本地臂不续**；
 若未来重启（如 twnlp/ChineseErrorCorrector3-4B，F1 avg 0.8521），门槛=新闻净句
 insert 型 FP ≤1%/句 且 D 边界 ≥p_err+10pp。但结论分裂出重要信号：零样本差分
@@ -146,13 +195,9 @@ D 弱点的相当部分是**协议问题而非模型问题**：要模型「指�
 
 ### 推荐
 
-短期 C（零风险）；A 挂起等同源 insert 监督源出现；B 直连已按实测关闭。
-唯一有前景的后续实验：**③ 协议改造**——在 ② 门控灰区集（错句密度远高于
-净句集）上把 ③ 从判定协议改为订正差分协议（SYS 照搬臂2），量 D 召回
-11%→? 涨幅与对正确部分 precision 跌幅（臂2 提示上限近 50pp；灰区先验会把
-8-11% 无条件 FP 换成灰区条件 FP，比值比净句集上健康）。接入槽位（若达标）：
-server.py L3_CHAR_GATE_URL 旁路新增③-F 漏字通道，块矩阵与数据流视图可见，
-且只接受 insert-only diff（改写型输出整句丢弃）。
+短期 C（零风险）；A 挂起等同源 insert 监督源出现；B 直连已按实测关闭；
+B'（③ 协议改造）已实测 no-go（见上节），接入槽位作废。盲区后续回到
+② 定位能力与 insert 监督源两条主线。
 
 另：本次排障发现旧会话落盘脚本里 Authorization 字面量被脱敏层写成 `"***"`
 （已在 `9fc01e0` 修正），提醒：**凡是旧会话写的带凭据字面量脚本，用前先查盘上字节**。
