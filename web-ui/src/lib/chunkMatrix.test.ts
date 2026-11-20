@@ -38,8 +38,9 @@ describe('chunkMatrix 投影', () => {
   })
 
   it('单元格：命中→hit 计条数；层 skipped→灰；无 layers 报告时命中仍 hit、未命中 pending', () => {
+    // 字节 span：每字 3 字节，两块各 12 字节
     const text = '第一块文第二块文'
-    const units = { spans: [[0, 4], [4, 8]] as [number, number][], origins: ['punct', 'pause'] as const }
+    const units = { spans: [[0, 12], [12, 24]] as [number, number][], origins: ['punct', 'pause'] as const }
     const cols = [
       { key: 'rule', no: '①', label: '规则检测' },
       { key: 'knowledge', no: '②.5', label: '知识召回' },
@@ -91,10 +92,39 @@ describe('chunkMatrix 投影', () => {
     expect(rows[0].cells.llm.hits).toBe(1)
   })
 
+  it('CJK 字节 span 预览不错位（字节→UTF-16 口径转换）', () => {
+    // 本用例是错位 bug 的回归测试：直接 slice 字节位会在纯中文文本上成倍偏移
+    const text = '武汉大学图书馆。' + '东湖风光很好。' // 字节：首句 8 字 24B，次句 7 字 21B
+    const rows = buildChunkMatrix({
+      text,
+      units: { spans: [[0, 24], [24, 45]], origins: ['punct', 'punct'] },
+      errors: [],
+      columns: [],
+      layers: null,
+    })
+    expect(rows.map((r) => r.preview)).toEqual(['武汉大学图书馆。', '东湖风光很好。'])
+    expect(rows.map((r) => r.chars)).toEqual([8, 7])
+    expect(rows[1].text).toBe('东湖风光很好。')
+  })
+
+  it('纯空白/零宽铺满片段不进矩阵行（与 quality 句覆盖同口径）', () => {
+    const text = '一。\n\n\n二。' // 字节：[0,6) [6,9)纯空白 [9,15]
+    const rows = buildChunkMatrix({
+      text,
+      units: { spans: [[0, 6], [6, 9], [9, 15]], origins: ['punct', 'punct', 'punct'] },
+      errors: [],
+      columns: [],
+      layers: null,
+    })
+    expect(rows.map((r) => r.preview)).toEqual(['一。', '二。'])
+    expect(rows[1].origin).toBe('punct')
+  })
+
   it('预览折叠空白并截断，字符数按码点计', () => {
     const rows = buildChunkMatrix({
       text: '短\n\n句   子' + '长'.repeat(50),
-      units: { spans: [[0, 58]], origins: ['punct'] },
+      // 字节：短3+换行2+句3+空格3+子3=14，长×50=150 → [0,164)
+      units: { spans: [[0, 164]], origins: ['punct'] },
       errors: [],
       columns: [],
       layers: null,

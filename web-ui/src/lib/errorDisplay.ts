@@ -5,6 +5,7 @@
  * 全部无副作用（instanceContext 接收 text 参数而非读 store）。
  */
 import type { ErrorItem } from '../types'
+import { byteToU16Map } from './span'
 import { PLAIN_LAYER_LABELS } from './labels'
 
 export const CAT_LABELS: Record<string, string> = {
@@ -57,14 +58,7 @@ export function consensusText(e: ErrorItem): string {
 /** 同类组实例清单的上下文文案：以「…前文【original】后文…」展示该实例在原文中的位置，
  *  替代裸 UTF-8 字节偏移（对用户无意义）。span 换算与 lib/correct.ts 同口径。 */
 export function instanceContext(text: string, e: ErrorItem): string {
-  const byteToU16 = new Map<number, number>()
-  let byte = 0
-  for (let u = 0; u < text.length; ) {
-    byteToU16.set(byte, u)
-    const cp = text.codePointAt(u) ?? 0
-    byte += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
-    u += cp > 0xffff ? 2 : 1
-  }
+  const byteToU16 = byteToU16Map(text)
   const a = byteToU16.get(e.span[0]) ?? -1
   const b = byteToU16.get(e.span[1]) ?? -1
   if (a < 0 || b <= a || b > text.length) return e.original

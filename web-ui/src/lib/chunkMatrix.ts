@@ -1,13 +1,17 @@
 // 块矩阵视图：句表（块行）× 检测层（列）的命中矩阵投影。
 //
 // 行来源 = units 事件（后端全局唯一切句器的句表，前端绝不自行切句）；
-// 单元格 = 错误项 span 与各块区间的重叠投影（source 产出层 + also_found_by
+// 口径：span 一律 UTF-8 字节偏移（与错误项同源），预览/计数经 lib/span 转
+// UTF-16 索引后切片；命中投影是字节 span × 字节 span 的重叠比较，无需转换。
+// 纯空白/纯标点铺满片段（所有权不变式所需）不进矩阵行，与 quality 句覆盖同口径。
+// 单元格 = 错误项与各块的重叠投影（source 产出层 + also_found_by
 // 共识层），零后端结果改动。③-T 结果按 llm 归因（layers 不含 targeted，
 // 与 StageProgress 层视图同一口径），stat 臂在级联的 rule 位执行（段级事件
 // 亦为 stage=rule），故 statistical 并入 rule 列。
 
 import type { ErrorItem, LayerReport, StageEvent } from '../types'
 import { STAGE_META, STAGE_ORDER } from './pipeline'
+import { byteToU16Map } from './span'
 
 export type ChunkOrigin = 'punct' | 'marker' | 'pause' | 'fallback'
 
@@ -28,7 +32,10 @@ export interface MatrixCell {
 }
 
 export interface MatrixRow {
+  /** 字节偏移（与错误项同口径） */
   span: [number, number]
+  /** 块原文（title 展示用） */
+  text: string
   chars: number
   origin: ChunkOrigin
   /** 文本预览（空白折叠，超长截断） */
@@ -79,11 +86,15 @@ export function buildChunkMatrix(args: {
 }): MatrixRow[] {
   const statusOf = new Map<string, string>()
   for (const l of args.layers ?? []) statusOf.set(l.layer, l.status)
-  return args.units.spans.map(([s, e], i) => {
-    const raw = args.text.slice(s, e)
-    const preview =
-      raw.replace(/\s+/g, ' ').trim().slice(0, 40) +
-      (raw.replace(/\s+/g, ' ').trim().length > 40 ? '…' : '')
+  const b2u = byteToU16Map(args.text)
+  const rows: MatrixRow[] = []
+  args.units.spans.forEach(([s, e], i) => {
+    const a = b2u.get(s)
+    const b = b2u.get(e)
+    if (a === undefined || b === undefined || b <= a) return
+    const raw = args.text.slice(a, b)
+    const flat = raw.replace(/\s+/g, ' ').trim()
+    if (!flat) return // 纯空白/越界铺满片段不进矩阵
     const cells: Record<string, MatrixCell> = {}
     for (const col of args.columns) {
       const active = layerActive(statusOf.get(col.key))
@@ -95,14 +106,16 @@ export function buildChunkMatrix(args: {
             ? { status: hits ? 'hit' : 'pending', hits }
             : { status: hits ? 'hit' : 'pass', hits }
     }
-    return {
-      span: [s, e] as [number, number],
+    rows.push({
+      span: [s, e],
+      text: raw,
       chars: [...raw].length,
       origin: args.units.origins[i] ?? 'punct',
-      preview,
+      preview: [...flat].slice(0, 40).join('') + ([...flat].length > 40 ? '…' : ''),
       cells,
-    }
+    })
   })
+  return rows
 }
 
 /** 列 = 本次 start 事件声明的管线层（顺序与层视图一致）；③-T 不单列（归因 llm） */

@@ -389,7 +389,7 @@ const stateText = computed(() => {
         <tbody>
           <tr v-for="(r, i) in matrixRows" :key="r.span[0]">
             <td class="cm-idx">{{ i + 1 }}</td>
-            <td class="cm-prev" :title="matrixText.slice(r.span[0], r.span[1])">{{ r.preview }}</td>
+            <td class="cm-prev" :title="r.text">{{ r.preview }}</td>
             <td class="cm-chars">{{ r.chars }}</td>
             <td class="cm-origin">{{ ORIGIN_LABELS[r.origin] }}</td>
             <td v-for="c in matrixColumns" :key="c.key" class="cm-cell" :class="'cm-' + r.cells[c.key].status">
