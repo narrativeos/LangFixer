@@ -629,10 +629,14 @@ async def l3_retrain(request: Request) -> JSONResponse:
         return JSONResponse({"error": "重训练进行中，请稍后再试"}, status_code=409)
     try:
         import l3_finetune
+        from balance import balance_confirmed
         from l3_finetune import compute_f1
 
         data_dir = os.path.join(_l3_data_dir(), lang)
-        confirmed = _load_confirmed(lang)
+        # 训练侧增量配平：飞轮 confirmed 绝大多数是 clean（实测 527:7），整份并入
+        # 21 维模型会教出「见句判干净」的漏报；error 全保留，clean 按 1:RATIO
+        # 封顶+FLOOR 保底。n-gram 重建支路另读全量 confirmed，语料信息不丢
+        confirmed, balance_info = balance_confirmed(_load_confirmed(lang))
 
         # ① 合并训练集：base（gold，特征或原始格式）+ confirmed（原始文本 → 重抽特征）
         base_src = os.path.join(data_dir, "train.features.jsonl")
@@ -704,6 +708,7 @@ async def l3_retrain(request: Request) -> JSONResponse:
                         "after_f1": new_report["f1"] if new_report else None,
                         "per_class_regressions": class_regressions,
                         "samples": {"confirmed": len(confirmed), "base": len(base_rows), "total": len(merged)},
+                        "balance": balance_info,
                     }
                 )
             model.models[lang] = new_bundle
@@ -717,6 +722,7 @@ async def l3_retrain(request: Request) -> JSONResponse:
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             "confirmed": len(confirmed),
             "total": len(merged),
+            "balance": balance_info,
             "f1": new_report["f1"] if new_report else None,
             "swapped": swapped,
         }
@@ -748,6 +754,7 @@ async def l3_retrain(request: Request) -> JSONResponse:
                 "before_f1": old_report["f1"] if old_report else None,
                 "after_f1": new_report["f1"] if new_report else None,
                 "samples": {"confirmed": len(confirmed), "base": len(base_rows), "total": len(merged)},
+                "balance": balance_info,
                 "ngram": ngram_result,
             }
         )
