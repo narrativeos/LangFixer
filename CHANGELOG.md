@@ -9,8 +9,11 @@
 - **漏字盲区外部方案调研收口**：生成式订正差分实测（shibing624/chinese-text-correction-1.5b
   本地 MPS）——D 侧 synthD exact 21/120=17.5%、漏字位边界（difflib 重算）25/120=20.8%，
   与 p_err 探针同水位；干净侧公文域 FP 句 3.0%（insert 型 0.25%）、新闻域 FP 句 38.8%
-  （insert 型 8.8%，主体是 replace-only 改写+1 条英文漂移幻觉）——FP 不过关，
-  B 线（生成式差分）关闭，7B/4B 臂不续；TW-NLP difflib 打标自认纯 insert 标签全 0，
+  （insert 型 8.8%，主体是 replace-only 改写+1 条英文漂移幻觉）；网关 Qwen3.8 零样本差分臂
+  D 侧边界 59/120=49.2%（exact 44.2%）但干净侧 insert 型 FP 公文 8.5%/新闻 11.5%——
+  两臂均不过 FP 门槛，B 线（生成式差分直连）关闭、7B/4B 臂不续；但零样本差分协议
+  D 侧召回远超同模型判定协议（49.2% vs ≈11%），坐实漏字弱点相当部分是协议问题，
+  后续实验=灰区集上 ③ 改订正差分协议；TW-NLP difflib 打标自认纯 insert 标签全 0，
   A 线（句级标注 insert 打标）无现成破法挂起；采 C 线（接受边界+诚实标注）为当前兜底。
   附：`eval_ctc.py`/`probe_gendiff.py` 入库，边界指标改按 difflib(src→clean) 现算
   （旧 `edits[].span` 坐标系与 src 不符，首跑 boundary_ins=1/120 作废）。
