@@ -313,33 +313,36 @@ impl DecisionGecEngine {
         })?;
         self.breaker.on_success();
 
-        // 1. 服务返回 span 级错误（微调后细化）→ 直接映射（明确判断，非弃权）；
-        //    服务 span 为字符偏移（Python 语义），换算为字节偏移后入 `Error.span`
+        // 1. 服务返回 span 级错误（微调后细化）→ 映射后产出；
+        //    置信度低于弃权阈值的报错属噪声级（降级服务对任意句都报 ~0.5），
+        //    不定案，转为弃权信号交由兜底（level 2）判定
         if !body.errors.is_empty() {
-            let errors = body
-                .errors
-                .into_iter()
-                .map(|e| {
-                    let mut err = Error::new(
-                        &self.lang,
-                        map_error_type(e.error_type()),
-                        e.confidence,
-                        char_span_to_bytes(text, e.span),
-                        e.original,
-                        e.correction,
-                        if e.message.is_empty() {
-                            "决策模型检出错误"
-                        } else {
-                            &e.message
-                        },
-                    );
-                    err.source = Some(sources::DECISION.to_string());
-                    err
-                })
-                .collect();
+            let mut errors = Vec::new();
+            let mut uncertain = false;
+            for e in body.errors {
+                if e.confidence < self.config.abstain_threshold {
+                    uncertain = true;
+                    continue;
+                }
+                let mut err = Error::new(
+                    &self.lang,
+                    map_error_type(e.error_type()),
+                    e.confidence,
+                    char_span_to_bytes(text, e.span),
+                    e.original,
+                    e.correction,
+                    if e.message.is_empty() {
+                        "决策模型检出错误"
+                    } else {
+                        &e.message
+                    },
+                );
+                err.source = Some(sources::DECISION.to_string());
+                errors.push(err);
+            }
             return Ok(DecideOutcome {
+                abstained: uncertain && errors.is_empty(),
                 errors,
-                abstained: false,
             });
         }
 
@@ -1081,5 +1084,74 @@ mod tests {
             .unwrap();
         assert!(outcome.abstained, "任一灰区句应上报弃权");
         assert!(outcome.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decide_span_error_below_threshold_abstains() {
+        // 服务报 span 级错误但置信度低于弃权阈值（噪声级）→ 不定案，按弃权处理交给兜底
+        let endpoint = mock_decide_server(std::sync::Arc::new(|_| {
+            serde_json::json!({
+                "has_error": true,
+                "has_error_prob": 0.4,
+                "abstain": false,
+                "errors": [
+                    {
+                        "error_type": "grammar",
+                        "confidence": 0.4,
+                        "span": [0, 6],
+                        "original": "这个句子正确",
+                        "correction": null,
+                        "message": "决策模型判定该句存在错误（句级判断）"
+                    }
+                ]
+            })
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let outcome = engine.decide("这个句子正确。").await.unwrap();
+        assert!(
+            outcome.errors.is_empty(),
+            "低于阈值的置信度不应产出定案错误"
+        );
+        assert!(
+            outcome.abstained,
+            "声称有错但置信不足应弃权（交由兜底判定）"
+        );
+    }
+
+    #[tokio::test]
+    async fn decide_span_errors_mixed_confidence_keeps_confident_only() {
+        // 同一句多个 span 错误：仅保留置信达标的，低置信丢弃且不算弃权
+        let endpoint = mock_decide_server(std::sync::Arc::new(|_| {
+            serde_json::json!({
+                "has_error": true,
+                "has_error_prob": 0.9,
+                "abstain": false,
+                "errors": [
+                    {
+                        "error_type": "collocation",
+                        "confidence": 0.9,
+                        "span": [0, 1],
+                        "original": "甲",
+                        "correction": "乙",
+                        "message": "用词不当"
+                    },
+                    {
+                        "error_type": "grammar",
+                        "confidence": 0.4,
+                        "span": [2, 4],
+                        "original": "噪声",
+                        "correction": null,
+                        "message": ""
+                    }
+                ]
+            })
+        }))
+        .await;
+        let engine = DecisionGecEngine::new("zh", config(endpoint));
+        let outcome = engine.decide("甲是个噪声句。").await.unwrap();
+        assert_eq!(outcome.errors.len(), 1, "仅保留置信达标的错误");
+        assert_eq!(outcome.errors[0].correction.as_deref(), Some("乙"));
+        assert!(!outcome.abstained, "已有定案错误不算弃权");
     }
 }
