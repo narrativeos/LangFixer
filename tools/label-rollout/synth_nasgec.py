@@ -242,6 +242,7 @@ def main() -> None:
     ap.add_argument("--per-sentence", type=int, default=1, help="每句最多产出几条注入行")
     ap.add_argument("--set-name", default="synth")
     ap.add_argument("--limit", type=int, default=0, help="最多产出行数")
+    ap.add_argument("--d-exclude", default="", help="D 操作不删的虚词字符集（取证：「的」可省率高，排除后测真盲区）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -250,6 +251,10 @@ def main() -> None:
     assert a.clean and a.out, "--clean 与 --out 必填（或 --selftest）"
     if AD:
         AD.set_seed(a.seed)
+    if a.d_exclude:
+        global DEL_CHARS
+        DEL_CHARS = [c for c in DEL_CHARS if c not in set(a.d_exclude)]
+        assert DEL_CHARS, "--d-exclude 把 D 字集删空了"
     random.seed(a.seed)
     ops = [o.strip().upper() for o in a.ops.split(",") if o.strip()]
     assert ops and set(ops) <= set(OPS), f"--ops 只允许 {list(OPS)}"

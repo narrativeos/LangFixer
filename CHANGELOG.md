@@ -6,6 +6,11 @@
 
 ### 新增
 
+- **rollout D 类取证判决**：「的」漏字规则点不立（NACGEC 漏「的」仅 0.45%、true_gold 2 例、
+  多落可省位，谓词精度不可达）；盲区复测 `--d-exclude` 120 行非-的虚词坐实 11%，
+  与含-的 D 的 12% 同水位——漏字坐实为架构真实盲区（判定低召回 + 规则不可达）；
+  生成器加 `--d-exclude`（默认关零漂移）。
+
 - **rollout v2.4 合成配方（`tools/label-rollout/synth_nasgec.py` + label_rollout SYNTH 通道）**：
   NaSGEC 式 S/D/I/T 四操作已知位置注入（S=混淆字替换，D/I=虚词增删，T=分句语序交换），
   每行单注入且 op 以 intended 为权威（重复字句 difflib 对齐会走样），span 字节口径；
