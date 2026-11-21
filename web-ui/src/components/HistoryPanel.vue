@@ -12,7 +12,14 @@ import LEmpty from '../ui/LEmpty.vue'
 import { toast } from '../ui/toast'
 import { api } from '../api/client'
 import { useGecStore } from '../stores/gec'
-import type { DetectTimings, HistoryDetail, HistoryListItem, LayerReport } from '../types'
+import type { DetectTimings, ErrorItem, HistoryDetail, HistoryListItem, LayerReport } from '../types'
+import {
+  buildChunkMatrix,
+  matrixColumnsFromEvents,
+  ORIGIN_LABELS,
+  type ChunkOrigin,
+  type MatrixCell,
+} from '../lib/chunkMatrix'
 
 const props = defineProps<{ lang: string }>()
 const store = useGecStore()
@@ -22,9 +29,11 @@ const loading = ref(false)
 const error = ref('')
 const expandedId = ref<number | null>(null)
 const detail = ref<HistoryDetail | null>(null)
-const detailErrors = ref<{ error_type: string; original: string; correction: string | null; message: string }[]>([])
+const detailErrors = ref<ErrorItem[]>([])
 const detailTimings = ref<DetectTimings | null>(null)
 const detailLayers = ref<LayerReport[]>([])
+/** 审计 F4：历史句表（块矩阵回放数据）；旧记录无句表时为 null（不编造） */
+const detailUnits = ref<{ spans: [number, number][]; origins: ChunkOrigin[] } | null>(null)
 
 /** 服务端全文搜索（q 关键词，防抖 300ms 后重查）+ 分页（offset/limit，总数由服务端给） */
 const keyword = ref('')
@@ -183,6 +192,7 @@ async function expand(id: number) {
     detail.value = null
     detailTimings.value = null
     detailLayers.value = []
+    detailUnits.value = null
     confirmDeleteId.value = null
     clearConfirmTimer()
     return
@@ -207,9 +217,39 @@ async function expand(id: number) {
     } catch {
       detailLayers.value = []
     }
+    try {
+      detailUnits.value = detail.value.units_json
+        ? (JSON.parse(detail.value.units_json) as {
+            spans: [number, number][]
+            origins: ChunkOrigin[]
+          })
+        : null
+    } catch {
+      detailUnits.value = null
+    }
   } catch (e) {
     error.value = errMsg(e)
   }
+}
+
+// ── 审计 F4：历史详情块矩阵回放（与 StageProgress 矩阵同口径：列从层报告派生，
+// 单元格由句表区间 × 错误 span 相交计算；旧记录无句表/无列时降级为提示行）──
+const detailMatrixCols = computed(() =>
+  matrixColumnsFromEvents([], detailLayers.value.length ? detailLayers.value : null),
+)
+const detailMatrixRows = computed(() => {
+  if (!detail.value || !detailUnits.value || !detailMatrixCols.value.length) return []
+  return buildChunkMatrix({
+    text: detail.value.text,
+    units: detailUnits.value,
+    errors: detailErrors.value,
+    columns: detailMatrixCols.value,
+    layers: detailLayers.value,
+  })
+})
+function matrixCellText(c: MatrixCell): string {
+  if (c.status === 'hit') return String(c.hits)
+  return c.status === 'pass' ? '✓' : c.status === 'skipped' ? '–' : '·'
 }
 
 async function doDelete(id: number) {
@@ -412,6 +452,36 @@ watch(
                 </div>
               </div>
               <div v-else class="no-errors">无错误</div>
+              <table v-if="detailMatrixRows.length" class="cm-table">
+                <thead>
+                  <tr>
+                    <th class="cm-idx">#</th>
+                    <th class="cm-prev">块预览</th>
+                    <th class="cm-chars">字</th>
+                    <th class="cm-origin">切分依据</th>
+                    <th v-for="c in detailMatrixCols" :key="c.key">{{ c.no }} {{ c.label }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(r, i) in detailMatrixRows" :key="r.span[0]">
+                    <td class="cm-idx">{{ i + 1 }}</td>
+                    <td class="cm-prev" :title="r.text">{{ r.preview }}</td>
+                    <td class="cm-chars">{{ r.chars }}</td>
+                    <td class="cm-origin">{{ ORIGIN_LABELS[r.origin] }}</td>
+                    <td
+                      v-for="c in detailMatrixCols"
+                      :key="c.key"
+                      class="cm-cell"
+                      :class="'cm-' + r.cells[c.key].status"
+                    >
+                      {{ matrixCellText(r.cells[c.key]) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-else-if="detail && !detailUnits" class="cm-empty">
+                句表：该记录由旧版检测产生，无块数据（「载入并重新检测」后可见）
+              </div>
               <div class="detail-actions">
                 <LButton
                   size="sm"
@@ -506,6 +576,20 @@ watch(
 .corr { color: var(--ok); font-weight: 500; }
 .msg { color: var(--muted); }
 .no-errors { color: var(--muted); font-size: var(--fs-sm); }
+
+/* 审计 F4：历史详情块矩阵回放（与 StageProgress 矩阵同口径；旧记录无句表时为 cm-empty 提示） */
+.cm-table { border-collapse: collapse; width: 100%; font-size: 11.5px; margin: var(--space-2) 0; }
+.cm-table th, .cm-table td { border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); padding: 3px 8px; text-align: center; white-space: nowrap; }
+.cm-table th:last-child, .cm-table td:last-child { border-right: none; }
+.cm-table th { background: var(--surface-2); color: var(--text-2); font-weight: 600; }
+.cm-prev, td.cm-prev { text-align: left; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.cm-idx, td.cm-idx { color: var(--muted); }
+.cm-origin { color: var(--muted); font-size: 10.5px; }
+.cm-cell { font-weight: 600; }
+.cm-cell.cm-hit { color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.cm-cell.cm-pass { color: var(--ok); }
+.cm-cell.cm-skipped, .cm-cell.cm-pending { color: var(--muted); opacity: 0.6; }
+.cm-empty { padding: 6px 2px; font-size: 11.5px; color: var(--muted); }
 
 .pager { display: flex; align-items: center; gap: var(--space-2); }
 .pager-text { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }

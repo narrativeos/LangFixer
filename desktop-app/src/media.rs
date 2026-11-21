@@ -63,11 +63,9 @@ impl CarrierDetector for DesktopDetector {
         let outcome = engine
             .detect_level(text, level, force_llm, llm.as_deref())
             .await
-            .map_err(|e| match e {
-                // LLM 未配置 / 不可用：编排层据此降级并留痕，不能变成「没错误」
-                gec_core::DetectorError::LlmNotConfigured(m) => FlowError::Unavailable(m),
-                other => FlowError::Unavailable(other.to_string()),
-            })?;
+            // 审计 F2 后引擎对 LLM 未配置不再报错（层报 skipped 并留痕），
+            // 余下错误均为真实服务/检测错误，保持 Unavailable 降级留痕
+            .map_err(|e| FlowError::Unavailable(e.to_string()))?;
         Ok(DetectResult {
             errors: filter_desktop_rules(&self.core, lang, outcome.errors, category),
             layers: outcome

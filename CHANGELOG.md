@@ -6,6 +6,17 @@
 
 ### 新增
 
+- **审计 F4：句表随检测历史沉淀，历史详情可回放块矩阵**：`detect_history` 表新增
+  `units_json` 列（旧库 `open()` 自动补列），写入时由全局切句器
+  `gec_core::docchunk::sentence_spans_with_origin` 从文本确定性重算句表
+  （`{spans, origins}`，滤除零宽片段；空文本切不出句段时为 null，不编造），
+  与实时事件流 Units 同源同口径；api-server 与 desktop-app 两端同构（列序/
+  迁移/插入口径一致）。前端历史详情展开时回放块矩阵：列从该记录 `layers_json`
+  派生（`matrixColumnsFromEvents` 同一回退口径），单元格由句表区间 × 错误 span
+  相交计算（`buildChunkMatrix` 同一投影），与实时矩阵同词表同样式；旧记录无
+  句表时诚实降级为提示行（「旧版检测产生，无块数据」）。测试：api-server lib
+  新增写入即沉淀句表与空文本不编造两断言，旧库迁移用例加句表沉淀断言。
+
 - **审计 F7：决策模型门控判据全程可见 + 配置生效来源标注**：`test_decision` 改查服务
   `/health` 全量 body，探测结果尾部附上实际门控判据（「门控判据 zh 句≥0.95 ∧ 字≥0.30」）；
   `/health` 可达但无 `gates` 字段时诚实提示「服务进程为旧版，请重启决策模型服务」
@@ -383,6 +394,12 @@
   同步。
 
 ### 修复
+
+- **desktop-app 补齐审计 F2 遗留的 `DetectorError::LlmNotConfigured` 映射残留**：
+ F2 从 gec-core 移除该变体（LLM 未配置改层报 `skipped`，不再报错）时漏改
+ desktop-app 两处调用点（`commands.rs` 检测入口 / `media.rs` 媒体检测），导致
+ 桌面端编译失败；现简化为错误直映（`e.to_string()` / `FlowError::Unavailable`），
+ 与 api-server F2 同口径。
 
 - **流程审计 F1+F2+F8：LLM 未配置不再是故障，缓存/历史命中诚实标注，层标签统一**
  （design-flow 审计 11-21）：① level 2/3 触发但 LLM 未配置时不再报 503——引擎层新增

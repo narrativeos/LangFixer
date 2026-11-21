@@ -41,7 +41,29 @@ pub struct DetectHistory {
     /// 旧记录为 null）
     #[serde(default)]
     pub layers_json: Option<String>,
+    /// 块矩阵句表 JSON（`{spans, origins}`：字节区间 + 切分来源；写入时由
+    /// 全局切句器从文本重算，与实时事件流 Units 同源同口径；旧记录为 null）
+    #[serde(default)]
+    pub units_json: Option<String>,
     pub created_at: String,
+}
+
+/// 文本的句表（`{spans, origins}` JSON）：走全局切句器
+/// [`gec_core::docchunk::sentence_spans_with_origin`]，与实时事件流 Units 同源同口径；
+/// 滤除零宽片段，切不出可用句段时 None（与旧记录「无句表」口径一致）
+fn units_json_for(text: &str) -> Option<String> {
+    let spans: Vec<([usize; 2], gec_core::docchunk::BoundaryOrigin)> =
+        gec_core::docchunk::sentence_spans_with_origin(text)
+            .into_iter()
+            .filter(|(s, _)| s[1] > s[0])
+            .collect();
+    (!spans.is_empty()).then(|| {
+        serde_json::json!({
+            "spans": spans.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+            "origins": spans.iter().map(|(_, o)| o.as_str()).collect::<Vec<_>>(),
+        })
+        .to_string()
+    })
 }
 
 /// 检测历史存储
@@ -67,6 +89,7 @@ impl DetectHistoryStore {
                 text_hash TEXT,
                 corrected_text TEXT,
                 layers_json TEXT,
+                units_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_detect_history_session ON detect_history(session_id);
@@ -140,6 +163,17 @@ impl DetectHistoryStore {
         if !has_layers {
             conn.execute_batch("ALTER TABLE detect_history ADD COLUMN layers_json TEXT")?;
         }
+        let has_units: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('detect_history') WHERE name = 'units_json'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_units {
+            conn.execute_batch("ALTER TABLE detect_history ADD COLUMN units_json TEXT")?;
+        }
         // (lang, text_hash) 索引在迁移后创建（旧库该列由上面迁移补出，先建会失败）
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_detect_history_lang_hash ON detect_history(lang, text_hash);",
@@ -167,16 +201,19 @@ impl DetectHistoryStore {
     ) -> Result<i64, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let created_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // 审计 F4：句表随文本确定性沉淀（同一全局切句器），历史打开即可回放块矩阵
+        let units_json = units_json_for(text);
         conn.execute(
-            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at],
+            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     /// 行 → 记录（列序：id, session_id, lang, text, errors_json, analyzed_json,
-    /// timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at）
+    /// timings_json, version, params_json, text_hash, corrected_text, layers_json,
+    /// units_json, created_at）
     fn map_row(row: &rusqlite::Row) -> rusqlite::Result<DetectHistory> {
         Ok(DetectHistory {
             id: row.get(0)?,
@@ -191,7 +228,8 @@ impl DetectHistoryStore {
             text_hash: row.get(9)?,
             corrected_text: row.get(10)?,
             layers_json: row.get(11)?,
-            created_at: row.get(12)?,
+            units_json: row.get(12)?,
+            created_at: row.get(13)?,
         })
     }
 
@@ -251,7 +289,7 @@ impl DetectHistoryStore {
         args.push(offset.to_string());
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history{where_sql}
              ORDER BY id DESC LIMIT ? OFFSET ?"
         );
@@ -283,7 +321,7 @@ impl DetectHistoryStore {
     pub fn get(&self, id: i64) -> Result<Option<DetectHistory>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history WHERE id = ?1",
             params![id],
             Self::map_row,
@@ -308,7 +346,7 @@ impl DetectHistoryStore {
         let limit = limit.clamp(1, 20);
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history WHERE lang = ?1 AND text_hash = ?2
              ORDER BY id DESC LIMIT ?3",
         )?;
@@ -356,6 +394,45 @@ mod tests {
         (path, f)
     }
 
+    /// 审计 F4：写入即沉淀句表，历史打开可回放块矩阵（spans/origins 等长同源）
+    #[test]
+    fn insert_persists_units_for_matrix_replay() {
+        let (path, _f) = temp_db("units");
+        let store = DetectHistoryStore::open(&path).unwrap();
+        let id = store
+            .insert(
+                Some("s1"),
+                "zh",
+                "他昨天吃了昨天。今天天气很好。",
+                "[]",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let h = store.get(id).unwrap().unwrap();
+        let u: serde_json::Value =
+            serde_json::from_str(h.units_json.as_deref().expect("新记录应带句表")).unwrap();
+        let spans = u["spans"].as_array().unwrap();
+        let origins = u["origins"].as_array().unwrap();
+        assert_eq!(spans.len(), origins.len());
+        assert!(spans.len() >= 2, "两个标点句段: {u}");
+        assert_eq!(origins[0].as_str().unwrap(), "punct");
+        // 空文本切不出句段 = 无句表（不编造）
+        let id2 = store
+            .insert(
+                None, "zh", "", "[]", None, None, None, None, None, None, None,
+            )
+            .unwrap();
+        let h2 = store.get(id2).unwrap().unwrap();
+        assert!(h2.units_json.is_none(), "空文本不应编造句表");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// 旧版 schema（无 timings_json / version 列）→ open() 自动补列，读写正常
     #[test]
     fn open_migrates_legacy_schema() {
@@ -400,6 +477,7 @@ mod tests {
         assert_eq!(h.version.as_deref(), Some("0.1.0"));
         assert!(h.params_json.is_some());
         assert_eq!(h.text_hash.as_deref(), Some("0000000000000001"));
+        assert!(h.units_json.is_some(), "迁移库写入同样沉淀句表");
         let list = store.list(None, None, 10).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(

@@ -240,7 +240,29 @@ pub struct DetectHistory {
     /// 旧记录为 null）
     #[serde(default)]
     pub layers_json: Option<String>,
+    /// 块矩阵句表 JSON（`{spans, origins}`：字节区间 + 切分来源；写入时由
+    /// 全局切句器从文本重算，与实时事件流 Units 同源同口径；旧记录为 null）
+    #[serde(default)]
+    pub units_json: Option<String>,
     pub created_at: String,
+}
+
+/// 文本的句表（`{spans, origins}` JSON）：走全局切句器
+/// [`gec_core::docchunk::sentence_spans_with_origin`]，与实时事件流 Units 同源同口径；
+/// 滤除零宽片段，切不出可用句段时 None（与旧记录「无句表」口径一致）
+fn units_json_for(text: &str) -> Option<String> {
+    let spans: Vec<([usize; 2], gec_core::docchunk::BoundaryOrigin)> =
+        gec_core::docchunk::sentence_spans_with_origin(text)
+            .into_iter()
+            .filter(|(s, _)| s[1] > s[0])
+            .collect();
+    (!spans.is_empty()).then(|| {
+        serde_json::json!({
+            "spans": spans.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+            "origins": spans.iter().map(|(_, o)| o.as_str()).collect::<Vec<_>>(),
+        })
+        .to_string()
+    })
 }
 
 pub struct DetectHistoryStore {
@@ -264,6 +286,7 @@ impl DetectHistoryStore {
                 text_hash TEXT,
                 corrected_text TEXT,
                 layers_json TEXT,
+                units_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_detect_history_session ON detect_history(session_id);
@@ -337,6 +360,17 @@ impl DetectHistoryStore {
         if !has_layers {
             conn.execute_batch("ALTER TABLE detect_history ADD COLUMN layers_json TEXT")?;
         }
+        let has_units: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('detect_history') WHERE name = 'units_json'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_units {
+            conn.execute_batch("ALTER TABLE detect_history ADD COLUMN units_json TEXT")?;
+        }
         // (lang, text_hash) 索引在迁移后创建（旧库该列由上面迁移补出，先建会失败）
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_detect_history_lang_hash ON detect_history(lang, text_hash);",
@@ -365,10 +399,12 @@ impl DetectHistoryStore {
     ) -> Result<i64, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let created_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // 审计 F4：句表随文本确定性沉淀（同一全局切句器），历史打开即可回放块矩阵
+        let units_json = units_json_for(text);
         conn.execute(
-            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at],
+            "INSERT INTO detect_history (session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -417,7 +453,7 @@ impl DetectHistoryStore {
         args.push(offset.to_string());
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history{where_sql}
              ORDER BY id DESC LIMIT ? OFFSET ?"
         );
@@ -459,14 +495,15 @@ impl DetectHistoryStore {
             text_hash: r.get(9)?,
             corrected_text: r.get(10)?,
             layers_json: r.get(11)?,
-            created_at: r.get(12)?,
+            units_json: r.get(12)?,
+            created_at: r.get(13)?,
         })
     }
 
     pub fn get(&self, id: i64) -> Result<Option<DetectHistory>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], |r| self.map_row(r))?;
@@ -484,7 +521,7 @@ impl DetectHistoryStore {
         let limit = limit.clamp(1, 20);
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, created_at
+            "SELECT id, session_id, lang, text, errors_json, analyzed_json, timings_json, version, params_json, text_hash, corrected_text, layers_json, units_json, created_at
              FROM detect_history WHERE lang = ?1 AND text_hash = ?2
              ORDER BY id DESC LIMIT ?3",
         )?;
@@ -1458,10 +1495,8 @@ async fn run_pipeline(core: &Arc<Core>, spec: PipelineSpecLite<'_>) -> Result<Pi
             engine
                 .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
                 .await
-                .map_err(|e| match e {
-                    gec_core::DetectorError::LlmNotConfigured(m) => m,
-                    other => other.to_string(),
-                })?,
+                // 审计 F2 后引擎对 LLM 未配置不再报错（层报 skipped），无需变体分流
+                .map_err(|e| e.to_string())?,
             false,
         )
     };

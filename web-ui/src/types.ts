@@ -284,6 +284,8 @@ export interface HistoryDetail {
   timings_json?: string | null
   /** JSON 序列化的层级贡献摘要（LayerReport[]；旧记录为 null） */
   layers_json?: string | null
+  /** JSON 序列化的块矩阵句表（{spans, origins}；旧记录为 null = 无块数据） */
+  units_json?: string | null
   /** 产生该记录时的程序版本号（旧记录无版本时为 null） */
   version?: string | null
   /** 检测时的参数快照（JSON 序列化的 DetectParams；旧记录为 null） */
