@@ -75,7 +75,7 @@ function verdictHintText(i: number): string {
   const st = recheckOf(i)
   if (st?.state === 'loading') return 'AI 正在复查该句，稍候…'
   if (st?.state === 'clean')
-    return '复查未发现错误，可能是决策模型误报；现在放弃会作为反馈数据记录，用于模型迭代'
+    return '复查未发现错误，可能是决策模型误报；复查结论已收录运行日志（recheck_clean 样本），现在放弃会另行记录反馈，均用于模型迭代'
   if (st?.state === 'error') return `复查失败：${st.msg ?? '未知错误'}（可重试）`
   return '决策模型判断该句有错但未定位错误点；送 AI 复查可定位并给出具体修改。直接采纳/放弃会作为反馈数据记录，用于模型迭代'
 }
@@ -291,7 +291,11 @@ watch(
         "
         @click="store.recheckAllVerdicts()"
       >
-        {{ store.recheckAll.running ? `复查中 ${store.recheckAll.done}/${store.recheckAll.total}…` : `复查全部（${pendingVerdictCount}）` }}
+        {{
+          store.recheckAll.running
+            ? `复查中 ${store.recheckAll.done}/${store.recheckAll.total}…（已收录运行日志 ✓）`
+            : `复查全部（${pendingVerdictCount}）`
+        }}
       </LButton>
     </div>
     <!-- 细分类型过滤行：横向分型的第二级；按型反馈/路由数据积累后可挂按型收益徽章 -->

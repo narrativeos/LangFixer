@@ -26,6 +26,7 @@ import {
   type MatrixColumn,
 } from '../lib/chunkMatrix'
 import { layerStatusLabel } from '../lib/labels'
+import { isVerdictOnly } from '../lib/errorDisplay'
 import { LSegmented } from '../ui'
 
 const store = useGecStore()
@@ -164,10 +165,19 @@ const matrixRows = computed(() => {
     errors: store.errors,
     columns: matrixColumns.value,
     layers: store.layers,
+    recheckClean: matrixRecheckClean.value,
   })
 })
+/** 审计 F3：已复查·无错的句级条目 span（verdictRecheck clean）→ 矩阵 ③ 列同步显示复查态 */
+const matrixRecheckClean = computed(() =>
+  store.errors
+    .map((e, i) => [e, i] as const)
+    .filter(([e, i]) => isVerdictOnly(e) && store.verdictRecheck[i]?.state === 'clean')
+    .map(([e]) => e.span),
+)
 function cellIcon(c: MatrixCell): string {
   if (c.status === 'hit') return String(c.hits)
+  if (c.status === 'recheck') return '✓复查'
   return c.status === 'pass' ? '✓' : c.status === 'skipped' ? '–' : '·'
 }
 
@@ -188,6 +198,10 @@ const matrixColState = computed(() => {
         return cell && cell.status === 'hit' ? n + cell.hits : n
       }, 0)
       if (merged > 0) note += `（复查合流已命中 ${merged} 处，本层未执行）`
+      // 审计 F3：复查无错同步到列头 tooltip（与单元格 ✓复查 同源）
+      const cleanN =
+        c.key === 'llm' ? matrixRecheckClean.value.length : 0
+      if (cleanN > 0) note += `（复查无错 ${cleanN} 句）`
     }
     out[c.key] = { word: raw === undefined ? '' : layerStatusLabel(quiet ? 'skipped' : raw), note }
   }
@@ -725,6 +739,10 @@ td.cm-idx {
 }
 .cm-cell.cm-pass {
   color: var(--ok);
+}
+.cm-cell.cm-recheck {
+  color: var(--ok);
+  font-size: 10.5px;
 }
 .cm-cell.cm-skip,
 .cm-cell.cm-pending {

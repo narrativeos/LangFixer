@@ -91,6 +91,41 @@ describe('chunkMatrix 投影', () => {
     expect(r2[1].cells.rule.status).toBe('pending')
   })
 
+  it('审计 F3 复查态同步：clean 复查 span 重叠的块在 ③ 列显 recheck；命中仍优先 hit；其余列不受影响', () => {
+    const cols = [
+      { key: 'rule', no: '①', label: '规则检测' },
+      { key: 'llm', no: '③', label: 'LLM 复核' },
+    ]
+    const layers: LayerReport[] = [
+      { layer: 'rule', status: 'ran', found: 1 },
+      { layer: 'llm', status: 'skipped', found: 0 },
+    ]
+    const base = {
+      text: '第一块文第二块文',
+      units: { spans: [[0, 12], [12, 24]] as [number, number][], origins: ['punct', 'punct'] as const },
+      columns: cols,
+      layers,
+    }
+    // 复查无错：命中块仍 hit，被 clean 复查的未命中块→recheck（不论层态 skipped）
+    const rows = buildChunkMatrix({
+      ...base,
+      units: { spans: base.units.spans, origins: [...base.units.origins] },
+      errors: [err([1, 2], 'decision')],
+      recheckClean: [[12, 24]],
+    })
+    expect(rows[0].cells.llm.status).toBe('skipped')
+    expect(rows[1].cells.llm).toEqual({ status: 'recheck', hits: 0 })
+    expect(rows[1].cells.rule.status).toBe('pass')
+    // 命中优先：同一块既有复查又有 llm 产出命中→仍计 hit
+    const hit = buildChunkMatrix({
+      ...base,
+      units: { spans: base.units.spans, origins: [...base.units.origins] },
+      errors: [err([13, 14], 'llm')],
+      recheckClean: [[12, 24]],
+    })
+    expect(hit[1].cells.llm).toEqual({ status: 'hit', hits: 1 })
+  })
+
   it('归因：statistical 并入 rule，targeted 归因 llm', () => {
     const rows = buildChunkMatrix({
       text: 'aaaaaaaa',

@@ -6,6 +6,13 @@
 
 ### 新增
 
+- **审计 F3：复查结果全流程可见**：「复查全部」进行中按钮实时标注「已收录运行
+  日志 ✓」（服务端复查结论本就逐句写反馈日志 recheck_clean/recheck_found，前端
+  此前不可见）；「已复查·无错」条目提示明确标注结论已收录（误报样本）。块矩阵
+  ③ 列同步复查态：被复查且无错的块显示「✓复查」（新单元格态 recheck，不论层态
+  均如实呈现——复查是真实执行过的定向 LLM 调用），命中仍优先计 hit；未执行层
+  列头 tooltip 追加「复查无错 N 句」。数据源 = verdictRecheck clean 条目 span，
+  buildChunkMatrix 新增 recheckClean 投影口径，不改后端结果。
 - **审计 F4：句表随检测历史沉淀，历史详情可回放块矩阵**：`detect_history` 表新增
   `units_json` 列（旧库 `open()` 自动补列），写入时由全局切句器
   `gec_core::docchunk::sentence_spans_with_origin` 从文本确定性重算句表

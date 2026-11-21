@@ -23,7 +23,7 @@ export const ORIGIN_LABELS: Record<ChunkOrigin, string> = {
   fallback: '字数兜底',
 }
 
-export type CellStatus = 'hit' | 'pass' | 'skipped' | 'pending'
+export type CellStatus = 'hit' | 'pass' | 'skipped' | 'pending' | 'recheck'
 
 export interface MatrixCell {
   status: CellStatus
@@ -96,6 +96,9 @@ export function buildChunkMatrix(args: {
   errors: ErrorItem[]
   columns: MatrixColumn[]
   layers: LayerReport[] | null
+  /** 审计 F3：已复查·无错的句级条目 span（verdictRecheck clean）；③ 列单元格
+   *  未命中但与这些区间重叠时如实写「复查无错」（复查确实跑过本块），其余列不受影响 */
+  recheckClean?: [number, number][]
 }): MatrixRow[] {
   const statusOf = new Map<string, string>()
   for (const l of args.layers ?? []) statusOf.set(l.layer, l.status)
@@ -124,6 +127,15 @@ export function buildChunkMatrix(args: {
           : active === null
             ? { status: hits ? 'hit' : 'pending', hits }
             : { status: hits ? 'hit' : 'pass', hits }
+      // 审计 F3：③ 列同步复查态——本块被复查过且未命中→「复查无错」（不论层态，
+      // 复查是真实执行过的定向 LLM 调用）；命中已在上方计 hit，不在此覆盖
+      if (
+        col.key === 'llm' &&
+        cells[col.key].status !== 'hit' &&
+        (args.recheckClean ?? []).some((cs) => overlaps(cs, [s, e]))
+      ) {
+        cells[col.key] = { status: 'recheck', hits: 0 }
+      }
     }
     rows.push({
       span: [s, e],
