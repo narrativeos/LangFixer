@@ -9,6 +9,12 @@
             "error_type": str, "abstain": bool,
             "errors": [{"span": [s, e], "type": str, "message": str}]}
 
+契约 v2（trackb 双头后端，zh）：errors 可含**字级**条目——error_type
+`missing`（成分残缺→grammar）、span=[s,e] 为右邻字（非零宽，Rust 侧无需改动）；
+产出判据为门控联合式「句头 p≥sent_gate(默认.95) ∧ 字头 p≥char_gate(默认.3)」，
+句头未过门控但 ≥.5 时维持句级合成 span（与 sklearn 后端行为一致）。字段结构
+对 v1 消费者完全兼容；旧服务缺字级条目 → Rust 侧按句级处理。
+
 - `errors[].span` 为**字符偏移**（Python `re` / `len` 语义）；
   Rust 侧（gec-core `char_span_to_bytes`）负责换算为字节偏移后入 `Error.span`
   （CJK 文本两者相差约 3 倍，直接透传会导致 span 重叠去重对中文误判）
@@ -150,6 +156,67 @@ class _SklearnPredictor:
         return {"score": prob, "errors": errors}
 
 
+class _TrackBPredictor:
+    """Track B 双头（句头+字级定位头）→ `/decide` 契约 v2 适配。
+
+    门控判据（训练侧出数冻结，meta.json `gates` 可调）：句头 p ≥ sent_gate
+    才产出字级定位项；字头 p ≥ char_gate 的字入 errors（error_type
+    “missing”，span=[s,e] 为右邻字，成分残缺）。句头未过字级门控阈但在
+    [.5, sent_gate) → 维持句级合成 span 行为（与 sklearn 后端一致）；
+    <.5 → 空 errors（适配器据此 abstain，触发 LLM 兑底层）。
+    """
+
+    def __init__(self, model_dir: str, gates: dict[str, float]) -> None:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        device = os.environ.get("DEC_DEVICE") or (
+            "mps" if torch.backends.mps.is_available() else "cpu")
+        self.torch = torch
+        self.device = device
+        self.tok = AutoTokenizer.from_pretrained(os.path.join(model_dir, "encoder"),
+                                                 local_files_only=True)
+        self.enc = AutoModel.from_pretrained(os.path.join(model_dir, "encoder"),
+                                             local_files_only=True).to(device).eval()
+        ck = torch.load(os.path.join(model_dir, "head.pt"),
+                        map_location=device, weights_only=True)
+        h = self.enc.config.hidden_size
+        s_head = torch.nn.Sequential(torch.nn.Linear(h, 256), torch.nn.GELU(),
+                                     torch.nn.Dropout(0.1), torch.nn.Linear(256, 2))
+        s_head.load_state_dict(ck["sentence_head"])
+        c_head = torch.nn.Linear(h, 1)
+        c_head.load_state_dict(ck["char_head"])
+        self.s_head, self.c_head = s_head.to(device).eval(), c_head.to(device).eval()
+        self.sent_gate = gates.get("sent", 0.95)
+        self.char_gate = gates.get("char", 0.3)
+
+    def predict(self, text: str) -> dict[str, Any]:
+        t = self.tok(text, return_tensors="pt", truncation=True, max_length=512,
+                     return_offsets_mapping=True)
+        om = t.pop("offset_mapping")
+        t = t.to(self.device)
+        with self.torch.no_grad():
+            hs = self.enc(**t).last_hidden_state
+            p_sent = float(self.torch.softmax(self.s_head(hs[:, 0]), -1)[0, 1])
+            p = self.torch.sigmoid(self.c_head(hs)).squeeze(0).squeeze(-1).cpu()
+        om = om[0]
+        errors: list[dict[str, Any]] = []
+        if p_sent >= self.sent_gate:
+            for j in range(p.shape[0]):
+                s_, e_ = int(om[j, 0]), int(om[j, 1])
+                if e_ > s_ and float(p[j]) >= self.char_gate:
+                    errors.append({
+                        "span": [s_, e_], "error_type": "missing",
+                        "confidence": float(p[j]),
+                        "message": "疑似漏字位置（字级定位，句头门控通过）",
+                    })
+        if p_sent >= 0.5 and not errors:
+            errors.append({"span": [0, len(text)], "error_type": "grammar",
+                           "confidence": p_sent,
+                           "message": "决策模型判定该句存在错误（句级判断）"})
+        return {"score": p_sent, "errors": errors}
+
+
 def _model_version(model_path: str) -> str | None:
     """读模型目录 `meta.json` 的版本号（`vega_finetune.py` 训练时写入）。
 
@@ -211,8 +278,35 @@ class VegaAdapter:
                     print(f"[decision-model] 加载 {lang} 模型（vegaml，版本 {v or '未知'}）: {model_path}", file=sys.stderr)
                     continue
                 except Exception as e:  # noqa: BLE001
-                    print(f"[decision-model] 加载 {lang} vegaml 模型失败（{e}），尝试 sklearn 回退", file=sys.stderr)
+                    print(f"[decision-model] 加载 {lang} vegaml 模型失败（{e}），尝试 trackb/sklearn 回退", file=sys.stderr)
+            if os.path.isfile(os.path.join(model_path, "head.pt")):
+                if self._load_trackb(lang, model_path):
+                    continue
             self._load_sklearn(lang, model_path)
+
+    def _load_trackb(self, lang: str, model_path: str) -> bool:
+        if not os.path.isdir(os.path.join(model_path, "encoder")):
+            return False
+        gates: dict[str, float] = {"sent": float(os.environ.get("DEC_GATE_SENT", 0.95)),
+                                   "char": float(os.environ.get("DEC_GATE_CHAR", 0.3))}
+        try:
+            with open(os.path.join(model_path, "meta.json"), encoding="utf-8") as f:
+                gates.update(json.load(f).get("gates", {}))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.models[lang] = _TrackBPredictor(model_path, gates)
+            self.backends[lang] = "trackb"
+            v = _model_version(model_path)
+            if v is not None:
+                self.versions[lang] = v
+            print(f"[decision-model] 加载 {lang} 模型（trackb 双头，版本 {v or '未知'}，"
+                  f"门控 sent≥{gates['sent']:.2f} ∧ char≥{gates['char']:.2f}）: {model_path}",
+                  file=sys.stderr)
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"[decision-model] 加载 {lang} trackb 模型失败（{e}），尝试 sklearn 回退", file=sys.stderr)
+            return False
 
     def _load_sklearn(self, lang: str, model_path: str) -> None:
         joblib_path = os.path.join(model_path, "model.joblib")
@@ -288,6 +382,8 @@ async def health() -> JSONResponse:
         mode = (
             "vegaml"
             if backends == {"vegaml"}
+            else "trackb"
+            if backends == {"trackb"}
             else "sklearn"
             if backends == {"sklearn"}
             else "mixed"

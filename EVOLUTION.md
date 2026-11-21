@@ -1595,7 +1595,19 @@ FP 是背景噪声非热字形态；D6 热字权重 ×20 拉 ROC。北极星口�
 后，D4/D5 在 τ=.3×τ_s=.95 得 **R .220、devFP 1.9%、govFP .9%**——目标 R≥.15@FP≤2%
 双面进带，臂 D 主线（真实漏字监督+FP 正则+句头门控）收口。臂 D6（热字 ×20）在
 FP2% 处 ROC 与 D4/D5 重合（R .11），热字权重轴判到顶。可晋级产物 zh_v2_prev_d4，
-判据 句头≥.95 ∧ 字头≥.3；下一期：serve /decide 契约 v2 接门控判据 + 模型晋级评审。
+判据 句头≥.95 ∧ 字头≥.3。
+
+**补五（同日晋级评审+契约 v2 落 serve：zh_v2_prev_d4 → 决策模型 zh v2）**：
+评审四闸全过——①北极星 τ=.3×τ_s=.95 R .220@dev 1.9%/gov .9% 双面 ≤2%；②句头 dev
+AUC .943 零回退；③契约 v2：`decision-model/server.py` 新增 trackb 双头后端（加载序
+vegaml→trackb→sklearn joblib，门控阈值 meta.json `gates` + DEC_GATE_SENT/CHAR 可调），
+字级条目复用 `missing`→grammar 映射，**Rust 侧零改动**（errors 结构/字符 span/
+abstain 语义全兼容）；`/health` backends.zh=trackb、versions.zh=v2 → Rust 历史复用
+门槛自动作废旧历史；回退=改名 head.pt。`test_trackb.py` 契约结构不变式（门控一致性/
+span 合法性/abstain 语义）+ test_version 回归全绿，真实模式 curl 双路验证（干净句
+abstain→LLM 兑底，句级带 [.5,.95) 行为与 sklearn 一致）。**保留产品决策**：
+`GEC_DEC_ENABLED` 仍默认 0（§13 #10 退役态），zh v2 达标准备重新接入产品路径的
+开关/设置入口决策待拍板。
 
 ### 11.18 臂 C 公文体合成域消融：域假设证伪（2026-11-20）
 

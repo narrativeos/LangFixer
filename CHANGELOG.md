@@ -6,6 +6,16 @@
 
 ### 新增
 
+- **② 决策模型 zh 后端晋级 v2（trackb 双头）+ /decide 契约 v2**：`decision-model/server.py`
+  新增 `_TrackBPredictor` 双头后端（句头 MLP p≥.95 ∧ 字头 p≥.3 门控联合判据，加载序
+  vegaml→trackb→sklearn），字级条目复用 `missing` 类型非零宽 span、句头 [.5,.95) 出句级
+  合成条目、<.5 弃权走 LLM 兜底；`test_trackb.py` 新增（含 harsh-gate 不变式），真实模式
+  curl 双路验证通过（/health mode trackb、version v2）。产物源 jev-gec
+  `models/zh_v2_prev_d4`，北极星达标（R .220@devFP1.9%/govFP.9%）后晋级落盘
+  `decision-model/models/zh/`（gitignored，回滚=改名 head.pt 回 sklearn）。契约 v2 语义与
+  晋级评审见 EVOLUTION #11.19 补五；`GEC_DEC_ENABLED` 默认仍 0，是否重新接入产品路径
+  待产品拍板。
+
 - **公文体干净句抓取 `datasets/scrape_govcn.py` + 臂 C 域消融出数**：gov.cn 政策文件库
  JSON 接口抓 1,400 篇→66,138 干净句（断点续/限速/三过滤，与 gray380 零污染）；
 换域合成 5 万行 gov-only 臂：句头 .944 零回退、FP 两面全过，但 gray380 I 位仍
