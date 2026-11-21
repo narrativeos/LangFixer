@@ -93,6 +93,8 @@ export const useGecStore = defineStore('gec', {
     detectCompleted: false,
     /** 本次结果来自历史复用（重复检测 + 参数一致 + 无 LLM；前端据此展示「来自历史」提示） */
     fromHistory: false,
+    /** 本次结果命中 LRU 缓存回放（同文本 + 参数一致；本次未重跑检测） */
+    fromCache: false,
     /** 决策模型是否弃权（仅决策层启用时有意义；前端据此展示提示） */
     decisionAbstained: false,
     /** LLM 兜底层实际执行且未检出错误（「LLM 复查确认干净」；
@@ -300,6 +302,7 @@ export const useGecStore = defineStore('gec', {
       this.quality = null
       this.detectCompleted = false
       this.fromHistory = false
+      this.fromCache = false
       this.decisionAbstained = false
       this.llmConfirmedClean = false
       this.focusErrorIndex = -1
@@ -511,11 +514,12 @@ export const useGecStore = defineStore('gec', {
         this.errors = res.errors
         this.decisionAbstained = !!res.decision_abstained
         this.fromHistory = !!res.from_history
+        this.fromCache = !!res.from_cache
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
         this.quality = res.quality ?? null
         this.timings = res.timings ?? null
-        this.settleProgress(res.timings, res.from_history)
+        this.settleProgress(res.timings, !!(res.from_history || res.from_cache))
         // 最后一批阶段事件（知识召回→End）可能晚于响应前的最后一次轮询：补拉一次
         if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
@@ -576,11 +580,12 @@ export const useGecStore = defineStore('gec', {
         this.errors = this.analyzed.map((a) => a.error)
         this.decisionAbstained = !!res.decision_abstained
         this.fromHistory = !!res.from_history
+        this.fromCache = !!res.from_cache
         this.llmConfirmedClean = !!res.llm_confirmed_clean
         this.layers = res.layers ?? null
         this.quality = res.quality ?? null
         this.timings = res.timings ?? null
-        this.settleProgress(res.timings, res.from_history)
+        this.settleProgress(res.timings, !!(res.from_history || res.from_cache))
         if (!isTauri) await this.pollProgress(true)
         this.snapshotResult()
         this.detectCompleted = true

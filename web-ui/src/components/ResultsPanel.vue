@@ -44,6 +44,7 @@ const runPath = computed(() => store.layers ?? [])
 
 /** 降级原因人话化：后端编码（"{layer}_unavailable" 等）→ 中文文案 */
 function qualityReasonText(r: string): string {
+  if (r === 'llm_unconfigured') return 'AI 复查未配置（本轮跳过，配置后可复查长尾）'
   if (r.endsWith('_unavailable')) return `${plainLayerLabel(r.slice(0, -'_unavailable'.length))}不可用`
   if (r.endsWith('_partial')) return `${plainLayerLabel(r.slice(0, -'_partial'.length))}部分执行`
   if (r.startsWith('coverage:')) return `复查覆盖 ${r.slice(9)}`
@@ -57,7 +58,8 @@ const qualityBadge = computed(() => {
   const q = store.quality
   if (!q || q.status === 'full') return null
   const label = q.status === 'degraded' ? '降级运行' : '部分完成'
-  const reasons = (q.degraded_reasons ?? []).map(qualityReasonText)
+  const rawReasons = q.degraded_reasons ?? []
+  const reasons = rawReasons.map(qualityReasonText)
   const parts: string[] = []
   if (reasons.length) parts.push(`原因：${reasons.join('；')}`)
   if (q.coverage !== undefined && q.coverage < 1) {
@@ -65,7 +67,13 @@ const qualityBadge = computed(() => {
   }
   if (q.unowned_chars > 0) parts.push(`所有权空洞 ${q.unowned_chars} 字节（完整性异常）`)
   parts.push('本次结果不会写入缓存 / 历史复用')
-  return { label, degraded: q.status === 'degraded', title: parts.join('。') }
+  // LLM 未配置而本轮应复查 → 给「去设置」入口（审计 F2：跳过要说明原因并可去配置）
+  return {
+    label,
+    degraded: q.status === 'degraded',
+    title: parts.join('。'),
+    needsLlmSetup: rawReasons.includes('llm_unconfigured'),
+  }
 })
 
 // 新结果到达时自动切到对应视图：仅在「检测完成」（resultsVersion 变化）时触发，
@@ -146,11 +154,15 @@ function applyCorrected() {
       <span class="fix-hint">应用全部「建议修正」后的完整文本</span>
     </div>
     <p
-      v-if="store.detectCompleted && store.fromHistory"
+      v-if="store.detectCompleted && (store.fromHistory || store.fromCache)"
       class="from-history-hint"
       role="status"
     >
-      本次结果来自历史复用（同文本 + 参数一致 + 无 LLM），未重新执行检测
+      {{
+        store.fromHistory
+          ? '本次结果来自历史复用（同文本 + 参数一致 + 无 LLM），本次未重跑检测'
+          : '本次结果命中缓存（同文本 + 参数一致），本次未重跑检测'
+      }}
       <LButton size="sm" :disabled="store.loading" @click="store.detect({ refresh: true })">
         忽略缓存重检
       </LButton>
@@ -163,6 +175,14 @@ function applyCorrected() {
       :title="qualityBadge.title"
     >
       本次检测结果为{{ qualityBadge.label }}，结论可能不完整
+      <LButton
+        v-if="qualityBadge.needsLlmSetup"
+        variant="ghost"
+        size="sm"
+        @click="store.requestNav('settings')"
+      >
+        去设置
+      </LButton>
     </p>
     <div v-if="runPath.length" class="l-trace" aria-label="本次检测层级贡献摘要">
       <span class="rp-label">检测路径</span>

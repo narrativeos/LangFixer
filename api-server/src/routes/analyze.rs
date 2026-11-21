@@ -46,6 +46,9 @@ pub struct AnalyzeResponse {
     /// 前端可展示「来自历史」提示）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_history: bool,
+    /// 本次结果命中 LRU 缓存回放（同文本 + 参数一致；本次未重跑检测）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_cache: bool,
     /// LLM 兜底层是否实际执行且未检出错误（「LLM 复查确认干净」）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub llm_confirmed_clean: bool,
@@ -90,6 +93,7 @@ pub async fn analyze(
     let PipelineResult {
         outcome,
         from_history,
+        from_cache,
         version,
         params,
         summary_id,
@@ -254,6 +258,7 @@ pub async fn analyze(
         decision_abstained: outcome.decision_abstained,
         timings: outcome.timings,
         from_history,
+        from_cache,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
         quality: outcome.quality,

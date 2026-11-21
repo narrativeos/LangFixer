@@ -29,7 +29,7 @@ export const CAT_TYPES: Record<string, 'danger' | 'warning' | 'primary' | 'info'
 export const SOURCE_LABELS: Record<string, string> = PLAIN_LAYER_LABELS
 export const SOURCE_TIPS: Record<string, string> = {
   rule: '该错误由本地检查检出（内置规则与词表，结果最确定）',
-  decision: '该错误由快速定案检出（处理规则覆盖不到的模糊情况）',
+  decision: '该错误由决策模型检出（句级判断，处理规则覆盖不到的模糊情况）',
   statistical: '该错误由本地统计检查检出',
   knowledge: '该错误由知识查询检出（命中你确认过的同类案例）',
   feature: '该错误由快速定案检出（本地模型有把握确认）',

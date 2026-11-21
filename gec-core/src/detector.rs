@@ -30,7 +30,4 @@ pub enum DetectorError {
     UnsupportedLanguage(String),
     #[error("upstream NLP service unavailable: {0}")]
     ServiceUnavailable(String),
-    /// LLM 兜底层（三级响应 level 2/3）触发时 LLM 未配置（无 API Key 或缺检测模板）
-    #[error("LLM fallback not configured: {0}")]
-    LlmNotConfigured(String),
 }

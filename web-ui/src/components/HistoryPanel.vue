@@ -383,7 +383,7 @@ watch(
                   文本处理 {{ detailTimings.nlp_ms }} ms<template v-if="detailTimings.nlp_warmup_ms != null">（含首次准备 {{ detailTimings.nlp_warmup_ms }} ms）</template>
                 </LTag>
                 <LTag v-if="detailTimings.decision_ms != null" tone="neutral">
-                  快速定案 {{ detailTimings.decision_ms }} ms
+                  决策模型 {{ detailTimings.decision_ms }} ms
                 </LTag>
                 <LTag v-if="detailTimings.l3_ms != null" tone="neutral">
                   快速定案 {{ detailTimings.l3_ms }} ms

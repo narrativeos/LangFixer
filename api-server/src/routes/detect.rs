@@ -46,6 +46,10 @@ pub struct DetectResponse {
     /// 前端可展示「来自历史」提示）
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub from_history: bool,
+    /// 本次结果命中 LRU 缓存回放（同文本 + 参数一致；本次未重跑检测，
+    /// 前端据此展示「本次未重跑」横幅）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_cache: bool,
     /// LLM 兜底层是否实际执行且未检出错误（「LLM 复查确认干净」）；
     /// 前端据此区分「仅规则层未查出」与「LLM 复查确认无错误」两种「没有错误」
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -360,6 +364,8 @@ pub(crate) struct PipelineResult {
     pub params: Option<shared_model::DetectParams>,
     /// 摘要行 id（§7；analyze 归因后回填 fallback_count 用；写失败为 None）
     pub summary_id: Option<i64>,
+    /// 本次结果为 LRU 缓存回放（审计 F2：前端据此标注「本次未重跑检测」）
+    pub from_cache: bool,
 }
 
 /// 唯一执行入口（Detect Pipeline v2 P4 入口收敛）：detect / detect_lang / analyze
@@ -489,6 +495,7 @@ pub(crate) async fn run_pipeline(
         .as_ref()
         .filter(|q| !q.degraded_reasons.is_empty())
         .and_then(|q| serde_json::to_string(&q.degraded_reasons).ok());
+    let from_cache = !from_history && outcome.quality.is_none();
     let summary_row = crate::request_summary::SummaryRow {
         entry: spec.entry,
         lang: spec.lang,
@@ -511,7 +518,7 @@ pub(crate) async fn run_pipeline(
         version_json: version.as_ref().map(|v| v.to_string()),
         error_count: outcome.errors.len(),
         from_history,
-        from_cache: !from_history && outcome.quality.is_none(),
+        from_cache,
         total_ms: (!outcome.timings.is_empty()).then(|| outcome.timings.total_ms),
     };
     // 告警①即时面：所有权空洞 / 丢弃账本非零 = 数据静默丢失，当场最高级日志
@@ -541,6 +548,7 @@ pub(crate) async fn run_pipeline(
         version,
         params,
         summary_id,
+        from_cache,
     })
 }
 
@@ -709,6 +717,7 @@ pub async fn detect(
     let PipelineResult {
         outcome,
         from_history,
+        from_cache,
         version,
         ..
     } = run_pipeline(
@@ -733,6 +742,7 @@ pub async fn detect(
         decision_abstained: outcome.decision_abstained,
         timings: outcome.timings,
         from_history,
+        from_cache,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
         quality: outcome.quality,
@@ -778,6 +788,7 @@ pub async fn detect_lang(
     let PipelineResult {
         outcome,
         from_history,
+        from_cache,
         version,
         ..
     } = run_pipeline(
@@ -802,6 +813,7 @@ pub async fn detect_lang(
         decision_abstained: outcome.decision_abstained,
         timings: outcome.timings,
         from_history,
+        from_cache,
         llm_confirmed_clean: outcome.llm_confirmed_clean,
         layers: outcome.layers,
         quality: outcome.quality,

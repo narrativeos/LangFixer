@@ -137,6 +137,8 @@ export interface DetectResponse {
   timings?: DetectTimings
   /** 本次结果来自历史复用（同文本 + 参数一致 + 无 LLM 的近期记录） */
   from_history?: boolean
+  /** 本次结果命中 LRU 缓存回放（同文本 + 参数一致；本次未重跑检测） */
+  from_cache?: boolean
   /** LLM 兜底层实际执行且未检出错误（「LLM 复查确认干净」） */
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */
@@ -162,6 +164,8 @@ export interface AnalyzeResult {
   timings?: DetectTimings
   /** 本次结果来自历史复用（同文本 + 参数一致 + 无 LLM 的近期记录） */
   from_history?: boolean
+  /** 本次结果命中 LRU 缓存回放（同文本 + 参数一致；本次未重跑检测） */
+  from_cache?: boolean
   /** LLM 兜底层实际执行且未检出错误（「LLM 复查确认干净」） */
   llm_confirmed_clean?: boolean
   /** 层级贡献摘要（前端「检测路径」；未实际检测时不返回） */

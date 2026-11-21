@@ -93,6 +93,22 @@ async fn build_server_locked(
     db_file: Option<&std::path::Path>,
     lexicons_dir: Option<&std::path::Path>,
 ) -> String {
+    build_server_locked_inner(db_file, lexicons_dir).await.0
+}
+
+/// 需要直接读写账本/内部状态的测试用：额外返回 AppState
+#[allow(dead_code)]
+async fn build_server_locked_full(
+    db_file: Option<&std::path::Path>,
+    lexicons_dir: Option<&std::path::Path>,
+) -> (String, Arc<AppState>) {
+    build_server_locked_inner(db_file, lexicons_dir).await
+}
+
+async fn build_server_locked_inner(
+    db_file: Option<&std::path::Path>,
+    lexicons_dir: Option<&std::path::Path>,
+) -> (String, Arc<AppState>) {
     let tables_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../decision-tables");
     // 每个 server 独立设置文件（构建时捕获路径，避免并行测试间互相干扰）
     unsafe {
@@ -138,12 +154,12 @@ async fn build_server_locked(
         )))
     });
     let state = Arc::new(AppState::from_env(Some(&tables_dir), db_file.as_deref()));
-    let app = middleware::auth::with_standalone_tenant(routes::router(state))
+    let app = middleware::auth::with_standalone_tenant(routes::router(state.clone()))
         .layer(middleware::cors::cors_layer());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, app).into_future());
-    format!("http://{addr}")
+    (format!("http://{addr}"), state)
 }
 
 /// 常规测试用：持锁清除 LLM / 引擎选择配置后建 server（避免并行测试间环境变量泄漏）
@@ -2940,9 +2956,9 @@ async fn detect_level3_triggers_llm_when_no_errors() {
     assert!(resp.decision_abstained, "灰区概率应报告弃权");
 }
 
-/// level 2 触发但 LLM 未配置 → 503
+/// level 2 触发但 LLM 未配置 → 200，③ 记 skipped（审计 F2：不再 503）
 #[tokio::test]
-async fn detect_level2_without_llm_configured_returns_503() {
+async fn detect_level2_without_llm_configured_skips_llm() {
     let _guard = env_guard();
     unsafe {
         std::env::remove_var("LLM_API_KEY");
@@ -2955,17 +2971,37 @@ async fn detect_level2_without_llm_configured_returns_503() {
     }
     let base = build_server_locked(None, Some(&lexicons_abs())).await;
     let c = client();
-    let status = c
+    let resp = c
         .post(format!("{base}/gec/detect"))
         .json(&serde_json::json!({ "lang": "zh", "text": "他昨天报复很大。", "level": 2 }))
         .send()
         .await
-        .unwrap()
-        .status();
+        .unwrap();
     assert_eq!(
-        status,
-        http::StatusCode::SERVICE_UNAVAILABLE,
-        "LLM 未配置时 level 2 弃权触发应返回 503"
+        resp.status(),
+        http::StatusCode::OK,
+        "LLM 未配置时 level 2 应回退 200"
+    );
+    let text = resp.text().await.unwrap();
+    let resp: DetectResp = serde_json::from_str(&text).unwrap();
+    assert!(
+        resp.layers
+            .iter()
+            .any(|l| l["layer"] == "llm" && l["status"] == "skipped"),
+        "③ LLM 应记 skipped: {text}"
+    );
+    let degraded = resp
+        .quality
+        .as_ref()
+        .and_then(|q| q.get("degraded_reasons"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        degraded
+            .iter()
+            .any(|r| r.as_str() == Some("llm_unconfigured")),
+        "quality 应记录 llm_unconfigured: {text}"
     );
 }
 
@@ -3079,13 +3115,13 @@ async fn detect_force_llm_triggers_llm_even_with_errors() {
     );
 }
 
-/// force_llm 触发但 LLM 未配置 → 503
+/// force_llm 触发但 LLM 未配置 → 200，③ 记 skipped（审计 F2：不再 503）
 ///
 /// 注意：`build_server_locked` 已把 `GEC_SETTINGS_FILE` 指向独立临时文件，
 /// 避免工作目录的 `langfixer-settings.json`（开发机可能配置了真实 LLM）
 /// 覆盖本测试通过环境变量构造的"未配置"前提。
 #[tokio::test]
-async fn detect_force_llm_without_llm_configured_returns_503() {
+async fn detect_force_llm_without_llm_configured_skips_llm() {
     let _guard = env_guard();
     unsafe {
         std::env::remove_var("LLM_API_KEY");
@@ -3093,7 +3129,7 @@ async fn detect_force_llm_without_llm_configured_returns_503() {
     }
     let base = build_server_locked(None, Some(&lexicons_abs())).await;
     let c = client();
-    let status = c
+    let resp = c
         .post(format!("{base}/gec/detect"))
         .json(&serde_json::json!({
             "lang": "zh",
@@ -3102,12 +3138,19 @@ async fn detect_force_llm_without_llm_configured_returns_503() {
         }))
         .send()
         .await
-        .unwrap()
-        .status();
+        .unwrap();
     assert_eq!(
-        status,
-        http::StatusCode::SERVICE_UNAVAILABLE,
-        "LLM 未配置时 force_llm 应返回 503"
+        resp.status(),
+        http::StatusCode::OK,
+        "LLM 未配置时 force_llm 应回退 200"
+    );
+    let text = resp.text().await.unwrap();
+    let resp: DetectResp = serde_json::from_str(&text).unwrap();
+    assert!(
+        resp.layers
+            .iter()
+            .any(|l| l["layer"] == "llm" && l["status"] == "skipped"),
+        "③ LLM 应记 skipped: {text}"
     );
 }
 
@@ -3829,20 +3872,53 @@ async fn eval_layers_reads_report_archive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// F2: 检测失败同样要在 §7 账本留痕——引擎级错误计入 alerts.failure，
-/// 客户端错（语言不支持）留痕为 rejected、不得污染失败告警
+/// F2: 检测失败同样要在 §7 账本留痕——引擎级失败计入 alerts.failure，
+/// 客户端错（语言不支持）留痕为 rejected、不得污染失败告警。
+///
+/// 审计 F2 后 level 3 无 LLM 不再报 5xx（③ 记 skipped），路由层已无
+/// 稳定可触发的引擎级失败；改用账本直写 failed 行验证告警链路，
+/// 保留 404 rejected 不污染失败告警的断言。
 #[tokio::test]
 async fn detect_failure_leaves_summary_row_and_alert() {
-    let base = start_server().await; // 内部持锁并清除 LLM 配置
-    // LLM 未配置 + level 3 → LlmNotConfigured：引擎级失败（503）
-    let status = client()
+    let _guard = env_guard();
+    unsafe {
+        std::env::remove_var("LLM_API_KEY");
+        std::env::remove_var("LLM_BASE_URL");
+        std::env::remove_var("LLM_MODEL");
+        std::env::set_var("HANLP_ENDPOINT", "http://127.0.0.1:8000");
+    }
+    let (base, state) = build_server_locked_full(None, Some(&lexicons_abs())).await;
+    // 引擎级失败行：直接写入 §7 账本（等价于 run_pipeline 错误分支的留痕）
+    let row = api_server::request_summary::SummaryRow {
+        entry: "detect",
+        lang: "zh",
+        level: 3,
+        quality_status: Some("failed"),
+        coverage: None,
+        unowned_chars: 0,
+        dropped: Default::default(),
+        degraded_json: Some(serde_json::json!(["engine_error: test"]).to_string()),
+        chunks: None,
+        sentences: None,
+        version_json: None,
+        error_count: 0,
+        from_history: false,
+        from_cache: false,
+        total_ms: None,
+    };
+    state.request_summary.insert(&row).unwrap();
+    // level 3 + LLM 未配置 → 审计 F2：200，③ 记 skipped（不再是 503）
+    let resp = client()
         .post(format!("{base}/gec/detect"))
         .json(&serde_json::json!({ "lang": "zh", "text": "他昨天报复很大。", "level": 3 }))
         .send()
         .await
-        .unwrap()
-        .status();
-    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::OK,
+        "level 3 无 LLM 应回退 200"
+    );
     // 客户端错误：语言不支持（404，路由无 de 引擎）
     let status = client()
         .post(format!("{base}/gec/detect"))

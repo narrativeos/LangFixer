@@ -141,9 +141,10 @@ pub trait GecEngine: Send + Sync {
     ///
     /// `llm` 为 LLM 兜底引擎（调用方从运行时 LLM 配置 + 检测模板构建；
     /// `None` 表示未配置）。默认实现：无决策层的引擎在 level 2 无弃权信号
-    /// （等价 1 级）；level 3 无条件触发 LLM（未配置 →
-    /// [`DetectorError::LlmNotConfigured`]）。支持弃权信号的引擎
-    /// （[`CascadeDetector`]）覆写本方法。
+    /// （等价 1 级）；level 3 无条件触发 LLM。触发条件命中但 LLM **未配置**
+    /// → 不再回 503：本轮 ③ 记 `skipped`，质量自描述带 `llm_unconfigured`
+    /// 原因，由结果页横幅说明并给「去配置」入口（审计 F2：未配置 = 跳过，
+    /// 配置了但失败 = 不可用）。支持弃权信号的引擎（[`CascadeDetector`]）覆写本方法。
     ///
     /// 返回的 [`DetectOutcome::timings`] 含各阶段计时（规则 / NLP（含预热）/
     /// LLM / 总耗时）；未覆写的引擎仅填充规则层与总耗时。
@@ -182,42 +183,47 @@ pub trait GecEngine: Send + Sync {
         let mut llm_ran = false;
         // ⑦ dropped 账本（§7）：本路径来源只有 LLM 层；out_of_range 恒 0 预留
         let mut dropped = crate::quality::DroppedLedger::default();
+        // 触发条件命中但 LLM 未配置（审计 F2）：层记 skipped，质量带原因
+        let mut llm_unconfigured = false;
         if force_llm || level == 3 {
-            let llm = llm.ok_or_else(|| {
-                DetectorError::LlmNotConfigured(
-                    "LLM 兜底检测未配置（请在设置界面配置 LLM 参数，或设置 LLM_API_KEY）"
-                        .to_string(),
-                )
-            })?;
-            let t_llm = std::time::Instant::now();
-            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
-            // 不当作「复查确认干净」。运行时失败（超时/排队耗尽/熔断开断）→ 降级：
-            // 保留规则层结果，层记 `unavailable`（与定向复查、L3 失败同一先例），
-            // 不把整次 detect 打回 502。未配置 LLM 仍走上面的 LlmNotConfigured——
-            // 那是要人改设置，不是运行时故障。
-            match llm_layer_detect(llm, text, None).await {
-                Ok((extra, llm_status, clean, chunk, ledger)) => {
-                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-                    llm_confirmed_clean = clean;
-                    llm_ran = true;
-                    llm_chunk = Some(chunk);
-                    dropped.merge(&ledger);
-                    layers.push(LayerReport::new(
-                        shared_model::sources::LLM,
-                        llm_status,
-                        extra.len(),
-                    ));
-                    merge_errors(&mut errors, extra);
+            if let Some(llm) = llm {
+                let t_llm = std::time::Instant::now();
+                // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+                // 不当作「复查确认干净」。运行时失败（超时/排队耗尽/熔断开断）→ 降级：
+                // 保留规则层结果，层记 `unavailable`（与定向复查、L3 失败同一先例），
+                // 不把整次 detect 打回 502。未配置 LLM 记 `skipped`（审计 F2）：
+                // 跳过≠故障，本地层照常出结果，由质量横幅说明原因。
+                match llm_layer_detect(llm, text, None).await {
+                    Ok((extra, llm_status, clean, chunk, ledger)) => {
+                        llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                        llm_confirmed_clean = clean;
+                        llm_ran = true;
+                        llm_chunk = Some(chunk);
+                        dropped.merge(&ledger);
+                        layers.push(LayerReport::new(
+                            shared_model::sources::LLM,
+                            llm_status,
+                            extra.len(),
+                        ));
+                        merge_errors(&mut errors, extra);
+                    }
+                    Err(e) => {
+                        llm_ms = Some(t_llm.elapsed().as_millis() as u64);
+                        layers.push(LayerReport::new(
+                            shared_model::sources::LLM,
+                            "unavailable",
+                            0,
+                        ));
+                        tracing::warn!(error = %e, "LLM 兑底失败：保留规则层结果（本轮 LLM 未参与）");
+                    }
                 }
-                Err(e) => {
-                    llm_ms = Some(t_llm.elapsed().as_millis() as u64);
-                    layers.push(LayerReport::new(
-                        shared_model::sources::LLM,
-                        "unavailable",
-                        0,
-                    ));
-                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则层结果（本轮 LLM 未参与）");
-                }
+            } else {
+                // 未配置 ≠ 运行时故障：③ 记 skipped，不再要求整次请求 503
+                layers.push(LayerReport::new(shared_model::sources::LLM, "skipped", 0));
+                llm_unconfigured = true;
+                tracing::debug!(
+                    "force_llm/level 3 触发但 LLM 未配置 → ③ 记 skipped，本地层照常出结果"
+                );
             }
         }
         // S6 质量自描述（Detect Pipeline v2 §5）：段级预算（本层 LLM + 成员引擎的
@@ -245,6 +251,7 @@ pub trait GecEngine: Send + Sync {
         };
         let mut quality =
             crate::quality::QualityReport::assemble(&layers, chunks.coverage(), run.unowned_chars);
+        mark_llm_unconfigured(llm_unconfigured, &mut quality);
         quality.dropped = dropped;
         Ok(DetectOutcome {
             errors,
@@ -675,6 +682,27 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// 审计 F2：触发条件命中但 LLM 未配置时，quality 自描述不得冒充 full——
+/// 记 `llm_unconfigured` 降级原因（结果页据此显示横幅并给「去设置」入口）。
+/// skipped 本身在 [`crate::quality::QualityReport::assemble`] 里不计降级，故在此补记。
+fn mark_llm_unconfigured(flag: bool, quality: &mut crate::quality::QualityReport) {
+    if !flag {
+        return;
+    }
+    if !quality
+        .degraded_reasons
+        .iter()
+        .any(|r| r == "llm_unconfigured")
+    {
+        quality
+            .degraded_reasons
+            .push("llm_unconfigured".to_string());
+    }
+    if quality.status == "full" {
+        quality.status = "partial".to_string();
+    }
+}
+
 #[async_trait]
 impl GecEngine for CompositeDetector {
     fn kind(&self) -> GecEngineKind {
@@ -795,7 +823,8 @@ impl GecEngine for CompositeDetector {
 /// L3 判「明确无错」但决策模型弃权时视为模型冲突 → 保留 LLM 长尾兜底（不静默覆盖）。
 ///
 /// LLM 引擎由调用方按请求传入（运行时 LLM 配置 + 检测模板现构建，支持设置热更新）；
-/// 触发条件命中但 LLM 未配置 → [`DetectorError::LlmNotConfigured`]（API 层映射 503）。
+/// 触发条件命中但 LLM 未配置 → 不再回 503：③ 记 `skipped`，质量自描述带
+/// `llm_unconfigured` 原因（审计 F2：未配置 = 跳过，配置了但失败 = 不可用）。
 pub struct CascadeDetector {
     pub lang: String,
     pub rule: Arc<dyn GecEngine>,
@@ -1168,58 +1197,71 @@ impl GecEngine for CascadeDetector {
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
         let mut llm_ran = false;
+        // 触发条件命中但 LLM 未配置（审计 F2）：层记 skipped，质量带原因
+        let mut llm_unconfigured = false;
         // 段级预算块执行摘要（③ LLM）与灰区句未复查标记（③-T 句级核算）
         let mut llm_chunk: Option<crate::quality::ChunkStats> = None;
         let mut gray_unresolved = false;
         // ⑦ dropped 账本（§7）：来③ 全文/分块 LLM ⊕ ③-T 定向复查；out_of_range 恒 0 预留
         let mut dropped = crate::quality::DroppedLedger::default();
         if need_llm {
-            let llm = llm.ok_or_else(|| {
-                DetectorError::LlmNotConfigured(
-                    "LLM 兜底检测未配置（请在设置界面配置 LLM 参数，或设置 LLM_API_KEY）"
-                        .to_string(),
-                )
-            })?;
-            let t = std::time::Instant::now();
-            // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
-            // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
-            // 层记 `unavailable`，不把整次 detect 打回 502。
-            // 长文本分块路径的段级事件经同一 sink 透传（chunk_begin/chunk_end）
-            match llm_layer_detect(llm, text, progress.clone()).await {
-                Ok((extra, llm_status, clean, chunk, ledger)) => {
-                    llm_ms = Some(t.elapsed().as_millis() as u64);
-                    llm_confirmed_clean = clean;
-                    llm_ran = true;
-                    llm_chunk = Some(chunk);
-                    dropped.merge(&ledger);
-                    if let Some(sink) = &progress {
-                        sink(crate::progress::StageEvent::Stage {
-                            stage: shared_model::sources::LLM,
-                            status: llm_status,
-                            ms: llm_ms,
-                        });
+            if let Some(llm) = llm {
+                let t = std::time::Instant::now();
+                // 长文本自动走分块并行路径（llm_layer_detect）；解析失败记 `partial`，
+                // 不当作「复查确认干净」。运行时失败降级同默认实现：保留规则/L3 结果，
+                // 层记 `unavailable`，不把整次 detect 打回 502。
+                // 长文本分块路径的段级事件经同一 sink 透传（chunk_begin/chunk_end）
+                match llm_layer_detect(llm, text, progress.clone()).await {
+                    Ok((extra, llm_status, clean, chunk, ledger)) => {
+                        llm_ms = Some(t.elapsed().as_millis() as u64);
+                        llm_confirmed_clean = clean;
+                        llm_ran = true;
+                        llm_chunk = Some(chunk);
+                        dropped.merge(&ledger);
+                        if let Some(sink) = &progress {
+                            sink(crate::progress::StageEvent::Stage {
+                                stage: shared_model::sources::LLM,
+                                status: llm_status,
+                                ms: llm_ms,
+                            });
+                        }
+                        layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
+                        merge_errors(&mut errors, extra);
                     }
-                    layers.push(LayerReport::new(sources::LLM, llm_status, extra.len()));
-                    merge_errors(&mut errors, extra);
+                    Err(e) => {
+                        llm_ms = Some(t.elapsed().as_millis() as u64);
+                        // R6：全文 LLM 未参与时，若 L3 部分定案留有灰区句且尚未
+                        // 定向复查（③-T 不跑）——灰区句本轮同样未复查，句级
+                        // 账本必须扣减，不得把待复查的灰区句计为已复查。
+                        if !targeted_spans.is_empty() {
+                            gray_unresolved = true;
+                        }
+                        if let Some(sink) = &progress {
+                            sink(crate::progress::StageEvent::Stage {
+                                stage: shared_model::sources::LLM,
+                                status: "unavailable",
+                                ms: llm_ms,
+                            });
+                        }
+                        layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
+                        tracing::warn!(error = %e, "LLM 兑底失败：保留规则/L3 结果（本轮 LLM 未参与）");
+                    }
                 }
-                Err(e) => {
-                    llm_ms = Some(t.elapsed().as_millis() as u64);
-                    // R6：全文 LLM 未参与时，若 L3 部分定案留有灰区句且尚未
-                    // 定向复查（③-T 不跑）——灰区句本轮同样未复查，句级
-                    // 账本必须扣减，不得把待复查的灰区句计为已复查。
-                    if !targeted_spans.is_empty() {
-                        gray_unresolved = true;
-                    }
-                    if let Some(sink) = &progress {
-                        sink(crate::progress::StageEvent::Stage {
-                            stage: shared_model::sources::LLM,
-                            status: "unavailable",
-                            ms: llm_ms,
-                        });
-                    }
-                    layers.push(LayerReport::new(sources::LLM, "unavailable", 0));
-                    tracing::warn!(error = %e, "LLM 兜底失败：保留规则/L3 结果（本轮 LLM 未参与）");
+            } else {
+                // 未配置 ≠ 运行时故障（审计 F2）：③ 记 skipped 不再 503；弃权长尾句
+                // 本轮未复查由 chunks 单发未复查（coverage<1）自然降级，不静默冒充已复查。
+                llm_unconfigured = true;
+                if let Some(sink) = &progress {
+                    sink(crate::progress::StageEvent::Stage {
+                        stage: shared_model::sources::LLM,
+                        status: "skipped",
+                        ms: None,
+                    });
                 }
+                layers.push(LayerReport::new(sources::LLM, "skipped", 0));
+                tracing::debug!(
+                    "决策弃权触发 ③ 兑底但 LLM 未配置 → 本轮记 skipped，本地结果照常返回"
+                );
             }
         } else if !targeted_spans.is_empty() {
             // ③-T 定向 LLM 复查：L3 部分定案的灰区句单独送 LLM，
@@ -1278,7 +1320,25 @@ impl GecEngine for CascadeDetector {
                 None => {
                     gray_unresolved = true;
                     targeted_settled = true;
-                    tracing::debug!("L3 部分定案存在灰区句但未配置 LLM → 本轮放行（灰区句未复查）");
+                    // 未配置 ≠ 不可用（审计 F2）：③-T/③ 都记 skipped（不得让阶段条
+                    // 悬在 running，也不得渲染成故障红）；灰区句未复查由句级账本扣减
+                    if let Some(sink) = &progress {
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::TARGETED,
+                            status: "skipped",
+                            ms: None,
+                        });
+                        sink(crate::progress::StageEvent::Stage {
+                            stage: shared_model::sources::LLM,
+                            status: "skipped",
+                            ms: None,
+                        });
+                    }
+                    layers.push(LayerReport::new(sources::LLM, "skipped", 0));
+                    llm_unconfigured = true;
+                    tracing::debug!(
+                        "L3 部分定案存在灰区句但未配置 LLM → ③-T/③ 记 skipped（灰区句本轮未复查）"
+                    );
                 }
             }
         }
@@ -1390,6 +1450,7 @@ impl GecEngine for CascadeDetector {
             chunks.coverage(),
             rule_run.unowned_chars,
         );
+        mark_llm_unconfigured(llm_unconfigured, &mut quality);
         quality.dropped = dropped;
         // 句表铺满序列含纯标点/纯空白片段（所有权不变式所需），句覆盖
         // 分母只计含实词的真实句（与②.5 召回同一口径）；复用上方事件流同源句表，不重复切句
@@ -2382,7 +2443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cascade_level2_abstain_without_llm_configured_errors() {
+    async fn cascade_level2_abstain_without_llm_configured_skips_llm() {
         let endpoint = mock_decision_service(true, false, 0.3).await;
         let cascade = cascade_with_decision(
             Arc::new(FakeRule {
@@ -2391,13 +2452,27 @@ mod tests {
             }),
             endpoint,
         );
-        let err = cascade
+        // 审计 F2：弃权触发 ③ 但未配置 LLM → 不再报错，③ 记 skipped
+        let outcome = cascade
             .detect_level("他昨天报复很大。", 2, false, None)
             .await
-            .unwrap_err();
+            .unwrap();
         assert!(
-            matches!(err, DetectorError::LlmNotConfigured(_)),
-            "弃权 + 未配置 LLM 应返回 LlmNotConfigured，实际: {err:?}"
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
+        assert!(
+            outcome
+                .quality
+                .expect("quality 自描述应存在")
+                .degraded_reasons
+                .iter()
+                .any(|r| r == "llm_unconfigured"),
+            "quality 应带 llm_unconfigured 降级原因"
         );
     }
 
@@ -2462,15 +2537,30 @@ mod tests {
                 .errors
                 .iter()
                 .any(|e| e.source.as_deref() == Some("llm")),
-            "level 3 应无条件触发 LLM 兜底: {:?}",
+            "level 3 应无条件触发 LLM 兑底: {:?}",
             outcome.errors
         );
-        // level 3 未配置 LLM → LlmNotConfigured
-        let err = engine
+        // level 3 未配置 LLM → 不再报错：③ 记 skipped，quality 带 llm_unconfigured
+        let outcome = engine
             .detect_level("正确句子", 3, false, None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, DetectorError::LlmNotConfigured(_)));
+            .unwrap();
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
+        assert!(
+            outcome
+                .quality
+                .expect("quality 自描述应存在")
+                .degraded_reasons
+                .iter()
+                .any(|r| r == "llm_unconfigured")
+        );
     }
 
     /// 默认 trait 实现：level=1 + force_llm=true 也应触发 LLM（「漏报」快捷操作不受 level 限制）
@@ -2508,12 +2598,27 @@ mod tests {
             "level=1 无 force_llm 不应触发 LLM: {:?}",
             outcome.errors
         );
-        // level=1 + force_llm=true 但未配置 LLM → LlmNotConfigured
-        let err = engine
+        // level=1 + force_llm=true 但未配置 LLM → 不再报错：③ 记 skipped
+        let outcome = engine
             .detect_level("正确句子", 1, true, None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, DetectorError::LlmNotConfigured(_)));
+            .unwrap();
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
+        assert!(
+            outcome
+                .quality
+                .expect("quality 自描述应存在")
+                .degraded_reasons
+                .iter()
+                .any(|r| r == "llm_unconfigured")
+        );
     }
 
     #[tokio::test]
@@ -2568,12 +2673,27 @@ mod tests {
             outcome.errors
         );
         assert!(!outcome.decision_abstained);
-        // level 3 未配置 LLM → LlmNotConfigured
-        let err = cascade
+        // level 3 未配置 LLM → 不再报错：③ 记 skipped
+        let outcome = cascade
             .detect_level("他昨天报复很大。", 3, false, None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, DetectorError::LlmNotConfigured(_)));
+            .unwrap();
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
+        assert!(
+            outcome
+                .quality
+                .expect("quality 自描述应存在")
+                .degraded_reasons
+                .iter()
+                .any(|r| r == "llm_unconfigured")
+        );
     }
 
     #[tokio::test]
@@ -2626,12 +2746,27 @@ mod tests {
             .unwrap();
         assert!(outcome.errors.is_empty());
         assert!(!outcome.decision_abstained);
-        // level 3 未配置 LLM → LlmNotConfigured
-        let err = engine
+        // level 3 未配置 LLM → 不再报错：③ 记 skipped，quality 带 llm_unconfigured
+        let outcome = engine
             .detect_level("正确句子", 3, false, None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, DetectorError::LlmNotConfigured(_)));
+            .unwrap();
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
+        assert!(
+            outcome
+                .quality
+                .expect("quality 自描述应存在")
+                .degraded_reasons
+                .iter()
+                .any(|r| r == "llm_unconfigured")
+        );
     }
     // ---------- L3 特征模型（三期：LLM 收缩到纯长尾） ----------
 
@@ -3271,7 +3406,7 @@ mod tests {
     }
 
     /// 默认 detect_level 实现（无决策层引擎）：填充规则层 + LLM + 总耗时；
-    /// level 3 未配置 LLM → LlmNotConfigured
+    /// level 3 未配置 LLM → ③ 记 skipped（审计 F2）
     #[tokio::test]
     async fn default_detect_level_reports_timings() {
         let det: Arc<dyn GecEngine> = Arc::new(FakeRule {
@@ -3286,9 +3421,16 @@ mod tests {
         assert!(outcome.timings.nlp_ms.is_none(), "纯本地检测无 NLP 调用");
         assert!(outcome.timings.decision_ms.is_none());
         assert!(outcome.timings.llm_ms.is_none());
-        // level 3 无条件 LLM：未配置 → LlmNotConfigured
-        let err = det.detect_level("hello", 3, false, None).await.unwrap_err();
-        assert!(matches!(err, DetectorError::LlmNotConfigured(_)));
+        // level 3 无条件 LLM：未配置 → ③ 记 skipped，不再报错
+        let outcome = det.detect_level("hello", 3, false, None).await.unwrap();
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == shared_model::sources::LLM && l.status == "skipped"),
+            "③ 应记 skipped: {:?}",
+            outcome.layers
+        );
     }
 
     /// level 3 + L3 弃权 + LLM 兜底：l3_ms / llm_ms 均被记录
@@ -3429,12 +3571,19 @@ mod tests {
             "llm 层应记 unavailable：{:?}",
             outcome.layers
         );
-        // 未配置 ≠ 运行时失败：仍然明确报错（要人改设置）
-        let e = fake
+        // 未配置 ≠ 运行时失败：运行时失败记 unavailable，未配置记 skipped（审计 F2）
+        let outcome = fake
             .detect_level("他昨天报复很大。", 3, false, None)
             .await
-            .unwrap_err();
-        assert!(matches!(e, DetectorError::LlmNotConfigured(_)), "{e:?}");
+            .expect("未配置 LLM 应记 skipped 而非报错");
+        assert!(
+            outcome
+                .layers
+                .iter()
+                .any(|l| l.layer == "llm" && l.status == "skipped"),
+            "llm 层应记 skipped：{:?}",
+            outcome.layers
+        );
     }
 
     // ── 成熟架构补强：术语库（领域术语保护） ──

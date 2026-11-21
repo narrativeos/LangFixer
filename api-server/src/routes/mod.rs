@@ -92,8 +92,6 @@ impl From<gec_core::DetectorError> for ApiError {
             }
             gec_core::DetectorError::ServiceUnavailable(msg) => ApiError::Upstream(msg),
             gec_core::DetectorError::DetectionFailed(msg) => ApiError::Internal(msg),
-            // LLM 兜底层触发但未配置 LLM → 503（前端提示去设置界面配置）
-            gec_core::DetectorError::LlmNotConfigured(msg) => ApiError::ServiceUnavailable(msg),
         }
     }
 }
