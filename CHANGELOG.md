@@ -421,6 +421,15 @@
  「无此数据」（F4）并刷重复行；摘要账本仍照常留痕，新增集成测试
  `detect_cache_hit_does_not_duplicate_history` 与
  `adopt_verdict_only_decision_error_confirms_and_records_mistake` 防回归。
+- **生产库每日备份做成程序内可配置开关（macOS launchd）**：新增
+ `api-server/src/db_backup.rs`：设置页「生产库每日备份」开关打开即注册
+ LaunchAgent（plist 内联 sqlite3 .backup 一致性快照 + integrity_check + 14 天
+ 保留 + 600 权限，DB 绝对路径注册时烘焙），关闭即撤销；默认关，开发环境零副
+ 作用；重启对账自愈（任务被删/路径变更后重注册）。诚实性：GET 视图拆
+ setting（开关位置）/ installed（launchd 实存）/ enabled（= 两者之与），
+ 面板标签如实显示「任务在位 / 任务缺失 / 未开启」；注册失败直接报错不落盘
+ （设置不说谎）。备份目录为数据库同级 `backups/`（已入 .gitignore，含真实用
+ 户数据绝不入库）。新仓内集成测试 4 个（纯函数，不碰真 launchd）。
 - **desktop-app 补齐审计 F2 遗留的 `DetectorError::LlmNotConfigured` 映射残留**：
  F2 从 gec-core 移除该变体（LLM 未配置改层报 `skipped`，不再报错）时漏改
  desktop-app 两处调用点（`commands.rs` 检测入口 / `media.rs` 媒体检测），导致

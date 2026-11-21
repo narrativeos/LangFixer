@@ -7,6 +7,7 @@ pub mod agent_tools;
 pub mod auth;
 pub mod cache;
 pub mod custom_words;
+pub mod db_backup;
 pub mod deps;
 pub mod detect_history;
 pub mod knowledge_recall;

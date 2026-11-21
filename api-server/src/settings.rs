@@ -74,6 +74,10 @@ pub struct AppSettings {
     /// `GEC_LLM_CONCURRENCY`（`GEC_LLM_CHUNK_CHARS` 仅作用于即席分块路径）。
     #[serde(default)]
     pub doc_jobs: DocJobSettings,
+    /// 生产库每日备份自动化（macOS launchd）：打开即注册 LaunchAgent，关闭即撤销；
+    /// 默认关——开发环境零副作用。任务实体与实存态见 `db_backup` 模块。
+    #[serde(default)]
+    pub db_backup_enabled: bool,
 }
 
 /// 文档级审校作业设置（设置界面「文档审校」卡片；运行时即时生效）
@@ -175,6 +179,7 @@ impl AppSettings {
                 .unwrap_or(true),
             media: MediaSettings::from_env(),
             doc_jobs: DocJobSettings::from_env(),
+            db_backup_enabled: false,
         }
     }
 
@@ -281,6 +286,7 @@ mod tests {
             knowledge_enabled: false,
             media: MediaSettings::default(),
             doc_jobs: DocJobSettings::default(),
+            db_backup_enabled: false,
         };
         s.save_to(&path).unwrap();
         let loaded = AppSettings::load(&path);

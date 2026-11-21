@@ -39,6 +39,16 @@ async fn main() {
     }
     // 重启续跑：把上次进程遗留（created/running）的文档作业重新排队
     routes::doc_jobs::resume_interrupted_jobs(&state);
+    // 每日备份对账：设置开着就幂等重注册 launchd 任务（plist 被人删 / DB 路径变更后自愈）；
+    // 默认关，开发环境零副作用；失败只告警不阻断启动（GET /gec/settings 会如实显示未安装态）
+    if state.settings.read().unwrap().db_backup_enabled {
+        let db_path = state.db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = api_server::db_backup::install(&db_path) {
+                tracing::warn!("每日备份任务对账失败: {e}");
+            }
+        });
+    }
     // 依赖监督（启动自检 + 资源允许时主动拉起本机层服务；拉不起来不静默，见 GET /gec/deps）
     {
         let st = state.clone();

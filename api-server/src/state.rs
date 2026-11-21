@@ -44,6 +44,8 @@ pub struct AppState {
     pub settings: RwLock<AppSettings>,
     /// 设置持久化文件路径（构建时捕获，避免并行进程间环境变量互相干扰）
     pub settings_path: std::path::PathBuf,
+    /// 生产库 SQLite 文件路径（每日备份任务烘焙绝对路径用；`GEC_DB_FILE` > `langfixer.db`）
+    pub db_path: std::path::PathBuf,
     /// LLM 提示词模板库（启动时从磁盘加载；`prompts_dir` 变更时热重载）
     pub llm_templates: RwLock<TemplateStore>,
     /// 纠错模型注册表（`prompts/models.json`；决定 LLM 兜底层输出适配 json/plain；
@@ -437,6 +439,7 @@ impl AppState {
             settings: RwLock::new(settings),
             media_jobs: Arc::new(RwLock::new(media_flow::MediaJobStore::new(&media_root))),
             settings_path,
+            db_path: db_path.clone(),
             llm_breaker: Arc::new(gec_core::CircuitBreaker::default()),
             llm_templates,
             model_registry,

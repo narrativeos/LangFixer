@@ -180,6 +180,10 @@ async function saveProfile() {
 const hanlpEndpoint = ref('')
 /** 离线模式（GEC_OFFLINE）：检测器仅用本地规则，跳过远端 NLP 服务 */
 const offlineMode = ref(false)
+/** 生产库每日备份：开关位置（设置愿望）与 launchd 实存态分开维护，面板不说谎 */
+const dbBackupSetting = ref(false)
+const dbBackupInstalled = ref(false)
+const dbBackupDest = ref('')
 const llmBaseUrl = ref('')
 const llmApiKey = ref('')
 const showLlmKey = ref(false)
@@ -319,6 +323,9 @@ async function load() {
       embeddingModel.value = s.embedding.model
       embeddingApiKey.value = s.embedding.api_key
     }
+    dbBackupSetting.value = s.db_backup?.setting ?? false
+    dbBackupInstalled.value = s.db_backup?.installed ?? false
+    dbBackupDest.value = s.db_backup?.dest ?? ''
     if (s.media) {
       mediaEnabled.value = s.media.enabled
       mediaUseStructure.value = s.media.use_structure_layer
@@ -353,6 +360,7 @@ function formIsDirty(): boolean {
   return (
     hanlpEndpoint.value.trim() !== s.hanlp_endpoint ||
     offlineMode.value !== s.offline_mode ||
+    dbBackupSetting.value !== (s.db_backup?.setting ?? false) ||
     llmBaseUrl.value.trim() !== s.llm.base_url ||
     llmApiKey.value !== s.llm.api_key ||
     llmModel.value.trim() !== s.llm.model ||
@@ -395,10 +403,13 @@ async function save(): Promise<boolean> {
   error.value = ''
   savedMsg.value = ''
   try {
+    // 备份开关只在改动时提交：注册任务带 RunAtLoad，每次保存都重注册会白白多跑一次备份
+    const dbChanged = dbBackupSetting.value !== (savedSnapshot.value?.db_backup?.setting ?? false)
     const s = await api.updateSettings({
       hanlp_endpoint: hanlpEndpoint.value.trim(),
       llm_model_id: llmModelId.value,
       offline_mode: offlineMode.value,
+      ...(dbChanged ? { db_backup_enabled: dbBackupSetting.value } : {}),
       llm: {
         base_url: llmBaseUrl.value.trim(),
         api_key: llmApiKey.value,
@@ -442,6 +453,9 @@ async function save(): Promise<boolean> {
     })
     savedSnapshot.value = s
     llmEnabled.value = s.llm.enabled
+    dbBackupSetting.value = s.db_backup?.setting ?? dbBackupSetting.value
+    dbBackupInstalled.value = s.db_backup?.installed ?? dbBackupInstalled.value
+    dbBackupDest.value = s.db_backup?.dest ?? dbBackupDest.value
     if (s.decision) decisionEnabled.value = s.decision.enabled
     // 保存成功：以服务端确认的状态同步全局 store，检测页「标准检查」状态自动对齐
     store.decisionEnabled = !!s.decision?.enabled
@@ -1493,6 +1507,33 @@ function setProfileCefr(v: string | number) {
       <div class="hint">
         决策表目录扫描 `*_gec_attribution.json`，变更目录后重新加载；
         词表目录（zh/en/ja 共用）存放外置规则词表 `*_gec_lexicon.json`，变更时重建检测器。
+      </div>
+    </LSection>
+
+    <LSection v-if="store.caps.ops" id="set-backup" class="settings-card" title="生产库每日备份" desc="每天 04:00 用 sqlite3 .backup 对生产库做一致性快照（integrity_check 后保留 14 天，macOS launchd）">
+      <template #actions>
+        <LTag :tone="dbBackupSetting && dbBackupInstalled ? 'ok' : dbBackupSetting ? 'warn' : 'neutral'">
+          {{ dbBackupSetting ? (dbBackupInstalled ? '任务在位' : '任务缺失') : '未开启' }}
+        </LTag>
+      </template>
+      <div class="field">
+        <span class="field__label">每日备份</span>
+        <div class="field__ctl">
+          <LSwitch v-model="dbBackupSetting" aria-label="生产库每日备份" />
+          <span class="sub">打开即注册 launchd 任务，关闭即撤销；仅支持 macOS，注册失败会报错且不保存（设置不说谎）</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">备份目录</span>
+        <div class="field__ctl">
+          <span class="sub">{{ dbBackupDest || '（注册时按数据库绝对路径确定）' }}</span>
+        </div>
+      </div>
+      <div v-if="dbBackupSetting && !dbBackupInstalled" class="hint">
+        开关已开但 launchd 任务实存检测为缺失（可能被人工删除）：点保存会重新注册，或重启服务自动对账。
+      </div>
+      <div class="hint">
+        备份落在数据库同级 backups/（文件权限 600）；开发环境默认关，零副作用。
       </div>
     </LSection>
 

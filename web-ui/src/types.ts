@@ -884,6 +884,20 @@ export interface AppSettings {
   embedding: EmbeddingConfig
   /** 载体（图片 / PDF / Word）审校设置（两端同一份定义：`media-flow`） */
   media?: MediaSettingsView
+  /** 生产库每日备份：enabled = 设置愿望 ∧ launchd 实存态，installed = 实存态（仅 macOS 可装） */
+  db_backup?: DbBackupView
+}
+
+/** 生产库每日备份视图（GET /gec/settings.db_backup） */
+export interface DbBackupView {
+  /** 设置愿望原值：开关真实位置 */
+  setting: boolean
+  /** 真实可用态：设置开着且 launchd 任务实存 */
+  enabled: boolean
+  /** launchd 实存态（plist 在且已加载） */
+  installed: boolean
+  /** 备份目录（任务烘焙的绝对路径） */
+  dest: string
 }
 
 /** 载体审校设置（`media_flow::settings::MediaSettings` 的设置面子集） */
@@ -925,6 +939,8 @@ export interface UpdateSettingsBody {
     prompts_dir?: string
   }
   offline_mode?: boolean
+  /** 生产库每日备份开关：true 注册 launchd 任务，false 撤销；失败报错不落盘 */
+  db_backup_enabled?: boolean
   tables_dir?: string
   lexicons_dir?: string
   decision?: {

@@ -72,3 +72,6 @@ decision-model/vendor/
 
 # 本机构建开关（清空 beforeBuildCommand 用；仓库内无人引用，勿入库）
 desktop-app/no-prebuild.json
+
+# 每日备份任务产出（sqlite 快照含真实用户数据，绝不入库）
+backups/

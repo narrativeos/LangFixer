@@ -162,6 +162,9 @@ pub struct SettingsResponse {
     pub media: media_flow::settings::MediaSettings,
     /// 文档级审校作业设置（块大小 / 并发 / 缓存 / 默认预算）
     pub doc_jobs: crate::settings::DocJobSettings,
+    /// 生产库每日备份：enabled 是设置愿望，installed 是 launchd 事实（仅 macOS 可装）；
+    /// 两态不一致时面板如实呈现，重开开关即可修复
+    pub db_backup: DbBackupView,
     /// 可用纠错模型预设列表（选择器；仅含 enabled 条目）
     pub models: Vec<ModelView>,
 }
@@ -193,6 +196,22 @@ pub struct UpdateSettingsRequest {
     pub media: Option<UpdateMediaRequest>,
     /// 文档级审校作业设置（部分更新）
     pub doc_jobs: Option<UpdateDocJobRequest>,
+    /// 生产库每日备份开关：Some(true) 注册 launchd 任务，Some(false) 撤销；
+    /// 注册失败直接报错不落盘（设置不会说谎）
+    pub db_backup_enabled: Option<bool>,
+}
+
+/// 生产库每日备份的设置态 + 实存态视图
+#[derive(Serialize)]
+pub struct DbBackupView {
+    /// 设置愿望原值（开关真实位置；与 installed 分开，任务缺失时不说谎）
+    pub setting: bool,
+    /// 真实可用态 = setting ∧ installed
+    pub enabled: bool,
+    /// launchd 实存态（plist 在且已加载）
+    pub installed: bool,
+    /// 备份目录（任务烘焙的绝对路径；供面板透明展示与排障）
+    pub dest: String,
 }
 
 /// 文档级审校作业设置更新（字段均可缺省 = 保持不变）
@@ -267,6 +286,7 @@ fn to_response(
     s: &AppSettings,
     registry: &gec_core::ModelRegistry,
     decision_config_source: &'static str,
+    db_backup: DbBackupView,
 ) -> SettingsResponse {
     SettingsResponse {
         hanlp_endpoint: s.hanlp_endpoint.clone(),
@@ -307,6 +327,7 @@ fn to_response(
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
         doc_jobs: s.doc_jobs.clone(),
+        db_backup,
         models: registry
             .enabled()
             .iter()
@@ -331,6 +352,7 @@ pub async fn get(
         &s,
         &registry,
         crate::settings::AppSettings::decision_config_source(&state.settings_path),
+        db_backup_view(&state.db_path, s.db_backup_enabled),
     );
     if ctx.gateway && !ctx.admin {
         mask_secrets(&mut resp);
@@ -570,6 +592,21 @@ pub async fn put(
             next.doc_jobs.budget = v;
         }
     }
+    if let Some(v) = req.db_backup_enabled {
+        // 开关即注册/撤销 launchd 任务；失败直接报错且不落盘（设置不说谎）。
+        let db_path = state.db_path.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            if v {
+                crate::db_backup::install(&db_path)
+            } else {
+                crate::db_backup::uninstall()
+            }
+        })
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("每日备份任务操作中断: {e}")))?;
+        outcome.map_err(ApiError::BadRequest)?;
+        next.db_backup_enabled = v;
+    }
     state.apply_settings(next.clone());
     // 依赖监督联动：配置变更后后台重新探测对应服务（用户改完地址保存即见新状态，无需手动重测）
     {
@@ -599,7 +636,19 @@ pub async fn put(
         &next,
         &registry,
         crate::settings::AppSettings::decision_config_source(&state.settings_path),
+        db_backup_view(&state.db_path, next.db_backup_enabled),
     )))
+}
+
+/// 每日备份视图：enabled = 设置愿望 ∧ launchd 实存态（设置不说谎）；setting 回显开关原位置；dest 供面板透明展示。
+fn db_backup_view(db_path: &std::path::Path, setting_on: bool) -> DbBackupView {
+    let installed = crate::db_backup::installed();
+    DbBackupView {
+        setting: setting_on,
+        enabled: setting_on && installed,
+        installed,
+        dest: crate::db_backup::backup_dest(db_path).display().to_string(),
+    }
 }
 
 /// POST /gec/settings/test — 测试指定配置项的服务连通性 / 可用性
