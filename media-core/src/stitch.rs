@@ -163,7 +163,9 @@ pub fn remap(
             1 => {
                 let (id, r) = hits[0];
                 let unit = by_id.get(&id).copied();
-                let local = [s - r[0], en - r[0]];
+                // span 起点可能落在单元间隙/分隔符上（与单元仅部分重叠）：
+                // 局部 span 以单元头为底线钉回 0，不得 debug 下下溢 panic
+                let local = [s.saturating_sub(r[0]), en.saturating_sub(r[0])];
                 let region = unit
                     .map(|u| narrow_run_ref(&u.region, local))
                     .filter(|rg| rg.is_locatable())
@@ -182,7 +184,10 @@ pub fn remap(
             n => (
                 hits[0].0,
                 Region::Unlocated,
-                [s - hits[0].1[0], en.saturating_sub(hits[0].1[0])],
+                [
+                    s.saturating_sub(hits[0].1[0]),
+                    en.saturating_sub(hits[0].1[0]),
+                ],
                 Some(format!("错误跨 {n} 个文本单元，无法落到单个可编辑对象")),
             ),
         };
@@ -250,6 +255,66 @@ mod tests {
             let want = units.iter().find(|u| u.id == *id).unwrap();
             assert_eq!(&st.text[r[0]..r[1]], want.text, "unit {id} 切片不符");
         }
+    }
+
+    #[test]
+    fn remap_span_starting_in_separator_clamps_instead_of_underflow() {
+        // 回归：span 起点落在分隔符、与单元仅部分重叠时，
+        // s - r[0] 在 debug 下减法下溢 panic（gold 评测实捕）；应钉回单元头 0
+        let units = vec![unit(1, "第一行文字"), unit(2, "第二行文字")];
+        let st = stitch(&units);
+        // 错误起点 = 首单元末尾分隔符处，终点伸进第二单元
+        let sep_pos = units[0].text.len();
+        let e = Error::new(
+            "zh",
+            error_types::SPELLING,
+            0.9,
+            [sep_pos, sep_pos + "第".len() + 3],
+            "分第",
+            Some("分第2".to_string()),
+            "test",
+        );
+        let ann = remap(&st, &units, &[e], ApplyMode::ListOnly);
+        assert_eq!(ann.len(), 1);
+        assert_eq!(ann[0].unit_id, 2, "应挂到唯一重叠单元");
+        assert_eq!(ann[0].local_span[0], 0, "分隔符起点应钉回单元头");
+    }
+
+    #[test]
+    fn remap_cross_unit_span_from_separator_is_unlocated_not_panic() {
+        // 回归：起点在分隔符、跨 ≥2 单元→ 旧 n 分支 s - hits[0].1[0] 下溢 panic；
+        // 应记 Unlocated + 跨单元告警
+        let units = vec![
+            unit(1, "第一行文字"),
+            unit(2, "第二行文字"),
+            unit(3, "第三行文字"),
+        ];
+        let st = stitch(&units);
+        // 起点在 1/2 间分隔符之后一格（仍在单元 2 起点之前），终点伸进单元 3
+        let u2r = st.unit_ranges.iter().find(|(id, _)| *id == 2).unwrap().1;
+        let u3r = st.unit_ranges.iter().find(|(id, _)| *id == 3).unwrap().1;
+        let e = Error::new(
+            "zh",
+            error_types::SPELLING,
+            0.9,
+            [u2r[0] - 1, u3r[0] + 3],
+            "跨单元",
+            Some("修正".to_string()),
+            "test",
+        );
+        let ann = remap(&st, &units, &[e], ApplyMode::ListOnly);
+        assert_eq!(ann.len(), 1);
+        assert!(
+            matches!(ann[0].region, Region::Unlocated),
+            "跨单元不得画假框"
+        );
+        assert!(
+            ann[0]
+                .locate_warning
+                .as_deref()
+                .unwrap_or_default()
+                .contains("跨 2 个文本单元")
+        );
     }
 
     #[test]
