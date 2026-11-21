@@ -151,7 +151,7 @@ export const useGecStore = defineStore('gec', {
     /** 检测历史自动刷新：detect / detectLlm / analyze 成功后递增（HistoryPanel 监听此值） */
     historyNonce: 0,
     /** 反思流程导航请求：「到规则面板查看 / 重训练」建议触发（App.vue 监听并切换视图） */
-    navView: null as 'workspace' | 'rules' | 'settings' | 'evolution' | null,
+    navView: null as 'workspace' | 'rules' | 'knowledge' | 'settings' | 'evolution' | null,
     navNonce: 0,
     /** 进化中心 tab 级导航：反思「执行建议」成功后跳到「训练」tab 查看作业结果
      *  （App.vue 不感知；EvolutionCenter 监听 navTabNonce 切换 activeTab） */
@@ -654,7 +654,7 @@ export const useGecStore = defineStore('gec', {
         /* 徽章取数失败不影响主流程 */
       }
     },
-    requestNav(view: 'workspace' | 'rules' | 'settings' | 'evolution', anchor?: string) {
+    requestNav(view: 'workspace' | 'rules' | 'knowledge' | 'settings' | 'evolution', anchor?: string) {
       this.navView = view
       this.settingsAnchor = anchor ?? ''
       this.navNonce += 1

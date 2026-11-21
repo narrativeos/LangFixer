@@ -3,7 +3,10 @@ import { useGecStore } from '../stores/gec'
 import { ATTRIBUTION_LABELS, WEINER_LABELS } from '../types'
 import { errorTypeLabel } from '../lib/labels'
 import { isVerdictOnly } from '../lib/errorDisplay'
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
+import { api } from '../api/client'
+import { toast } from '../ui/toast'
+import { applyCorrections } from '../lib/correct'
 import { LButton, LEmpty, LTag } from '../ui'
 
 const store = useGecStore()
@@ -23,6 +26,46 @@ function label(key: string, table: Record<string, string>): string {
  *  补救/教材内容是泛化引导文案而非有效教学内容，展示反而误导 → 告警样式 + 隐藏两卡 */
 function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
   return item.attribution?.trace?.matched_rule === 'grammar_novice'
+}
+
+/** 审计 F6：兜底桶不是流程终点——送进练习队列 = 与「采纳」同一条反馈路径
+ *  （服务端 record_mistake 写会话错题本 → 「练习与复习」可回顾），
+ *  仅 reason 标注入口来源，不另发明端点 */
+const noviceBusy = reactive<Record<number, boolean>>({})
+
+async function sendToPractice(item: (typeof store.analyzed)[number]) {
+  const i = store.analyzed.indexOf(item)
+  const e = store.errors[i]
+  if (!e || noviceBusy[i]) return
+  noviceBusy[i] = true
+  try {
+    const text = store.text ?? ''
+    const corrected = store.resultsStale ? text : applyCorrections(text, [e])
+    const ctx = corrected !== text ? { src_text: text, corrected_text: corrected } : undefined
+    const res = await api.errorFeedback(
+      store.lang,
+      e,
+      'adopt',
+      '新手兜底桶·送进练习队列',
+      ctx,
+      store.ensureSessionId(),
+    )
+    toast(`已送进练习队列（错题本已收录，可在「练习与复习」回顾）：${res.message}`, 'ok')
+  } catch (err) {
+    toast(`送进练习队列失败：${err instanceof Error ? err.message : String(err)}`, 'danger')
+  } finally {
+    noviceBusy[i] = false
+  }
+}
+
+/** 审计 F6：知识提案暂无直达后端入口，诚实降级——不伪造提交，
+ *  引导到真实存在知识登记通道（运营台→知识维护：导入向导 / 学习知识） */
+function proposeKnowledge() {
+  store.requestNav('knowledge')
+  toast(
+    '兜底桶条目缺具体规则点，知识提案需经知识入库流程登记（运营台 → 知识维护：导入向导 / 学习知识）',
+    'info',
+  )
 }
 </script>
 
@@ -82,6 +125,16 @@ function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
         <div v-if="isNoviceBucket(item)" class="novice-note" role="note">
           命中新手兜底桶（grammar_novice）：只能判定为新手知识缺口，未命中具体规则点；
           补救措施与教材示例为占位引导，已隐藏，等待规则覆盖细化
+          <div class="novice-actions">
+            <LButton
+              size="sm"
+              variant="primary"
+              :loading="noviceBusy[store.analyzed.indexOf(item)]"
+              @click="sendToPractice(item)"
+              >送进练习队列</LButton
+            >
+            <LButton size="sm" @click="proposeKnowledge">加入知识提案</LButton>
+          </div>
         </div>
         <div v-else-if="item.attribution.remedial.length > 0" class="remedial">
           <div class="remedial-title">补救措施</div>
@@ -131,6 +184,11 @@ function isNoviceBucket(item: (typeof store.analyzed)[number]): boolean {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   line-height: var(--lh-body);
+}
+.novice-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 .attr-head {
   display: flex;
