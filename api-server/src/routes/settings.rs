@@ -50,6 +50,9 @@ pub struct DecisionSettingsView {
     pub abstain_threshold: f64,
     /// 决策层开关（`true` 时 `rule` 引擎组合中挂载决策模型层）
     pub enabled: bool,
+    /// 配置生效来源（审计 F7）：`settings_file`（设置文件）| `env`（环境变量
+    /// GEC_DEC_*）| `default`（内置默认）；优先级：设置文件 > 环境变量 > 默认
+    pub config_source: &'static str,
 }
 
 /// 决策模型（vegaml）层参数更新（字段均可缺省 = 保持不变）
@@ -260,7 +263,11 @@ pub struct UpdateLlmRequest {
     pub prompts_dir: Option<String>,
 }
 
-fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsResponse {
+fn to_response(
+    s: &AppSettings,
+    registry: &gec_core::ModelRegistry,
+    decision_config_source: &'static str,
+) -> SettingsResponse {
     SettingsResponse {
         hanlp_endpoint: s.hanlp_endpoint.clone(),
         llm: LlmSettingsView {
@@ -281,6 +288,7 @@ fn to_response(s: &AppSettings, registry: &gec_core::ModelRegistry) -> SettingsR
             timeout_secs: s.decision.timeout_secs,
             abstain_threshold: s.decision.abstain_threshold,
             enabled: s.decision.enabled(),
+            config_source: decision_config_source,
         },
         l3: L3SettingsView {
             endpoint: s.l3.endpoint.clone(),
@@ -319,7 +327,11 @@ pub async fn get(
 ) -> Json<SettingsResponse> {
     let s = state.settings.read().unwrap();
     let registry = state.model_registry.read().unwrap();
-    let mut resp = to_response(&s, &registry);
+    let mut resp = to_response(
+        &s,
+        &registry,
+        crate::settings::AppSettings::decision_config_source(&state.settings_path),
+    );
     if ctx.gateway && !ctx.admin {
         mask_secrets(&mut resp);
     }
@@ -583,7 +595,11 @@ pub async fn put(
         }
     }
     let registry = state.model_registry.read().unwrap();
-    Ok(Json(to_response(&next, &registry)))
+    Ok(Json(to_response(
+        &next,
+        &registry,
+        crate::settings::AppSettings::decision_config_source(&state.settings_path),
+    )))
 }
 
 /// POST /gec/settings/test — 测试指定配置项的服务连通性 / 可用性

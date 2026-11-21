@@ -201,6 +201,16 @@ const decisionModel = ref('')
 const decisionTimeout = ref(10)
 const decisionThreshold = ref(0.5)
 const decisionEnabled = ref(false)
+/** 配置生效来源（审计 F7）：settings_file / env / default */
+const decisionSource = ref('')
+const decisionSourceText = computed(
+  () =>
+    ({
+      settings_file: '设置文件 langfixer-settings.json',
+      env: '环境变量 GEC_DEC_*',
+      default: '内置默认',
+    })[decisionSource.value] ?? '未知（服务端未上报）',
+)
 /** L3 特征模型层（三期）：level 3 先跑特征模型，LLM 收缩到纯长尾 */
 const l3Endpoint = ref('')
 const l3Model = ref('')
@@ -295,6 +305,7 @@ async function load() {
       decisionTimeout.value = s.decision.timeout_secs
       decisionThreshold.value = s.decision.abstain_threshold
       decisionEnabled.value = s.decision.enabled
+      decisionSource.value = s.decision.config_source ?? ''
     }
     if (s.l3) {
       l3Endpoint.value = s.l3.endpoint
@@ -967,7 +978,8 @@ function setProfileCefr(v: string | number) {
           <LTag v-if="d.auto" tone="accent">自动拉起</LTag>
           <span class="sub">{{ d.endpoint || '未配置' }}</span>
         </div>
-        <p v-if="d.state !== 'ok' && (d.reason || d.hint)" class="hint">{{ d.reason || d.hint }}</p>
+        <!-- 决策模型 ok 态也展示探测结果（含门控判据，审计 F7）；其余项 ok 态保持安静 -->
+        <p v-if="(d.reason || d.hint) && (d.state !== 'ok' || d.id === 'decision')" class="hint">{{ d.reason || d.hint }}</p>
         <p v-if="depsMsg[d.id]" class="sub">{{ depsMsg[d.id] }}</p>
         <div v-if="d.managed && (d.state === 'failed' || d.state === 'skipped')" class="actions actions--mt">
           <LButton size="sm" :disabled="depsBusy[d.id]" @click="startDep(d)">拉起服务</LButton>
@@ -1063,6 +1075,12 @@ function setProfileCefr(v: string | number) {
         </div>
       </div>
       <div class="field">
+        <span class="field__label">生效来源</span>
+        <div class="field__ctl">
+          <span class="sub">当前配置来自{{ decisionSourceText }}（优先级：设置文件 > 环境变量 GEC_DEC_* > 内置默认）</span>
+        </div>
+      </div>
+      <div class="field">
         <span class="field__label">服务测试</span>
         <div class="field__ctl">
           <LButton :loading="testing.decision" @click="runTest('decision')">测试决策服务</LButton>
@@ -1076,7 +1094,8 @@ function setProfileCefr(v: string | number) {
         中文后端为双头门控（zh v2，EVOLUTION #11.19）：句头判有错 ∧ 字头定位同步过阈时，
         错误定位到具体缺失字（块矩阵「② 决策模型」列按字级 span 精确命中）；
         句头仅落在弃权线上方的灰区句子给句级提示；更低则弃权交 AI 复查。
-        门控阈值随模型 meta.json（默认句 ≥0.95 ∧ 字 ≥0.30），服务日志与 /health 可见。
+        门控阈值随模型 meta.json（默认句 ≥0.95 ∧ 字 ≥0.30），实际判据见上方
+        「测试决策服务」结果；提示「服务进程为旧版」时重启决策模型服务即可显示实际门控。
       </div>
     </LSection>
 

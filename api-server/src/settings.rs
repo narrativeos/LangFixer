@@ -183,6 +183,29 @@ impl AppSettings {
         let content = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, content)
     }
+
+    /// 决策模型配置的生效来源（审计 F7）：设置文件 > 环境变量 GEC_DEC_* > 内置默认。
+    /// 与 [`AppSettings::load`] 的优先级一致：设置文件可解析时决策层全部字段取自
+    /// 文件（缺失字段取 serde 默认，环境变量不参与）；文件不存在/解析失败才看 env。
+    pub fn decision_config_source(path: &Path) -> &'static str {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if serde_json::from_str::<Self>(&content).is_ok() {
+                return "settings_file";
+            }
+        }
+        const DEC_ENVS: [&str; 5] = [
+            "GEC_DEC_ENDPOINT",
+            "GEC_DEC_MODEL",
+            "GEC_DEC_TIMEOUT_SECS",
+            "GEC_DEC_ABSTAIN_THRESHOLD",
+            "GEC_DEC_ENABLED",
+        ];
+        if DEC_ENVS.iter().any(|k| std::env::var_os(k).is_some()) {
+            "env"
+        } else {
+            "default"
+        }
+    }
 }
 
 #[cfg(test)]

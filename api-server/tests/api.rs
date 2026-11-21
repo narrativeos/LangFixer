@@ -2195,9 +2195,42 @@ async fn detect_history_reuse_and_model_version_invalidation() {
     let _ = std::fs::remove_file(&db);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+/// 审计 F7：决策模型 ok 态下，探测结果（含门控判据）作为 reason 上浮到
+/// GET /gec/deps，随状态条/依赖卡可见，不再藏在盲盒里
+#[tokio::test]
+async fn deps_decision_ok_reason_carries_gates() {
+    let _guard = env_guard();
+    let dec = start_mock_decision(false, None).await;
+    unsafe {
+        std::env::set_var("GEC_DEC_ENABLED", "1");
+        std::env::set_var("GEC_DEC_ENDPOINT", &dec);
+    }
+    let (base, state) = build_server_locked_full(None, Some(&lexicons_abs())).await;
+    api_server::deps::recheck(&state, "decision").await;
+    let c = client();
+    let text = send_text(&c, "GET", &format!("{base}/gec/deps"), None).await;
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let item = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "decision")
+        .expect("deps 应含 decision 项");
+    assert_eq!(
+        item["state"].as_str(),
+        Some("ok"),
+        "mock 在线应判 ok: {text}"
+    );
+    let reason = item["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("门控判据") && reason.contains("句≥0.95") && reason.contains("字≥0.30"),
+        "ok 态 reason 应携带门控判据原文: {reason}"
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 // 设置界面（GET/PUT /gec/settings）
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────
 
 /// 发送请求并读取响应文本；连接层瞬态错误（ConnectionReset / IncompleteMessage）
 /// 有界重试 3 次（并行测试高负载下本地服务可能瞬时断连；重试不改变测试语义）
@@ -2839,6 +2872,8 @@ async fn start_mock_decision(abstain: bool, model_version: Option<&str>) -> Stri
                             "status": "ok",
                             "mode": "sklearn",
                             "versions": versions,
+                            // 审计 F7：新版服务会上报门控判据，测试据此验证透传
+                            "gates": { "zh": { "sent": 0.95, "char": 0.3 } },
                         })),
                     )
                         .into_response()

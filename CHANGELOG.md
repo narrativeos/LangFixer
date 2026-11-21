@@ -6,6 +6,16 @@
 
 ### 新增
 
+- **审计 F7：决策模型门控判据全程可见 + 配置生效来源标注**：`test_decision` 改查服务
+  `/health` 全量 body，探测结果尾部附上实际门控判据（「门控判据 zh 句≥0.95 ∧ 字≥0.30」）；
+  `/health` 可达但无 `gates` 字段时诚实提示「服务进程为旧版，请重启决策模型服务」
+  （旧进程残留不再伪装成新配置，`gec-core/src/settings_test.rs`）；决策项 ok 态下探测
+  结果作为 `reason` 上浮到 `GET /gec/deps`（`api-server/src/deps.rs` `ok_reason`），随状态
+  条提示与运营台依赖卡展示（`PipelineStatus.vue` / `SettingsPanel.vue`）。设置页决策卡
+  新增「生效来源」字段（设置文件 / 环境变量 GEC_DEC_* / 内置默认，
+  `AppSettings::decision_config_source`），一眼看清当前配置从哪里来。测试：gec-core 新增
+  带/不带 gates 两例，api 集成新增 ok 态 deps.reason 携带门控判据一例。
+
 - **② 决策模型重新接入产品路径（默认开 + 设置入口恢复 + 门控可见）**：zh v2 晋级后产品
   拍板执行——`GEC_DEC_ENABLED` 默认值改 1（`gec-core/src/decision.rs`，旧配置文件无
   `decision.enabled` 字段时也按开启处理，显式 0 可退）；设置页恢复「决策模型」服务概览行

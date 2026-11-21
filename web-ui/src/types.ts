@@ -801,9 +801,12 @@ export interface DecisionSettings {
   timeout_secs: number
   /** 弃权阈值：has_error_prob 低于该值视为无错误 */
   abstain_threshold: number
-  /** true = 决策层已启用。该层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：默认 false，
-   *  仅实验开关（GEC_DEC_ENABLED=1 / 设置文件）显式开启；设置界面不再提供入口 */
+  /** true = 决策层已启用（zh v2 双头门控达标后默认开启，EVOLUTION #11.19 补五；
+   *  设置界面「决策模型」卡片可开关） */
   enabled: boolean
+  /** 配置生效来源（审计 F7）：settings_file（设置文件）> env（环境变量 GEC_DEC_*）
+   *  > default（内置默认） */
+  config_source?: 'settings_file' | 'env' | 'default'
 }
 
 /** L3 特征模型层参数（GET /gec/settings → l3；三期：level 3 先跑特征模型，LLM 收缩到纯长尾） */

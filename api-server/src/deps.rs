@@ -373,6 +373,12 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
     (res.ok, res.message, t0.elapsed().as_millis() as u64)
 }
 
+/// ok 态下的 reason：决策模型把探测结果（含门控判据 / 旧版进程提示）原样上浮，
+/// 让门控口径随状态条与依赖卡可见（审计 F7：判据不出盲盒）；其余项 ok 态照旧静默。
+fn ok_reason(id: &str, msg: &str) -> Option<String> {
+    (id == "decision" && !msg.is_empty()).then(|| msg.to_string())
+}
+
 /// 拉起子进程（stdout/stderr 汇入 log/supervisor/<name>；进程不随 api-server 退出被杀）
 async fn spawn_logged(
     spec: &LocalSpec,
@@ -437,7 +443,7 @@ fn bring_up_local<'a>(
             // 地址非本机：不是我们能拉起的对象，交由远程失败路径
             let (ok, msg, lat) = probe(state, id, &s).await;
             let (state_v, reason, hint) = if ok {
-                ("ok", None, None)
+                ("ok", ok_reason(id, &msg), None)
             } else {
                 (
                 "failed",
@@ -461,13 +467,13 @@ fn bring_up_local<'a>(
         };
 
         // 已健康则直接 ok（幂等：重复启动前先探测）
-        let (ok, _msg, lat) = probe(state, id, &s).await;
+        let (ok, msg, lat) = probe(state, id, &s).await;
         if ok {
             update(state, id, |it| {
                 it.endpoint = endpoint.clone();
                 it.state = "ok";
                 it.managed = true;
-                it.reason = None;
+                it.reason = ok_reason(id, &msg);
                 it.hint = None;
                 it.latency_ms = lat;
             });
@@ -699,7 +705,7 @@ pub async fn recheck(state: &Arc<AppState>, id: &str) {
         it.latency_ms = lat;
         if ok {
             it.state = "ok";
-            it.reason = None;
+            it.reason = ok_reason(id, &msg);
             it.hint = None;
         } else {
             it.state = "failed";

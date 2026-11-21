@@ -97,8 +97,7 @@ pub async fn test_hanlp(endpoint: &str) -> TestResult {
         );
     }
     #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10));
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
     #[cfg(test)]
     {
         // 健康探测在测试里指向 127.0.0.1 mock，不走系统代理，见 statistical.rs 根因注释
@@ -153,8 +152,8 @@ pub async fn test_llm(base_url: &str, api_key: &str, model: &str, timeout_secs: 
     }
     // 测试请求用更短的超时（配置超时上限 10 秒），避免慢服务长时间挂起测试
     #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs.clamp(1, 10)));
+    let mut builder =
+        reqwest::Client::builder().timeout(Duration::from_secs(timeout_secs.clamp(1, 10)));
     #[cfg(test)]
     {
         // 同上：测试端点为本机 mock，不走系统代理
@@ -261,8 +260,24 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
             } else {
                 "判定无错"
             };
-            // 查询服务运行模式，在结果中明确区分「真实模型」与「mock / 启发式回退」
-            let (mode, versions) = decision_service_health(config).await;
+            // 查询服务运行模式与门控判据，在结果中明确区分「真实模型」与「mock /
+            // 启发式回退」（审计 F7：门控不再是盲盒）；/health 可达但无 gates 字段
+            // = 服务进程为旧版（未重启加载新版 server.py），诚实提示重启
+            let health = decision_service_health(config).await;
+            let mode = health
+                .as_ref()
+                .and_then(|b| b["mode"].as_str())
+                .map(|s| s.to_string());
+            let versions: Vec<(String, String)> = health
+                .as_ref()
+                .and_then(|b| b.get("versions"))
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(l, v)| v.as_str().map(|s| (l.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
             let mode_note = match mode.as_deref() {
                 Some("mock") => "mock 启发式模式，非真实模型，仅用于开发/测试",
                 Some("heuristic-fallback") => "未加载到任何模型，启发式回退，非真实模型",
@@ -271,6 +286,32 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
                 Some(m) => m,
                 None => "",
             };
+            let gates_note = match health.as_ref().and_then(|b| b.get("gates")) {
+                Some(g) => {
+                    let parts: Vec<String> = g
+                        .as_object()
+                        .map(|m| {
+                            m.iter()
+                                .filter_map(|(l, v)| {
+                                    let sent = v["sent"].as_f64()?;
+                                    let char_ = v["char"].as_f64()?;
+                                    Some(format!("{l} 句≥{sent:.2} ∧ 字≥{char_:.2}"))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!("；门控判据 {}", parts.join("，"))
+                    }
+                }
+                // /health 可达但无 gates 字段 = 旧版服务进程（审计 F7）
+                None if health.is_some() => {
+                    "；未上报门控判据（服务进程为旧版，请重启决策模型服务）".to_string()
+                }
+                None => String::new(),
+            };
             let version_note = versions
                 .iter()
                 .map(|(l, v)| format!("{l}={v}"))
@@ -278,19 +319,22 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
                 .join(", ");
             let message = match (mode_note.is_empty(), version_note.is_empty()) {
                 (true, true) => format!(
-                    "决策模型服务可达（模型 {}；测试句判定：{}）",
-                    config.model, detail
+                    "决策模型服务可达（模型 {}；测试句判定：{}）{}",
+                    config.model, detail, gates_note
                 ),
                 (true, false) => format!(
-                    "决策模型服务可达（模型 {}；模型版本 {}；测试句判定：{}）",
-                    config.model, version_note, detail
+                    "决策模型服务可达（模型 {}；模型版本 {}；测试句判定：{}）{}",
+                    config.model, version_note, detail, gates_note
                 ),
                 (false, true) => {
-                    format!("决策模型服务可达（{}；测试句判定：{}）", mode_note, detail)
+                    format!(
+                        "决策模型服务可达（{}；测试句判定：{}）{}",
+                        mode_note, detail, gates_note
+                    )
                 }
                 (false, false) => format!(
-                    "决策模型服务可达（{}；模型版本 {}；测试句判定：{}）",
-                    mode_note, version_note, detail
+                    "决策模型服务可达（{}；模型版本 {}；测试句判定：{}）{}",
+                    mode_note, version_note, detail, gates_note
                 ),
             };
             ok_result(target, message, started)
@@ -299,13 +343,10 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
     }
 }
 
-/// 查询决策服务 `GET /health`：返回 `(mode, versions)`。
-/// - `mode`：服务运行模式（mock / heuristic-fallback / vegaml / sklearn / mixed）
-/// - `versions`：各语言模型版本号（每次重训练自增 `v1, v2, ...`；
-///   该语言无模型 / 旧服务无 `versions` 字段时缺省）
-async fn decision_service_health(
-    config: &DecisionConfig,
-) -> (Option<String>, Vec<(String, String)>) {
+/// 查询决策服务 `GET /health`：返回完整响应体（不可达 / 非 JSON 时 None）。
+/// 调用方从中取 mode（运行模式）/ versions（各语言模型版本）/ gates（门控判据，
+/// 审计 F7：旧版服务无此字段）。
+async fn decision_service_health(config: &DecisionConfig) -> Option<serde_json::Value> {
     #[allow(unused_mut)] // 非测试构建不走 no_proxy 分支
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(3));
     #[cfg(test)]
@@ -315,28 +356,14 @@ async fn decision_service_health(
     }
     let client = match builder.build() {
         Ok(c) => c,
-        Err(_) => return (None, Vec::new()),
+        Err(_) => return None,
     };
     let url = format!("{}/health", config.endpoint.trim_end_matches('/'));
     let body = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(_) => return (None, Vec::new()),
+        Ok(r) if r.status().is_success() => r,
+        _ => return None,
     };
-    let body: serde_json::Value = match body.json().await {
-        Ok(b) => b,
-        Err(_) => return (None, Vec::new()),
-    };
-    let mode = body["mode"].as_str().map(|s| s.to_string());
-    let versions = body
-        .get("versions")
-        .and_then(|v| v.as_object())
-        .map(|m| {
-            m.iter()
-                .filter_map(|(l, v)| v.as_str().map(|s| (l.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    (mode, versions)
+    body.json().await.ok()
 }
 
 /// L3 特征模型服务测试：`POST {endpoint}/l3-detect`
@@ -345,7 +372,11 @@ pub async fn test_l3(config: &L3FeatureConfig) -> TestResult {
     let started = Instant::now();
     // 显式关闭时该层不参与校正（回退无条件 LLM），不探测、不报红
     if !config.enabled() {
-        return ok_result(target, "特征模型未启用（校正由 LLM 复查层直接处理）", started);
+        return ok_result(
+            target,
+            "特征模型未启用（校正由 LLM 复查层直接处理）",
+            started,
+        );
     }
     if config.endpoint.trim().is_empty() {
         return err_result(
@@ -695,6 +726,86 @@ mod tests {
         let r = test_decision(&decision).await;
         assert!(r.ok, "message: {}", r.message);
         assert!(r.message.contains("my-model"), "message: {}", r.message);
+    }
+
+    /// 服务健康且上报 gates（审计 F7）：测试结果直接显示实际门控判据
+    #[tokio::test]
+    async fn decision_health_with_gates_shows_actual_gates() {
+        let app = axum::Router::new()
+            .route(
+                "/decide",
+                axum::routing::post(|body: axum::body::Bytes| async move {
+                    let _ = body;
+                    (axum::http::StatusCode::OK, axum::Json(serde_json::json!({
+                        "has_error": false, "has_error_prob": 0.1, "abstain": false, "errors": []
+                    }))).into_response()
+                }),
+            )
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok", "mode": "trackb",
+                        "gates": {"zh": {"sent": 0.95, "char": 0.3}}
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let decision = DecisionConfig {
+            endpoint: format!("http://{addr}"),
+            enabled: true,
+            ..Default::default()
+        };
+        let r = test_decision(&decision).await;
+        assert!(r.ok, "message: {}", r.message);
+        assert!(
+            r.message.contains("门控判据 zh 句≥0.95 ∧ 字≥0.30"),
+            "message: {}",
+            r.message
+        );
+        assert!(!r.message.contains("旧版"), "message: {}", r.message);
+    }
+
+    /// /health 可达但无 gates 字段（旧版服务进程）：诚实提示重启（审计 F7）
+    #[tokio::test]
+    async fn decision_health_without_gates_field_hints_stale_process() {
+        let app = axum::Router::new()
+            .route(
+                "/decide",
+                axum::routing::post(|body: axum::body::Bytes| async move {
+                    let _ = body;
+                    (axum::http::StatusCode::OK, axum::Json(serde_json::json!({
+                        "has_error": false, "has_error_prob": 0.1, "abstain": false, "errors": []
+                    }))).into_response()
+                }),
+            )
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"status": "ok", "mode": "mixed"}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let decision = DecisionConfig {
+            endpoint: format!("http://{addr}"),
+            enabled: true,
+            ..Default::default()
+        };
+        let r = test_decision(&decision).await;
+        assert!(r.ok, "message: {}", r.message);
+        assert!(
+            r.message.contains("服务进程为旧版，请重启"),
+            "message: {}",
+            r.message
+        );
     }
 
     #[tokio::test]
