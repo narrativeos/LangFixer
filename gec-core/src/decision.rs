@@ -31,9 +31,10 @@
 //! 环境变量：`GEC_DEC_ENDPOINT`（默认 `http://127.0.0.1:4804`）/
 //! `GEC_DEC_TIMEOUT_SECS`（默认 10）/ `GEC_DEC_MODEL`（默认 `vegaml-0.8b`）/
 //! `GEC_DEC_ABSTAIN_THRESHOLD`（默认 0.5）/ `GEC_DEC_ENABLED`
-//! （决策层开关：**默认关闭**（P0.5：L3 特征模型是唯一的 pre-LLM 门控，
-//! 决策模型与 L3 同为句级二分类门控且 L3 严格更强，两者同开时决策模型是冗余层；
-//! 见仓库根 `EVOLUTION.md` §1）；显式 `GEC_DEC_ENABLED=1`/`true` 开启（opt-in））。
+//! （决策层开关：**默认开启**——zh v2（trackb 双头门控，EVOLUTION.md #11.19 补五）
+//! 达标后重新接入产品路径；显式 `GEC_DEC_ENABLED=0`/`false` 关闭）。
+//! zh 后端门控判据「句头 p≥0.95 ∧ 字头 p≥0.3」在服务侧 meta.json，
+//! 句级合成带 [.5, 句阈) 与弃权（<.5 灰区）语义见服务契约 v2。
 //! 运行时设置（设置界面 / 设置文件）中的 `decision` 字段优先于环境变量。
 
 use std::time::Duration;
@@ -77,12 +78,10 @@ pub struct DecisionConfig {
     /// 弃权阈值：句级 `has_error_prob` 低于该值时不产出错误（conformal 校准后概率）
     #[serde(default = "default_abstain_threshold")]
     pub abstain_threshold: f64,
-    /// 决策层开关：**默认 `false`**——该层**待发布**（EVOLUTION.md §13 #10；
-    /// 2026-11-13 口径：线不放弃，待找到更合适的决策模型后上线。此前评测显示
-    /// 零样本 vegaml 任务适配不足，L3 特征模型是当前唯一的 pre-LLM 门控）；
-    /// 代码保留，仅 `GEC_DEC_ENABLED=1` / 设置文件显式开启时在 `rule` 引擎组合中
-    /// 挂载（规则为主 + 决策合并）。设置界面不提供该开关；
-    /// 旧版设置文件缺失该字段时按关闭处理
+    /// 决策层开关：**默认 `true`**——zh v2（trackb 双头门控）达标后重新
+    /// 接入产品路径（EVOLUTION.md #11.19 补五，产品拍板默认开）；
+    /// 显式 `GEC_DEC_ENABLED=0`/`false` 或设置界面关闭时不挂载；
+    /// 设置文件缺失该字段时按开启处理
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -99,14 +98,15 @@ impl Default for DecisionConfig {
     }
 }
 
-/// 决策层默认**关闭**（P0.5：L3 特征模型是唯一的 pre-LLM 门控；opt-in 见
-/// `GEC_DEC_ENABLED` / 设置界面）
+/// 决策层默认**开启**（zh v2 trackb 门控达标后重新接入产品路径，
+/// EVOLUTION.md #11.19 补五；显式 `GEC_DEC_ENABLED=0`/`false` 或设置界面
+/// 关闭；服务不可用时经熔断器自动回退纯规则 + LLM，不阻断检测）
 fn default_enabled() -> bool {
-    false
+    true
 }
 
 impl DecisionConfig {
-    /// 决策层是否启用（**默认 false**；设置界面开关 / `GEC_DEC_ENABLED` 可显式覆盖）
+    /// 决策层是否启用（**默认 true**；设置界面开关 / `GEC_DEC_ENABLED=0` 可显式关闭）
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -115,8 +115,8 @@ impl DecisionConfig {
     /// `GEC_DEC_ENDPOINT` / `GEC_DEC_TIMEOUT_SECS` / `GEC_DEC_MODEL` /
     /// `GEC_DEC_ABSTAIN_THRESHOLD` / `GEC_DEC_ENABLED`
     ///
-    /// 默认**关闭**（P0.5：L3 是唯一的 pre-LLM 门控）；
-    /// 显式 `GEC_DEC_ENABLED=1`/`true` 时开启（opt-in）。
+    /// 默认**开启**（zh v2 达标，#11.19 补五）；
+    /// 显式 `GEC_DEC_ENABLED=0`/`false` 时关闭。
     pub fn from_env() -> Self {
         let base = Self::default();
         let endpoint = std::env::var("GEC_DEC_ENDPOINT").unwrap_or(base.endpoint);
@@ -129,10 +129,10 @@ impl DecisionConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(base.abstain_threshold);
-        // 默认关闭；仅当 GEC_DEC_ENABLED 显式取 1/true 时开启（opt-in）
+        // 默认开启；仅当 GEC_DEC_ENABLED 显式取 0/false 时关闭
         let enabled = match std::env::var("GEC_DEC_ENABLED") {
             Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-            Err(_) => false,
+            Err(_) => true,
         };
         Self {
             endpoint,
@@ -871,31 +871,31 @@ mod tests {
     }
 
     #[test]
-    fn config_from_env_default_off_opt_in() {
+    fn config_from_env_default_on_opt_out() {
         unsafe {
             std::env::remove_var("GEC_DEC_ENDPOINT");
             std::env::remove_var("GEC_DEC_ENABLED");
             std::env::remove_var("GEC_DEC_MODEL");
         }
-        // 未显式配置 → 默认关闭（P0.5：L3 是唯一的 pre-LLM 门控）
+        // 未显式配置 → 默认开启（zh v2 trackb 门控达标，#11.19 补五）
         let cfg = DecisionConfig::from_env();
-        assert!(!cfg.enabled());
+        assert!(cfg.enabled());
         assert_eq!(cfg.endpoint, "http://127.0.0.1:4804");
-        // 显式 GEC_DEC_ENABLED=1 / true → 开启（opt-in）
+        // 显式 GEC_DEC_ENABLED=1 / true → 仍开启
         unsafe { std::env::set_var("GEC_DEC_ENABLED", "1") }
         assert!(DecisionConfig::from_env().enabled());
         unsafe { std::env::set_var("GEC_DEC_ENABLED", "true") }
         assert!(DecisionConfig::from_env().enabled());
-        // 显式 0 / false → 关闭
+        // 显式 0 / false → 关闭（opt-out）
         unsafe { std::env::set_var("GEC_DEC_ENABLED", "0") }
         assert!(!DecisionConfig::from_env().enabled());
         unsafe { std::env::set_var("GEC_DEC_ENABLED", "false") }
         assert!(!DecisionConfig::from_env().enabled());
         unsafe { std::env::remove_var("GEC_DEC_ENABLED") }
-        // 旧版设置文件（无 enabled 字段）→ 默认关闭
+        // 旧版设置文件（无 enabled 字段）→ 默认开启（与 from_env 一致）
         let old = r#"{"endpoint":"http://10.0.0.9:4804","timeout_secs":5,"model":"m","abstain_threshold":0.6}"#;
         let cfg: DecisionConfig = serde_json::from_str(old).unwrap();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert_eq!(cfg.abstain_threshold, 0.6);
         // 显式 enabled=true 的旧文件 → 尊重开启
         let on = r#"{"enabled":true}"#;

@@ -254,6 +254,8 @@ class VegaAdapter:
     models: dict[str, Any] = field(default_factory=dict)
     backends: dict[str, str] = field(default_factory=dict)
     versions: dict[str, str] = field(default_factory=dict)
+    # trackb 后端的门控判据（meta.json gates，供前端显示「句≥x ∧ 字≥y」）
+    gates: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def load(self) -> None:
         vegaml = None
@@ -303,6 +305,7 @@ class VegaAdapter:
             print(f"[decision-model] 加载 {lang} 模型（trackb 双头，版本 {v or '未知'}，"
                   f"门控 sent≥{gates['sent']:.2f} ∧ char≥{gates['char']:.2f}）: {model_path}",
                   file=sys.stderr)
+            self.gates[lang] = {"sent": gates["sent"], "char": gates["char"]}
             return True
         except Exception as e:  # noqa: BLE001
             print(f"[decision-model] 加载 {lang} trackb 模型失败（{e}），尝试 sklearn 回退", file=sys.stderr)
@@ -393,7 +396,14 @@ async def health() -> JSONResponse:
         # 各语言模型版本号（meta.json；该语言无模型时缺省 → Rust 侧版本未知）
         versions = adapter.versions or None
     return JSONResponse(
-        {"status": "ok", "mode": mode, "backends": adapter.backends or None, "versions": versions}
+        {
+            "status": "ok",
+            "mode": mode,
+            "backends": adapter.backends or None,
+            "versions": versions,
+            # trackb 门控判据（仅 trackb 后端产出；前端显示用，Rust 侧忽略）
+            "gates": getattr(adapter, "gates", None) or None,
+        }
     )
 
 

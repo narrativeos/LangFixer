@@ -10,11 +10,11 @@
 //! - [`compose_detector`]：按语言组合最终引擎的入口
 //!
 //! 三级响应（API `level` 参数 1/2/3）：
-//! - `rule`（默认，1 级）：纯规则检测器；若决策模型层已**显式**启用
-//!   （默认关闭，P0.5 起 opt-in；`GEC_DEC_ENABLED=1`/`true` 或设置文件
-//!   `decision.enabled=true` 时开启）则组合为 [`CascadeDetector`]（「规则为主 +
+//! - `rule`（默认，1 级）：纯规则检测器；若决策模型层已启用
+//!   （**默认开启**，zh v2 达标后重新接入产品路径，EVOLUTION.md #11.19 补五；
+//!   `GEC_DEC_ENABLED=0`/`false` 或设置界面关闭时不挂载）则组合为 [`CascadeDetector`]（「规则为主 +
 //!   决策模型合并 + 弃权信号」）；
-//! - `decision`：显式启用决策模型层（vegaml，处理规则覆盖不到的模糊情况）；
+//! - `decision`：启用决策模型层（vegaml，处理规则覆盖不到的模糊情况）；
 //! - `statistical`：统计 GEC 服务为主 + 规则兜底（见 [`crate::statistical`]）；
 //! - `llm`：预留。
 //!

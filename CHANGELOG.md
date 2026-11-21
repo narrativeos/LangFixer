@@ -6,6 +6,18 @@
 
 ### 新增
 
+- **② 决策模型重新接入产品路径（默认开 + 设置入口恢复 + 门控可见）**：zh v2 晋级后产品
+  拍板执行——`GEC_DEC_ENABLED` 默认值改 1（`gec-core/src/decision.rs`，旧配置文件无
+  `decision.enabled` 字段时也按开启处理，显式 0 可退）；设置页恢复「决策模型」服务概览行
+  与完整设置卡片（开关/服务地址/模型/超时/弃权阈值/服务测试，`SettingsPanel.vue`，对齐
+  L3 卡形态）；trackb 双头门控（句头 ≥.95 ∧ 字头 ≥.3）经 `server.py` `/health` 新增
+  `gates` 字段透出，设置卡与流水线状态条显示实际判据（不再是盲盒）。真实模式端到端
+  已验：干净文本句头不过门 → 层诚实记 `abstained`（弃权进 L3/LLM 兑底路径），服务宕机
+  按既有路径记 `unavailable`（测试断言覆盖）。测试封闭性新模式：`build_server_locked`
+  对未显式配置的测试条件式 opt-out（`GEC_DEC_ENABLED` 未设时置 0），想开决策层的测试
+  持环境锁显式置 1，默认开不再污染 hermetic 质量断言。决策模型侧产品决策记录见
+  EVOLUTION #11.19 补六。
+
 - **② 决策模型 zh 后端晋级 v2（trackb 双头）+ /decide 契约 v2**：`decision-model/server.py`
   新增 `_TrackBPredictor` 双头后端（句头 MLP p≥.95 ∧ 字头 p≥.3 门控联合判据，加载序
   vegaml→trackb→sklearn），字级条目复用 `missing` 类型非零宽 span、句头 [.5,.95) 出句级

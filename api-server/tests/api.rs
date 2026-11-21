@@ -117,6 +117,12 @@ async fn build_server_locked(
                 .display()
                 .to_string(),
         );
+        // 决策层测试封闭性：默认已开（zh v2 #11.19 补五），未显式配置的测试按关闭
+        // 处理（否则本机 4804 真实服务/不可达端点会改变质量报告与 LLM 触发行为）；
+        // 开启决策层的测试需先持 env 锁显式 set GEC_DEC_ENABLED=1 + 指向 mock 端点
+        if std::env::var("GEC_DEC_ENABLED").is_err() {
+            std::env::set_var("GEC_DEC_ENABLED", "0");
+        }
         // 词表目录：显式传参时**强制**设置（而非「未设置才补设」）——
         // 并行测试会互删/互设 GEC_LEXICONS_DIR，条件设置会让本 server
         // 读到别的测试的目录（或无目录），产生跨测试竞态

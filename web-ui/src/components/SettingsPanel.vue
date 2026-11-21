@@ -264,6 +264,8 @@ function numRef(r: Ref<number>) {
 const llmTimeoutNum = numRef(llmTimeout)
 const l3TimeoutNum = numRef(l3Timeout)
 const l3ThresholdNum = numRef(l3Threshold)
+const decisionTimeoutNum = numRef(decisionTimeout)
+const decisionThresholdNum = numRef(decisionThreshold)
 
 async function load() {
   loading.value = true
@@ -448,10 +450,53 @@ onMounted(() => {
   void refreshDeps()
 })
 
-// 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
-// 「启用决策层」开关与自动保存逻辑移除，decision* 表单值仅随 GET/PUT 透传，
-// 保持服务端状态与设置契约不变；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启。
-/** load() 从服务端回填表单值期间为 true，避免误触发自动保存（如 L3 开关） */
+// ── 「启用决策层」开关：切换即自动保存（即时生效 + 持久化），状态条 ② 随之同步 ──
+// （zh v2 trackb 门控达标后重新接入产品路径、默认开启，EVOLUTION.md #11.19 补五）
+const decisionApplying = ref(false)
+const decisionApplyMsg = ref('')
+let decisionApplyTimer: ReturnType<typeof setTimeout> | null = null
+let decisionAutoSaveBusy = false
+watch(decisionEnabled, async (v, old) => {
+  if (old === undefined || suppressAutoSave || decisionAutoSaveBusy) return
+  decisionAutoSaveBusy = true
+  decisionApplying.value = true
+  decisionApplyMsg.value = ''
+  // 乐观更新全局 store：状态条 ② 立即跟随开关
+  store.decisionEnabled = v
+  try {
+    const res = await api.updateSettings({ decision: { enabled: v } })
+    savedSnapshot.value = res
+    const confirmed = res.decision?.enabled
+    if (confirmed === undefined || confirmed === v) {
+      decisionApplyMsg.value = `决策模型层已${v ? '启用' : '停用'}（即时生效，已持久化）`
+    } else {
+      // 服务端未接受该值：回滚开关 + store
+      suppressAutoSave = true
+      decisionEnabled.value = confirmed
+      store.decisionEnabled = confirmed
+      await nextTick()
+      suppressAutoSave = false
+      decisionApplyMsg.value = '保存失败：服务端未接受该状态'
+    }
+  } catch (e) {
+    // 保存失败：回滚开关 + store，避免界面状态与服务端不一致
+    suppressAutoSave = true
+    decisionEnabled.value = !v
+    store.decisionEnabled = !v
+    await nextTick()
+    suppressAutoSave = false
+    decisionApplyMsg.value = `保存失败：${errMsg(e)}`
+  } finally {
+    decisionAutoSaveBusy = false
+    decisionApplying.value = false
+    if (decisionApplyTimer) clearTimeout(decisionApplyTimer)
+    decisionApplyTimer = setTimeout(() => {
+      decisionApplyMsg.value = ''
+    }, 8000)
+  }
+})
+
+/** load() 从服务端回填表单值期间为 true，避免误触发自动保存（如 L3 / 决策开关） */
 let suppressAutoSave = false
 
 // ── 「启用特征模型」开关：切换即自动保存（即时生效 + 持久化），L3 状态随之同步 ──
@@ -690,7 +735,18 @@ const serviceOverview = computed<OverviewRow[]>(() => {
       offlineMode.value ? 'info' : hanlpEndpoint.value.trim() ? 'success' : 'warning',
       'hanlp',
     ),
-    // 决策模型（vegaml）待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：总览不再列示
+    // 决策模型：zh v2 达标后重新列示（默认开启，#11.19 补五）
+    row(
+      '决策模型',
+      '外部服务',
+      decisionEnabled.value
+        ? decisionEndpoint.value.trim()
+          ? '已启用'
+          : '已启用（未填地址）'
+        : '未启用',
+      decisionEnabled.value ? 'success' : 'info',
+      'decision',
+    ),
     row(
       '快速定案（特征模型）',
       '外部服务',
@@ -958,8 +1014,71 @@ function setProfileCefr(v: string | number) {
       </div>
     </LSection>
 
-    <!-- 决策模型（vegaml）层待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：
-         设置卡片移除；实验路径经 GEC_DEC_ENABLED=1 / 设置文件显式开启（代码保留）。 -->
+    <LSection
+      v-if="store.caps.ops"
+      id="set-decision"
+      class="settings-card"
+      title="决策模型"
+      desc="规则之后、AI 复查之前的句级决策层（zh v2 双头门控）：规则未命中的句子逐句交它判定"
+    >
+      <template #actions>
+        <LTag :tone="decisionEnabled ? 'ok' : 'neutral'">{{ decisionEnabled ? '已启用' : '未启用' }}</LTag>
+      </template>
+      <div class="field">
+        <span class="field__label">启用决策层</span>
+        <div class="field__ctl">
+          <LSwitch v-model="decisionEnabled" :disabled="decisionApplying" aria-label="启用决策层" />
+          <span class="sub">切换即自动保存（即时生效 + 持久化），检测状态条 ② 随之同步；默认开启</span>
+        </div>
+      </div>
+      <div v-if="decisionApplyMsg" class="field">
+        <span class="field__label"></span>
+        <div class="field__ctl">
+          <span :class="decisionApplyMsg.startsWith('保存失败') ? 'apply-err' : 'apply-ok'">{{ decisionApplyMsg }}</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务地址</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="decisionEndpoint" placeholder="http://127.0.0.1:4804" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="decisionModel" placeholder="vegaml-0.8b" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">超时（秒）</span>
+        <div class="field__ctl">
+          <input v-model="decisionTimeoutNum" class="l-input w-120" type="number" min="1" max="120" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">弃权阈值</span>
+        <div class="field__ctl">
+          <input v-model="decisionThresholdNum" class="l-input w-120" type="number" min="0" max="1" step="0.05" />
+          <span class="sub">句级把握落在灰区 [0.25, 阈值) 的句子弃权交 AI 复查，宁可漏报不误报</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">服务测试</span>
+        <div class="field__ctl">
+          <LButton :loading="testing.decision" @click="runTest('decision')">测试决策服务</LButton>
+          <span v-if="testResults.decision" :class="testResults.decision.ok ? 'apply-ok' : 'apply-err'">
+            {{ testResults.decision.message }}
+            <span class="sub">（{{ testResults.decision.latency_ms }} ms）</span>
+          </span>
+        </div>
+      </div>
+      <div class="hint">
+        中文后端为双头门控（zh v2，EVOLUTION #11.19）：句头判有错 ∧ 字头定位同步过阈时，
+        错误定位到具体缺失字（块矩阵「② 决策模型」列按字级 span 精确命中）；
+        句头仅落在弃权线上方的灰区句子给句级提示；更低则弃权交 AI 复查。
+        门控阈值随模型 meta.json（默认句 ≥0.95 ∧ 字 ≥0.30），服务日志与 /health 可见。
+      </div>
+    </LSection>
 
     <LSection id="set-embedding" class="settings-card" title="知识查询（向量检索）" desc="OpenAI 兼容接口，用于易错词对与错例的智能检索">
       <template #actions>

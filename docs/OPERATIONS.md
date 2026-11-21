@@ -19,7 +19,7 @@
 | `GEC_STAT_ENDPOINT` | `http://127.0.0.1:4803` | 统计 GEC 服务（Harper / HuggingFace transformers server 类，`POST /gec`；MacBERT-CSC 臂见 jev-gec `serve/csc_server.py` :4807）。已纳入依赖监督（`GET /gec/deps` 第 7 项「深度纠错服务」，外部只探测不拉起；未配地址或 `GEC_ENGINE_*` 非 statistical 时显示 off 不报红） |
 | `GEC_STAT_TIMEOUT_SECS` | `30` | 统计 GEC 服务请求超时；**实时路径建议 2–3**（服务挂起时超时才触发规则兜底，30s 会把交互式请求白等满） |
 | `GEC_STAT_MODEL` | `hf-gec` | 统计模型名（日志 / 元数据） |
-| `GEC_DEC_ENABLED` | `0`（默认关闭） | **vegaml 决策模型层**开关——该层**已退役出产品路径**（EVOLUTION.md §13 #10，2026-11-02 执行：设置界面入口移除）；代码保留为实验路径，显式 `1`/`true` 时开启 |
+| `GEC_DEC_ENABLED` | `1`（默认开启） | **决策模型层**开关——zh v2（trackb 双头门控）达标后重新接入产品路径（EVOLUTION.md #11.19 补五，产品拍板 2026-11-21：默认开 + 设置界面「决策模型」卡片可关）；显式 `0`/`false` 关闭；服务不可用时经熔断器自动回退纯规则 + LLM，不阻断检测 |
 | `GEC_DEC_ENDPOINT` | `http://127.0.0.1:4804` | vegaml 决策模型服务（`POST /decide`；`decision-model/server.py`，`VEGAML_MOCK=1` 可离线 mock）。zh 后端为 **trackb 双头**（契约 v2，EVOLUTION #11.19 补五）：句头 p 即 `has_error_prob`；字级定位条目（`error_type: missing`，span 为右邻字）仅在门控「句头≥`DEC_GATE_SENT`（默认 .95）∧ 字头≥`DEC_GATE_CHAR`（默认 .3）」通过时产出；`GET /health` 的 `backends.zh`=`trackb`、`versions.zh` 为晋级版本（回退：改名 `models/zh/head.pt` 即回 sklearn 后端） |
 | `GEC_DEC_MODEL` | `vega-base` | 决策模型名（日志 / 元数据） |
 | `GEC_DEC_TIMEOUT_SECS` | `10` | 决策模型请求超时（超时 = 该句弃权，回退纯规则） |

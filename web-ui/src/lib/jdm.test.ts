@@ -65,10 +65,10 @@ describe('单元格编解码', () => {
 })
 
 describe('真实决策表解析', () => {
-  it('zh 表：10 行 / 4 输入，条件解析正确', () => {
+  it('zh 表：18 行 / 5 输入，条件解析正确', () => {
     const m = parseTable(fixture('zh'), 'zh')
-    expect(m.rows).toHaveLength(10)
-    expect(m.inputs.map((i) => i.id)).toEqual(['errorType', 'confidence', 'history', 'isNovice'])
+    expect(m.rows).toHaveLength(18)
+    expect(m.inputs.map((i) => i.id)).toEqual(['errorType', 'confidence', 'history', 'isNovice', 'grammarPoint'])
     const r0 = m.rows[0]
     expect(r0.conds.errorType).toEqual({ op: '==', value: 'spelling' })
     expect(r0.conds.confidence).toEqual({ op: '>=', value: '0.9' })

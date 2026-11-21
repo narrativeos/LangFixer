@@ -3,8 +3,8 @@ import type { DetectTimings, StageEvent } from '../types'
 /**
  * 检测管线层展示（① 本地 ZEN 规则 → ②.5 知识召回 → ③-F 特征模型 → ③ LLM 兜底）
  *
- * ② 决策模型（vegaml）待发布层（EVOLUTION.md §13 #10；11-13 注：线不放弃，待更合适的决策模型）：默认不显示；
- * 仅当实验开关显式开启（GEC_DEC_ENABLED=1 / 设置文件）时才出现在管线条中。
+ * ② 决策模型（zh v2 trackb 双头门控，EVOLUTION.md #11.19 补五）：**默认启用**（产品拍板重新
+ * 接入产品路径）；设置界面「决策模型」卡片 / `GEC_DEC_ENABLED=0` 可关闭。
  *
  * - ①②②.5 状态来自服务端设置（决策模型是否启用 / 嵌入引擎是否配置）；
  * - ③-F 特征模型（三期）：level 2/3 且启用时显示（P0.5：L3 是唯一的 pre-LLM 门控）；
@@ -24,9 +24,9 @@ export interface PipelineLayer {
 }
 
 export interface PipelineState {
-  /** 响应级别：1 = 规则（+ 决策模型，若显式启用）；2 = + L3 门控（L3 弃权 → LLM 兜底）；3 = + 强制 LLM */
+  /** 响应级别：1 = 规则（+ 决策模型，默认启用）；2 = + L3 门控（L3 弃权 → LLM 兑底）；3 = + 强制 LLM */
   level: number
-  /** 决策模型（vegaml）层是否启用（P0.5 起默认关闭；opt-in） */
+  /** 决策模型层是否启用（zh v2 达标后**默认开启**；`GEC_DEC_ENABLED=0` / 设置卡片可关） */
   decisionEnabled: boolean
   /** LLM 是否已配置（api_key 非空） */
   llmEnabled: boolean
@@ -40,7 +40,7 @@ export function computePipelineLayers(s: PipelineState): PipelineLayer[] {
   const layers: PipelineLayer[] = [
     { no: '①', label: '① 本地 ZEN 规则', type: 'success' },
   ]
-  // ② 决策模型待发布（11-13 注：线不放弃，待更合适的决策模型）：仅实验开关显式开启时显示（默认路径 = 规则 → L3 → LLM）
+  // ② 决策模型（zh v2 门控双头，默认开启，#11.19 补五）：启用即列示（规则 → 决策 → L3 → LLM）
   if (s.decisionEnabled) {
     layers.push({ no: '②', label: '② 决策模型 · 已启用', type: 'success' })
   }

@@ -1609,6 +1609,21 @@ abstain→LLM 兑底，句级带 [.5,.95) 行为与 sklearn 一致）。**保留
 `GEC_DEC_ENABLED` 仍默认 0（§13 #10 退役态），zh v2 达标准备重新接入产品路径的
 开关/设置入口决策待拍板。
 
+**补六（2026-11-21，产品拍板执行：默认开 + 设置入口恢复 + 门控可见）**：
+- **默认开**：`default_enabled()`/`from_env()` 退避分支改 true，旧设置文件无字段按开启；
+  显式 `GEC_DEC_ENABLED=0` 或 `decision.enabled=false` 可退。OPERATIONS 环境变量表同步。
+- **设置入口恢复**：SettingsPanel 新增决策模型卡（镜像 L3 卡：开关/地址/模型/超时/
+  弃权阈值/服务测试），概览行「决策模型」恢复，PipelineStatus 提示词换门控判据文案。
+- **门控可见**：serve `/health` 新增 `gates`（来自 meta.json，DEC_GATE_* 可调），Rust 侧
+  忽略未知字段零改动；设置卡/状态条展示「句头≥x ∧ 字头≥y」，块矩阵列继续按 span
+  重叠投影命中；未再向 StageEvent 加句级门控概率（保契约稳定，拍板删）。
+- **测试封闭性新模式**：默认开会污染 hermetic 质量断言（决策层在而端点不可达 →
+  quality degraded）。`api-server/tests/api.rs` 的 `build_server_locked` 条件式 opt-out
+  （未设时置 0），想开的测试持环境锁显式置 1；EnvGuard Drop 继续清理两个变量。
+  真实模式端到端补验：干净句→句头不过门→层记 `abstained`（进兑底路径）而非误报
+  「判定有错」，服务宕机→`unavailable` 回退规则结果；旧版残留进程不带 gates 字段，
+  排障时先用 `/health` 字段集辨别进程新旧。
+
 ### 11.18 臂 C 公文体合成域消融：域假设证伪（2026-11-20）
 
 背景：首轮判决（jev-gec PLAN_v2 §6）判合成流 v1 对 gray380 真实 I 位全域 p90=0，
