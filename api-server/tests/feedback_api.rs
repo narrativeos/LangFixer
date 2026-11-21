@@ -335,6 +335,49 @@ async fn adopt_rule_error_confirms_and_reinforces() {
 }
 
 #[tokio::test]
+async fn adopt_verdict_only_decision_error_confirms_and_records_mistake() {
+    // E2E 验收：句级判断条目（decision 来源、无 correction）采纳不得 400——
+    // 确认式留痕（via=confirm）并写错题本（无 src_text 时句以 error.original 回退）
+    let _g = env_guard();
+    let base = build_server(None).await;
+    let c = client();
+    let sentence = "他昨天去了去了商店。";
+    let body = serde_json::json!({
+        "lang": "zh",
+        "session_id": "verdict_s1",
+        "error": error_json("zh", "grammar", sentence, None, Some("decision"), None),
+        "action": "adopt",
+        "reason": "句级判断·送进练习队列",
+    });
+    let (status, res) = post_json(&c, &format!("{base}/gec/feedback"), &body).await;
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "句级判断条目采纳应确认而非 400: {res}"
+    );
+    assert_eq!(res["via"], "confirm");
+    assert!(
+        res["message"].as_str().unwrap().contains("句级判断"),
+        "{res}"
+    );
+
+    let list: Vec<serde_json::Value> = c
+        .get(format!("{base}/gec/sessions/verdict_s1/mistakes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 1, "确认式采纳应入错题本");
+    assert_eq!(list[0]["original"], sentence);
+    assert_eq!(
+        list[0]["sentence"], sentence,
+        "无 src_text 时错题本句以 original 回退"
+    );
+}
+
+#[tokio::test]
 async fn feedback_action_disable_and_remove_example() {
     let _g = env_guard();
     let base = build_server(None).await;

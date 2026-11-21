@@ -227,6 +227,29 @@ async fn adopt(state: &AppState, req: &FeedbackRequest) -> Result<FeedbackRespon
         }
         // 模型层（decision / feature / statistical）：蒸馏为规则 + L3 正样本
         sources::DECISION | sources::FEATURE | sources::STATISTICAL => {
+            // 句级判断条目（决策模型只判句不产修正文本）无 correction：采纳 =
+            // 确认该句为真实错误（留痕；错题本由 feedback() 统一记录），
+            // 不再因缺 correction 而 400（E2E 验收：否则句级卡片采纳 / F6
+            // 「送进练习队列」全部报错）；有 correction 仍走蒸馏旧路
+            if req.error.correction.is_none() {
+                log_feedback(state, &req.lang, &source, &req.error, "adopt", &req.reason);
+                return Ok(FeedbackResponse {
+                    action: "adopt".to_string(),
+                    message: format!(
+                        "已确认「{}」为真实错误（句级判断）：已入错题本，可用「AI 复查」定位具体错误点",
+                        req.error.original
+                    ),
+                    via: Some("confirm".to_string()),
+                    rule: None,
+                    knowledge: None,
+                    anomaly: None,
+                    word_id: None,
+                    reflection: None,
+                    llm_reflect_ready,
+                    agent: None,
+                    adopt_count: None,
+                });
+            }
             let r =
                 crate::routes::llm_feedback::adopt_as_rule(state, &req.lang, &req.error, "MODEL")
                     .await?;

@@ -233,6 +233,7 @@ async fn gec(
 ) -> Result<(gec_core::DetectOutcome, bool), String> {
     super::detect::run_detection(state, lang, text, &None, Some(level), false, false, None)
         .await
+        .map(|(outcome, from_history, _)| (outcome, from_history))
         .map_err(|e| e.to_string())
 }
 

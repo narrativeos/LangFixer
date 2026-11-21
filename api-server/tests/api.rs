@@ -1696,6 +1696,70 @@ async fn detect_cache_returns_consistent_results() {
     }
 }
 
+#[tokio::test]
+async fn detect_cache_hit_does_not_duplicate_history() {
+    // 审计 F4：LRU 命中回放与历史复用同口径——不写新历史行。
+    // 回放行缺分层报告/计时，若照常落库会顶替实检行位置，
+    // 使历史详情的块矩阵回放退化为「无此数据」（缓存横幅 F2 另行标注）
+    let base = start_server().await;
+    let body = serde_json::json!({ "lang": "en", "text": "I saw a apple." });
+    let c = client();
+
+    let r1: serde_json::Value = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(r1["from_cache"].as_bool(), Some(true), "首检应为实检");
+    assert!(!r1["layers"].as_array().map(Vec::is_empty).unwrap_or(true));
+
+    let r2: serde_json::Value = c
+        .post(format!("{base}/gec/detect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // 同文再检应走回放（LRU 命中；若本环境质量降级未入 LRU 则命中历史复用），
+    // 两种回放均不得刷重复历史行
+    assert!(
+        r2["from_cache"].as_bool() == Some(true) || r2["from_history"].as_bool() == Some(true),
+        "同文再检应命中某层回放：{r2}"
+    );
+
+    // 历史仅实检那一行，且分层报告完整（矩阵回放可用）
+    let hist: serde_json::Value = c
+        .get(format!("{base}/gec/history?lang=en&limit=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = hist["items"].as_array().cloned().unwrap_or_default();
+    assert_eq!(items.len(), 1, "LRU 回放不得刷重复历史行：{items:?}");
+    let detail: serde_json::Value = c
+        .get(format!("{base}/gec/history/{}", items[0]["id"]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        detail["layers_json"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "实检行应持久化分层报告：{detail:?}"
+    );
+}
+
 /// 重复检测复用历史（端到端）：
 /// - 第一个 server 实例检测 → 写历史（含参数快照）；
 /// - 第二个实例（同 SQLite、空 LRU）检测同文本 → 命中历史复用（`from_history=true`，结果一致）；

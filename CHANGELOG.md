@@ -408,6 +408,15 @@
 
 ### 修复
 
+- **E2E 验收修复：句级判断条目采纳不再 400；回放不再刷降级历史行**：
+ （1）决策/特征/统计层来源但无 correction 的错误（句级判断卡片，含 F6
+ 「送进练习队列」）采纳改确认式留痕（via=confirm，诚实提示可 AI 复查定位
+ 错误点），错题本照常写入（无 src_text 时句以 original 回退），不再因蒸馏
+ 路径要求修正文本而报错；（2）LRU 缓存命中回放与历史复用同口径不再写新
+ 历史行——回放行缺分层报告/计时，旧行为会顶替实检行位置使块矩阵回放退化为
+ 「无此数据」（F4）并刷重复行；摘要账本仍照常留痕，新增集成测试
+ `detect_cache_hit_does_not_duplicate_history` 与
+ `adopt_verdict_only_decision_error_confirms_and_records_mistake` 防回归。
 - **desktop-app 补齐审计 F2 遗留的 `DetectorError::LlmNotConfigured` 映射残留**：
  F2 从 gec-core 移除该变体（LLM 未配置改层报 `skipped`，不再报错）时漏改
  desktop-app 两处调用点（`commands.rs` 检测入口 / `media.rs` 媒体检测），导致

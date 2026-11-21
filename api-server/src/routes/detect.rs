@@ -167,8 +167,9 @@ pub(crate) async fn try_reuse_history(
 /// 规则或模型变更后旧条目必然 miss，不会命中错误缓存；`refresh = true` 进一步
 /// 跳过两层读取强制实检（显式纠正措施）。
 ///
-/// 返回 `(结果, from_history)`：`from_history = true` 表示结果来自历史复用
-/// （调用方据此跳过历史写入，并向前端返回 `from_history` 标记）。
+/// 返回 `(结果, from_history, from_cache_replay)`：`from_history = true` 表示结果
+/// 来自历史复用，`from_cache_replay = true` 表示 LRU 命中回放（调用方据此
+/// 跳过历史写入，并向前端返回相应标记）；两者均假 = 本次实际跑了检测。
 /// 后处理（anomaly 自动采纳 / L3 飞轮）全部在**后台任务**执行，
 /// 不阻塞检测响应（见各步骤注释）。
 pub(crate) async fn run_detection(
@@ -180,7 +181,7 @@ pub(crate) async fn run_detection(
     force_llm: bool,
     refresh: bool,
     progress_id: Option<&str>,
-) -> Result<(DetectOutcome, bool), ApiError> {
+) -> Result<(DetectOutcome, bool, bool), ApiError> {
     let level = level.unwrap_or(1);
     if !(1..=3).contains(&level) {
         return Err(ApiError::BadRequest(format!(
@@ -222,7 +223,7 @@ pub(crate) async fn run_detection(
 
     // 1. 基础结果（1 级：规则 + 决策模型，若启用）；
     //    level 2/3 或 force_llm 涉及 LLM 兜底（非确定性、不缓存）→ 实时跑完整级联
-    let (mut outcome, from_history) = if let Some(errors) = cached {
+    let (mut outcome, from_history, from_cache_replay) = if let Some(errors) = cached {
         finish_progress(progress_id);
         (
             DetectOutcome {
@@ -230,6 +231,7 @@ pub(crate) async fn run_detection(
                 ..Default::default()
             },
             false,
+            true,
         )
     } else if level == 1 && !force_llm {
         // 历史复用：LRU 未命中 → 查同文本历史（参数一致 + 无 LLM 的最近记录；
@@ -240,7 +242,7 @@ pub(crate) async fn run_detection(
         };
         if let Some(reused) = reused {
             finish_progress(progress_id);
-            (reused, true)
+            (reused, true, false)
         } else {
             // 读锁内仅克隆引擎 Arc（锁立即释放），避免 guard 跨 await（非 Send）
             let engine = state
@@ -262,7 +264,7 @@ pub(crate) async fn run_detection(
                     state.as_ref().cache.insert(k, outcome.errors.clone());
                 }
             }
-            (outcome, false)
+            (outcome, false, false)
         }
     } else {
         let engine = state
@@ -278,6 +280,7 @@ pub(crate) async fn run_detection(
             engine
                 .detect_level_traced(text, level, force_llm, llm.as_deref(), sink)
                 .await?,
+            false,
             false,
         )
     };
@@ -333,7 +336,7 @@ pub(crate) async fn run_detection(
         });
     }
 
-    Ok((outcome, from_history))
+    Ok((outcome, from_history, from_cache_replay))
 }
 
 /// 统一管线入参（[`run_pipeline`]）：执行参数 + 历史落库策略
@@ -381,7 +384,7 @@ pub(crate) async fn run_pipeline(
     state: Arc<AppState>,
     spec: PipelineSpec<'_>,
 ) -> Result<PipelineResult, ApiError> {
-    let (outcome, from_history) = match run_detection(
+    let (outcome, from_history, from_cache_replay) = match run_detection(
         state.clone(),
         spec.lang,
         spec.text,
@@ -430,9 +433,11 @@ pub(crate) async fn run_pipeline(
     let mut version: Option<serde_json::Value> = None;
     let mut params: Option<shared_model::DetectParams> = None;
     // 自动持久化（后台：历史写入不阻塞检测响应；含各阶段计时 + 参数快照 + 文本哈希）
-    // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：仅
-    // quality=full 可写历史（partial/degraded 只回传不落库，杜绝降级结果被复用为
-    // 正常结果；LRU 命中回放结果出自 full 运行，照常落库）
+    // 回放不写新记录（避免短时间反复检测刷出重复历史）：历史复用与 LRU 命中
+    // 回放同一口径——两者源 full 运行的历史行均已在库，回放行缺少分层报告 /
+    // 计时，若照常落库会顶替真实行位置使矩阵回放退化为「无此数据」（审计 F4）；
+    // 摘要账本（§7）仍照常留痕。缓存资格：仅 quality=full 可写历史
+    // （partial/degraded 只回传不落库，杜绝降级结果被复用为正常结果）
     if !from_history {
         let snapshot = state
             .current_detect_params(
@@ -450,7 +455,10 @@ pub(crate) async fn run_pipeline(
                 "splitter": snapshot.splitter,
             })
         });
-        if spec.persist_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+        if spec.persist_history
+            && !from_cache_replay
+            && outcome.quality.as_ref().map_or(true, |q| q.cacheable())
+        {
             let state = state.clone();
             let lang = spec.lang.to_string();
             let text = spec.text.to_string();
@@ -495,7 +503,7 @@ pub(crate) async fn run_pipeline(
         .as_ref()
         .filter(|q| !q.degraded_reasons.is_empty())
         .and_then(|q| serde_json::to_string(&q.degraded_reasons).ok());
-    let from_cache = !from_history && outcome.quality.is_none();
+    let from_cache = from_cache_replay;
     let summary_row = crate::request_summary::SummaryRow {
         entry: spec.entry,
         lang: spec.lang,
