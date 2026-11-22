@@ -53,7 +53,7 @@ diff_since_deploy() { # $1 = 上次 SHA  $2 = 标签
     say "与上次部署同一提交（$1）：这次只是重编译 + 重铺"
   else
     say "$2 → $HEAD_SHA 共 $n 个提交："
-    git -C "$REPO_ROOT" log --oneline "$1..HEAD" | head -12 | sed 's/^/      /'
+    git -C "$REPO_ROOT" log --oneline -12 "$1..HEAD" | sed 's/^/      /'
     [ "$n" -gt 12 ] && say "      …另 $((n - 12)) 个" || true
   fi
 }
