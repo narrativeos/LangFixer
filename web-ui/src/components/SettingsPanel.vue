@@ -193,6 +193,10 @@ const llmTimeout = ref(30)
 const llmPromptsDir = ref('')
 /** 当前选中的纠错模型预设 id（`prompts/models.json` 注册表；缺省 `generic`） */
 const llmModelId = ref('generic')
+/** ③ 自动双判开关（影子臂并行判 + 判定落 dual_judge_log） */
+const llmDualJudge = ref(false)
+/** 双判影子臂预设 id（缺省 arm3；与主臂相同时影子回退用户裸端点） */
+const llmDualModelId = ref('arm3')
 /** 可用纠错模型预设列表（「纠错模型」选择器；仅含 enabled 条目） */
 const models = ref<ModelView[]>([])
 /** 决策表目录（GEC_TABLES_DIR） */
@@ -298,6 +302,8 @@ async function load() {
     llmTimeout.value = s.llm.timeout_secs
     llmPromptsDir.value = s.llm.prompts_dir
     llmModelId.value = s.llm_model_id
+    llmDualJudge.value = s.llm_dual_judge ?? false
+    llmDualModelId.value = s.llm_dual_model_id ?? 'arm3'
     models.value = s.models ?? []
     tablesDir.value = s.tables_dir
     lexiconsDir.value = s.lexicons_dir
@@ -367,6 +373,8 @@ function formIsDirty(): boolean {
     llmTimeout.value !== s.llm.timeout_secs ||
     llmPromptsDir.value.trim() !== s.llm.prompts_dir ||
     llmModelId.value !== s.llm_model_id ||
+    llmDualJudge.value !== s.llm_dual_judge ||
+    llmDualModelId.value !== s.llm_dual_model_id ||
     tablesDir.value.trim() !== s.tables_dir ||
     lexiconsDir.value.trim() !== s.lexicons_dir ||
     decisionEndpoint.value.trim() !== s.decision.endpoint ||
@@ -408,6 +416,8 @@ async function save(): Promise<boolean> {
     const s = await api.updateSettings({
       hanlp_endpoint: hanlpEndpoint.value.trim(),
       llm_model_id: llmModelId.value,
+      llm_dual_judge: llmDualJudge.value,
+      llm_dual_model_id: llmDualModelId.value,
       offline_mode: offlineMode.value,
       ...(dbChanged ? { db_backup_enabled: dbBackupSetting.value } : {}),
       llm: {
@@ -1267,6 +1277,22 @@ function setProfileCefr(v: string | number) {
             `generic` 用下方 Base URL / 模型（你的 OpenAI 兼容端点，JSON 输出）；
             `cec4` / `cec3` 用预设的本地 vllm 端点与模型名（纯文本输出，自动适配）。保存后即时生效。
           </span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">自动双判</span>
+        <div class="field__ctl">
+          <LSwitch v-model="llmDualJudge" aria-label="自动双判" />
+          <span class="sub">开启后每次 ③ LLM 检测并行多跑一路影子臂，双臂判定落日志（臂间对照数据）；
+            影子臂失败不影响结果。影子端点：
+            <LSelect
+              class="w-260"
+              aria-label="双判影子臂预设"
+              :model-value="llmDualModelId"
+              :options="modelOptions"
+              @update:model-value="llmDualModelId = String($event)"
+            />
+            （与上方纠错模型相同时，影子自动回退 Base URL / 模型端点）</span>
         </div>
       </div>
       <div class="field">

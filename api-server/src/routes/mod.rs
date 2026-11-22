@@ -8,6 +8,7 @@ pub mod deps;
 pub mod detect;
 pub mod detect_progress;
 pub mod doc_jobs;
+pub mod dual_judge;
 pub mod eval;
 pub mod explain;
 pub mod feedback;
@@ -343,6 +344,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/gec/feedback/history",
             axum::routing::get(feedback::feedback_history),
         )
+        .route("/gec/dual-judge", axum::routing::get(dual_judge::recent))
         .route(
             "/gec/sessions",
             axum::routing::post(session::create).delete(session::remove_all),

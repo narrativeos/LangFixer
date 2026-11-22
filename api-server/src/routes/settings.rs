@@ -156,6 +156,10 @@ pub struct SettingsResponse {
     pub embedding: EmbeddingSettingsView,
     /// 当前选中的纠错模型预设 id（`prompts/models.json` 注册表；缺省 `generic`）
     pub llm_model_id: String,
+    /// ③ 自动双判开关（影子臂并行判 + dual_judge_log 落盘）
+    pub llm_dual_judge: bool,
+    /// 双判影子臂预设 id（缺省 `arm3`；与主臂相同时影子回退用户裸端点）
+    pub llm_dual_model_id: String,
     /// 知识层总开关（知识向量召回 + 知识库富化 + 数据驱动归点；默认开）
     pub knowledge_enabled: bool,
     /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
@@ -190,6 +194,10 @@ pub struct UpdateSettingsRequest {
     pub embedding: Option<UpdateEmbeddingRequest>,
     /// 当前选中的纠错模型预设 id（`prompts/models.json` 注册表）
     pub llm_model_id: Option<String>,
+    /// ③ 自动双判开关
+    pub llm_dual_judge: Option<bool>,
+    /// 双判影子臂预设 id
+    pub llm_dual_model_id: Option<String>,
     /// 知识层总开关（测评消融臂 `knowledge: false` 用；默认开）
     pub knowledge_enabled: Option<bool>,
     /// 载体（图片 / PDF / Word）审校设置（部分更新；两端同构）
@@ -324,6 +332,8 @@ fn to_response(
             timeout_secs: s.embedding.timeout_secs,
         },
         llm_model_id: s.llm_model_id.clone(),
+        llm_dual_judge: s.llm_dual_judge,
+        llm_dual_model_id: s.llm_dual_model_id.clone(),
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
         doc_jobs: s.doc_jobs.clone(),
@@ -505,6 +515,15 @@ pub async fn put(
             return Err(ApiError::BadRequest("llm_model_id 不能为空".into()));
         }
         next.llm_model_id = model_id;
+    }
+    if let Some(on) = req.llm_dual_judge {
+        next.llm_dual_judge = on;
+    }
+    if let Some(model_id) = req.llm_dual_model_id.clone() {
+        if model_id.trim().is_empty() {
+            return Err(ApiError::BadRequest("llm_dual_model_id 不能为空".into()));
+        }
+        next.llm_dual_model_id = model_id;
     }
     if let Some(v) = req.knowledge_enabled {
         next.knowledge_enabled = v;

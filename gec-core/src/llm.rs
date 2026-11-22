@@ -193,6 +193,42 @@ fn next_wait(
 }
 
 /// LLM 兜底检测引擎
+/// ③ 双判对照判定字符串（与 `lexicon_store::dual_judge_log::verdict` 一致）。
+pub mod dual_verdict {
+    pub const BOTH: &str = "both";
+    pub const PRIMARY_ONLY: &str = "primary_only";
+    pub const SHADOW_ONLY: &str = "shadow_only";
+    pub const NONE: &str = "none";
+    pub const SHADOW_ERROR: &str = "shadow_error";
+    pub const SHADOW_PARSE_FAILED: &str = "shadow_parse_failed";
+    pub const PRIMARY_PARSE_FAILED: &str = "primary_parse_failed";
+}
+
+/// 一次双判的对照记录（双臂原始输出，未经并集合并；JSON 序列化后交 sink）。
+pub struct DualJudgeEvent {
+    pub lang: String,
+    pub text: String,
+    pub primary_model: String,
+    pub shadow_model: String,
+    pub primary_json: String,
+    pub shadow_json: String,
+    pub verdict: &'static str,
+}
+
+/// 双判判定落盘 sink（api-server 注入 SQLite 写入；同步调用，实现必须短小）。
+pub type DualJudgeSink = Arc<dyn Fn(DualJudgeEvent) + Send + Sync + 'static>;
+
+/// 影子臂 = 独立配置的 `LlmGecEngine`（自身必须无双影子，由构造侧保证）+ 判定 sink。
+pub struct ShadowArm {
+    engine: LlmGecEngine,
+    sink: DualJudgeSink,
+}
+
+/// 影子臂失败时的 span 重叠判定（与 `engine::spans_overlap` 同义，零长 span 不相交）。
+fn spans_overlap(a: [usize; 2], b: [usize; 2]) -> bool {
+    a[0] < b[1] && b[0] < a[1]
+}
+
 pub struct LlmGecEngine {
     lang: String,
     client: reqwest::Client,
@@ -201,6 +237,10 @@ pub struct LlmGecEngine {
     /// api-server 形态下检测引擎**每次现构建**，熔断器必须从外部共享注入
     /// （`State::llm_breaker`），否则每次请求都是全新实例 = 永不开断。
     breaker: Arc<crate::circuit::CircuitBreaker>,
+    /// ③ 自动双判影子臂（非空时每次检测与主臂**并行**跑同一文本）：
+    /// 结果并集合并（双臂同 span 记共识徽章），双臂判定经 sink 落盘。
+    /// 影子臂失败只记日志，**永不**影响主臂结果与质量标记。（Box：自指类型）
+    shadow: Option<Box<ShadowArm>>,
 }
 
 impl LlmGecEngine {
@@ -237,7 +277,17 @@ impl LlmGecEngine {
             client,
             config,
             breaker,
+            shadow: None,
         }
+    }
+
+    /// 接入 ③ 自动双判影子臂：每次检测同时跑影子端点，结果并集合并
+    /// 并把双臂判定交给 `sink`（api-server 落 `dual_judge_log` 表）。
+    /// 影子引擎应自带独立熔断器（否则端点故障会误伤主臂健康判定）；
+    /// 影子引擎自身不得再挂影子（否则递归）。
+    pub fn with_shadow(mut self, engine: LlmGecEngine, sink: DualJudgeSink) -> Self {
+        self.shadow = Some(Box::new(ShadowArm { engine, sink }));
+        self
     }
 
     /// 带「解析失败」标记的单次检测：返回（错误列表，**响应成功但无法解析**）。
@@ -856,7 +906,81 @@ impl LlmGecEngine {
     ///
     /// 解析失败时列表为空但标记为 `true`——调用方必须把「解析失败」与
     /// 「模型确认无错」区分开（对外见 [`Self::detect_tracked`]）。
+    ///
+    /// 配置了影子臂（[`Self::with_shadow`]）时本函数是双判调度器：
+    /// 双臂并行执行 [`Self::detect_arm_anchored`]，并集合并 + 共识徽章 + sink 落盘。
     pub(crate) async fn detect_anchored(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<Error>, bool), DetectorError> {
+        let Some(shadow) = &self.shadow else {
+            return self.detect_arm_anchored(text).await;
+        };
+        if text.trim().is_empty() {
+            return Ok((Vec::new(), false));
+        }
+        let (pres, sres) = tokio::join!(
+            self.detect_arm_anchored(text),
+            shadow.engine.detect_arm_anchored(text)
+        );
+        // 主臂失败照常向上报错（与无双判时一致）；影子臂失败只进判定日志
+        let (mut errors, p_parse) = pres?;
+        let p_json = serde_json::to_string(&errors).unwrap_or_else(|_| "[]".to_string());
+        let mut verdict;
+        let s_json;
+        match sres {
+            Ok((serrs, spf)) => {
+                s_json = serde_json::to_string(&serrs).unwrap_or_else(|_| "[]".to_string());
+                verdict = match (!errors.is_empty(), !serrs.is_empty()) {
+                    (true, true) => dual_verdict::BOTH,
+                    (true, false) => dual_verdict::PRIMARY_ONLY,
+                    (false, true) => dual_verdict::SHADOW_ONLY,
+                    (false, false) => dual_verdict::NONE,
+                };
+                // 解析失败臂的「无检出」是未知不是阴性，verdict 改记真因
+                //（主臂侧同时失败时以主臂为准，质量标记由 p_parse 单独携带）
+                if spf {
+                    verdict = dual_verdict::SHADOW_PARSE_FAILED;
+                }
+                if p_parse {
+                    verdict = dual_verdict::PRIMARY_PARSE_FAILED;
+                }
+                // 并集合并：影子臂命中与主臂某错误 span 重叠 → 记共识徽章
+                //（`llm:<影子模型>`，前端按 also_found_by 展示 ×2）；
+                // 影子独报 → 追加进结果（参与后续层合并与采纳/放弃反馈）
+                let tag = format!("llm:{}", shadow.engine.config.model);
+                for e in serrs {
+                    if let Some(p) = errors.iter_mut().find(|p| spans_overlap(p.span, e.span)) {
+                        p.add_also_found_by(&tag);
+                    } else {
+                        errors.push(e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    model = %shadow.engine.config.model,
+                    "③ 双判影子臂失败（主臂结果不受影响）"
+                );
+                s_json = "[]".to_string();
+                verdict = dual_verdict::SHADOW_ERROR;
+            }
+        }
+        (shadow.sink)(DualJudgeEvent {
+            lang: self.lang.clone(),
+            text: text.to_string(),
+            primary_model: self.config.model.clone(),
+            shadow_model: shadow.engine.config.model.clone(),
+            primary_json: p_json,
+            shadow_json: s_json,
+            verdict,
+        });
+        Ok((errors, p_parse))
+    }
+
+    /// 单臂（无影子）检测核心：原 `detect_anchored` 实现。
+    pub(crate) async fn detect_arm_anchored(
         &self,
         text: &str,
     ) -> Result<(Vec<Error>, bool), DetectorError> {
@@ -2204,6 +2328,81 @@ mod tests {
             conns.load(Ordering::SeqCst),
             2,
             "预算必须把尝试本身的耗时计进去"
+        );
+    }
+
+    /// ③ 自动双判：并集合并 + 共识徽章 + 判定落 sink（verdict=both）
+    #[tokio::test]
+    async fn dual_judge_merges_and_records_verdict() {
+        let primary_ep = mock_llm_server(
+            r#"[{"error_type":"grammar","confidence":0.9,"original":"了","correction":"过"}]"#,
+        )
+        .await;
+        let shadow_ep = mock_llm_server(
+            r#"[{"error_type":"grammar","confidence":0.8,"original":"了","correction":"过"},{"error_type":"grammar","confidence":0.8,"original":"饭","correction":"餐"}]"#,
+        )
+        .await;
+        let events: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, usize, usize)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: super::DualJudgeSink = std::sync::Arc::new(move |ev| {
+            let pj: Vec<serde_json::Value> = serde_json::from_str(&ev.primary_json).unwrap();
+            let sj: Vec<serde_json::Value> = serde_json::from_str(&ev.shadow_json).unwrap();
+            sink_events
+                .lock()
+                .unwrap()
+                .push((ev.verdict, pj.len(), sj.len()));
+        });
+        let shadow_engine = LlmGecEngine::new("zh", config(&shadow_ep));
+        let engine = LlmGecEngine::new("zh", config(&primary_ep)).with_shadow(shadow_engine, sink);
+        let errors = engine.detect("我吃了饭。").await.unwrap();
+        assert_eq!(errors.len(), 2, "并集：重叠项合入主臂 + 影子独报追加");
+        let shared = errors.iter().find(|e| e.original == "了").unwrap();
+        assert_eq!(
+            shared.also_found_by,
+            vec!["llm:mock-model".to_string()],
+            "双臂同命中须记共识徽章"
+        );
+        let sole = errors.iter().find(|e| e.original == "饭").unwrap();
+        assert!(sole.also_found_by.is_empty(), "影子独报不记共识");
+        let ev = events.lock().unwrap().clone();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(
+            ev[0],
+            (super::dual_verdict::BOTH, 1, 2),
+            "verdict 按双臂原始命中计"
+        );
+    }
+
+    /// 影子端点不可达：主臂结果不受影响，verdict=shadow_error 落盘
+    #[tokio::test]
+    async fn dual_judge_shadow_failure_keeps_primary_result() {
+        let primary_ep = mock_llm_server(
+            r#"[{"error_type":"grammar","confidence":0.9,"original":"了","correction":"过"}]"#,
+        )
+        .await;
+        // 绑后即弃的端口 → 连接立即失败
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        drop(tokio::net::TcpListener::bind("127.0.0.1:0").await);
+        let events: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: super::DualJudgeSink =
+            std::sync::Arc::new(move |ev| sink_events.lock().unwrap().push(ev.verdict));
+        let mut dead_cfg = config(&format!("http://{dead}/v1"));
+        dead_cfg.timeout_secs = 1;
+        let engine = LlmGecEngine::new("zh", config(&primary_ep))
+            .with_shadow(LlmGecEngine::new("zh", dead_cfg), sink);
+        let errors = engine.detect("我吃了饭。").await.unwrap();
+        assert_eq!(errors.len(), 1, "影子失败不动主臂结果");
+        assert_eq!(errors[0].source.as_deref(), Some("llm"));
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[super::dual_verdict::SHADOW_ERROR]
         );
     }
 }

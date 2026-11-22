@@ -28,11 +28,13 @@ use fs2::FileExt;
 use rusqlite::{Connection, Error as SqlError, OptionalExtension, Result as SqlResult, params};
 use serde::{Deserialize, Serialize};
 
+pub mod dual_judge_log;
 pub mod feedback_log;
 pub mod knowledge_store;
 pub mod optimization_round;
 pub mod reflection_center;
 pub mod training_center;
+pub use dual_judge_log::{DualJudgeLog, DualJudgeLogStore};
 pub use feedback_log::{FeedbackLog, FeedbackLogStore, FeedbackStats};
 pub use knowledge_store::KnowledgeStore;
 pub use optimization_round::{OptimizationRoundRow, OptimizationRoundStore};

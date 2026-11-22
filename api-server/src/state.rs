@@ -12,7 +12,7 @@ use gec_zh::{ChineseDetector, DetectorConfig as ZhConfig};
 use langfixer_llm::LlmService;
 use langfixer_llm::templates::TemplateStore;
 use lexicon_store::{
-    FeedbackLogStore, KnowledgeStore as LearnedKnowledgeStore, LexiconStore,
+    DualJudgeLogStore, FeedbackLogStore, KnowledgeStore as LearnedKnowledgeStore, LexiconStore,
     OptimizationRoundStore, ReflectionCenterStore, TrainingCenterStore,
 };
 use shared_model::session_store::SqliteSessionStore;
@@ -81,6 +81,8 @@ pub struct AppState {
     /// LLM 网关进程级熔断（与决策 / L3 / 嵌入客户端同款；本形态 LLM 引擎**每次现构建**，
     /// 必须共享这一只才谈得上「连续失败开断」——各请求自带新熔断器 = 永不开断）
     pub llm_breaker: Arc<gec_core::CircuitBreaker>,
+    /// ③ 双判影子臂专用熔断器（与主臂分开：影子端点故障不得误伤主臂健康判定）
+    pub llm_dual_breaker: Arc<gec_core::CircuitBreaker>,
     /// 学习知识存储（向量召回用；SQLite 持久化，与 lexicon_store 共用同一 db 文件）
     pub learned_knowledge: Arc<LearnedKnowledgeStore>,
     /// 嵌入引擎（调用 LLM /v1/embeddings 端点；未配置时为 None；
@@ -88,6 +90,8 @@ pub struct AppState {
     pub embedding_engine: RwLock<Option<Arc<EmbeddingEngine>>>,
     /// 反馈日志（SQLite：检测结果采纳/放弃留痕 + 规则反馈统计；反思流程数据基础）
     pub feedback_log: Arc<FeedbackLogStore>,
+    /// ③ 双判判定日志（SQLite，同 db 文件；双臂对照数据积累，夜间批臂间差异抽样源）
+    pub dual_judge: Arc<DualJudgeLogStore>,
     /// 反思中心（SQLite：反思报告 + 建议队列；P1 进化闭环「反思」环节，
     /// 与反馈日志共用同一 db 文件）
     pub reflection_center: Arc<ReflectionCenterStore>,
@@ -386,6 +390,16 @@ impl AppState {
             }
         };
 
+        // ③ 双判判定日志（SQLite，同一 db 文件）
+        let dual_judge = match DualJudgeLogStore::open(&db_path) {
+            Ok(store) => Arc::new(store),
+            Err(e) => {
+                tracing::error!(error = %e, "双判日志存储初始化失败，将使用空存储");
+                let tmp = std::env::temp_dir().join("langfixer_dual_judge.db");
+                Arc::new(DualJudgeLogStore::open(&tmp).expect("无法打开临时双判日志 SQLite"))
+            }
+        };
+
         // 反思中心存储（SQLite：反思报告 + 建议队列；与反馈日志共用同一 db 文件）
         let reflection_center = match ReflectionCenterStore::open(&db_path) {
             Ok(store) => Arc::new(store),
@@ -441,6 +455,7 @@ impl AppState {
             settings_path,
             db_path: db_path.clone(),
             llm_breaker: Arc::new(gec_core::CircuitBreaker::default()),
+            llm_dual_breaker: Arc::new(gec_core::CircuitBreaker::default()),
             llm_templates,
             model_registry,
             zh_base_cfg: zh_cfg,
@@ -459,6 +474,7 @@ impl AppState {
             learned_knowledge,
             embedding_engine: RwLock::new(embedding_engine),
             feedback_log,
+            dual_judge,
             reflection_center,
             training_center,
             optimization_round,
@@ -533,7 +549,7 @@ impl AppState {
                 0,
             ),
         };
-        Some(Arc::new(LlmGecEngine::with_breaker(
+        let engine = LlmGecEngine::with_breaker(
             lang,
             LlmDetectConfig::from_parts(
                 base_url,
@@ -546,7 +562,94 @@ impl AppState {
             .with_output_format(output_format)
             .with_max_tokens(max_tokens),
             self.llm_breaker.clone(),
-        )))
+        );
+        // ③ 自动双判：影子臂并行跑另一端点，双臂判定落 dual_judge_log。
+        // 影子臂用独立熔断器；其失败只进判定日志，不影响本引擎结果与质量标记。
+        let dual = {
+            let s = self.settings.read().unwrap();
+            if s.llm_dual_judge {
+                Some((s.llm_model_id.clone(), s.llm_dual_model_id.clone()))
+            } else {
+                None
+            }
+        };
+        let engine = match dual
+            .and_then(|(primary_id, dual_id)| self.dual_shadow_config(lang, &primary_id, &dual_id))
+        {
+            Some(cfg) => {
+                let shadow = LlmGecEngine::with_breaker(lang, cfg, self.llm_dual_breaker.clone());
+                let store = self.dual_judge.clone();
+                let sink: gec_core::llm::DualJudgeSink = std::sync::Arc::new(move |ev| {
+                    if let Err(e) = store.insert(
+                        &ev.lang,
+                        &ev.text,
+                        &ev.primary_model,
+                        &ev.shadow_model,
+                        &ev.primary_json,
+                        &ev.shadow_json,
+                        ev.verdict,
+                    ) {
+                        tracing::warn!(error = %e, "双判判定落库失败");
+                    }
+                });
+                engine.with_shadow(shadow, sink)
+            }
+            None => engine,
+        };
+        Some(Arc::new(engine))
+    }
+
+    /// 解析双判影子臂端点配置：预设 id 在注册表且有独立 `base_url` 时用预设；
+    /// 与主臂 id 相同 / 不在注册表 / 无独立端点 → 回退用户裸 LLM 端点
+    ///（即双判对 = 预设端点 × 用户 API 端点）。api_key 恒取用户 LLM 配置。
+    fn dual_shadow_config(
+        &self,
+        lang: &str,
+        primary_id: &str,
+        dual_id: &str,
+    ) -> Option<LlmDetectConfig> {
+        let service = self.llm_service();
+        let entry = if dual_id == primary_id {
+            None
+        } else {
+            self.model_registry
+                .read()
+                .unwrap()
+                .get(dual_id)
+                .cloned()
+                .filter(|e| !e.base_url.is_empty())
+        };
+        let template = match entry
+            .as_ref()
+            .map(|e| e.prompt_template.as_str())
+            .filter(|k| !k.is_empty())
+        {
+            Some(key) => service
+                .templates
+                .get(key)
+                .or_else(|| service.templates.for_lang_cefr(lang, "detect"))?,
+            None => service.templates.for_lang_cefr(lang, "detect")?,
+        };
+        Some(match &entry {
+            Some(e) => LlmDetectConfig::from_parts(
+                e.base_url.clone(),
+                service.config.api_key.clone(),
+                e.model.clone(),
+                service.config.timeout_secs,
+                template.system.clone(),
+                template.user.clone(),
+            )
+            .with_output_format(e.output_format.clone())
+            .with_max_tokens(e.max_tokens),
+            None => LlmDetectConfig::from_parts(
+                service.config.base_url.clone(),
+                service.config.api_key.clone(),
+                service.config.model.clone(),
+                service.config.timeout_secs,
+                template.system.clone(),
+                template.user.clone(),
+            ),
+        })
     }
 
     /// 当前检测参数快照（存入历史 `params_json`；重复检测复用历史的比对依据）。

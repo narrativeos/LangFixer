@@ -868,6 +868,10 @@ export interface AppSettings {
   llm_modes: LlmModes
   /** 当前选中的纠错模型预设 id（`prompts/models.json` 注册表；缺省 `generic`） */
   llm_model_id: string
+  /** ③ 自动双判开关（影子臂并行判 + 判定落库） */
+  llm_dual_judge: boolean
+  /** 双判影子臂预设 id（缺省 `arm3`；与主臂相同时影子回退用户裸端点） */
+  llm_dual_model_id: string
   /** 可用纠错模型预设列表（「纠错模型」选择器；仅含 enabled 条目） */
   models: ModelView[]
   /** 离线模式（等价环境变量 GEC_OFFLINE=1）：检测器仅用本地规则，跳过远端 NLP 服务 */
@@ -931,6 +935,10 @@ export interface UpdateSettingsBody {
   hanlp_endpoint?: string
   /** 当前选中的纠错模型预设 id（`prompts/models.json` 注册表；缺省 `generic`） */
   llm_model_id?: string
+  /** ③ 自动双判开关 */
+  llm_dual_judge?: boolean
+  /** 双判影子臂预设 id */
+  llm_dual_model_id?: string
   llm?: {
     base_url?: string
     api_key?: string

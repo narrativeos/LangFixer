@@ -60,6 +60,16 @@ pub struct AppSettings {
     /// 决定 LLM 兜底层的输出适配（json / plain）与生成参数（CEC 工作流 E）。
     #[serde(default = "default_llm_model_id")]
     pub llm_model_id: String,
+    /// ③ 自动双判开关（默认关）：开启后每次 ③ 检测（全文兜底 / ③-T 定向复查 /
+    /// 文档块）都**并行**多跑一路影子臂（`llm_dual_model_id` 预设），双臂判定
+    /// 落 `dual_judge_log` 表；结果并集合并，双臂同命中记共识徽章。
+    /// 影子臂失败（端点不可达/隧道未开）不影响主臂，只记 verdict=shadow_error。
+    #[serde(default)]
+    pub llm_dual_judge: bool,
+    /// 影子臂预设 id（注册表；缺省 `arm3` 自持端点）。与主臂 id 相同时回退
+    /// 用户裸 LLM 端点（即双判对 = 预设端点 × 用户 API 端点）。
+    #[serde(default = "default_llm_dual_model_id")]
+    pub llm_dual_model_id: String,
     /// 知识层总开关（默认开）：关闭后知识向量召回（②.5）、知识库富化与
     /// 数据驱动归点全部旁路——测评消融臂 `knowledge: false` 即切此开关。
     /// 等价环境变量 `GEC_KNOWLEDGE_ENABLED=0` 关闭。
@@ -131,6 +141,10 @@ fn default_llm_model_id() -> String {
     "generic".to_string()
 }
 
+fn default_llm_dual_model_id() -> String {
+    "arm3".to_string()
+}
+
 impl AppSettings {
     /// 加载设置：设置文件存在且可解析时优先使用；否则从环境变量构建（与旧行为一致）
     pub fn load(path: &Path) -> Self {
@@ -174,6 +188,8 @@ impl AppSettings {
                 ..EmbeddingConfig::default()
             },
             llm_model_id: default_llm_model_id(),
+            llm_dual_judge: false,
+            llm_dual_model_id: default_llm_dual_model_id(),
             knowledge_enabled: std::env::var("GEC_KNOWLEDGE_ENABLED")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
@@ -283,6 +299,8 @@ mod tests {
             l3: L3FeatureConfig::default(),
             embedding: EmbeddingConfig::default(),
             llm_model_id: "generic".into(),
+            llm_dual_judge: false,
+            llm_dual_model_id: "arm3".into(),
             knowledge_enabled: false,
             media: MediaSettings::default(),
             doc_jobs: DocJobSettings::default(),
