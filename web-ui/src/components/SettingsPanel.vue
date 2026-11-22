@@ -1276,90 +1276,99 @@ function setProfileCefr(v: string | number) {
       <div class="banner">
         启用后，待检测与讲解的文本全文会发送到下方配置的模型端点——请使用可信服务，勿粘贴机密文本。
       </div>
-      <div class="field">
-        <span class="field__label">纠错模型</span>
-        <div class="field__ctl field__ctl--wrap">
-          <LSelect
-            class="w-420"
-            aria-label="纠错模型"
-            :model-value="llmModelId"
-            :options="modelOptions"
-            @update:model-value="setLlmModelId"
-          />
-          <span class="hint hint--block">
-            从 `prompts/models.json` 注册表选择纠错模型预设：
-            `generic` 用下方 Base URL / 模型（你的 OpenAI 兼容端点，JSON 输出）；
-            `cec4` / `cec3` 用预设的本地 vllm 端点与模型名（纯文本输出，自动适配）。保存后即时生效。
-          </span>
+      <div class="arm-group">
+        <div class="arm-group__title">主判臂<span class="hint">③ 检测 / 讲解 / 练习生成的模型配置</span></div>
+        <div class="field">
+          <span class="field__label">纠错模型</span>
+          <div class="field__ctl field__ctl--wrap">
+            <LSelect
+              class="w-420"
+              aria-label="纠错模型"
+              :model-value="llmModelId"
+              :options="modelOptions"
+              @update:model-value="setLlmModelId"
+            />
+            <span class="hint hint--block">
+              从 `prompts/models.json` 注册表选择纠错模型预设：
+              `generic` 用本组 Base URL / 模型（你的 OpenAI 兼容端点，JSON 输出）；
+              `cec4` / `cec3` 用预设的本地 vllm 端点与模型名（纯文本输出，自动适配）。保存后即时生效。
+            </span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">Base URL</span>
+          <div class="field__ctl">
+            <LInput class="w-420" v-model="llmBaseUrl" placeholder="https://api.openai.com/v1" />
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">API Key</span>
+          <div class="field__ctl">
+            <input
+              v-model="llmApiKey"
+              class="l-input w-420"
+              :type="showLlmKey ? 'text' : 'password'"
+              placeholder="sk-…（留空 = 未配置 LLM，讲解回退静态建议）"
+            />
+            <LButton variant="ghost" size="sm" @click="showLlmKey = !showLlmKey">{{ showLlmKey ? '隐藏' : '显示' }}</LButton>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">模型</span>
+          <div class="field__ctl">
+            <LInput class="w-420" v-model="llmModel" placeholder="gpt-4o-mini" />
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">超时（秒）</span>
+          <div class="field__ctl">
+            <input v-model="llmTimeoutNum" class="l-input w-120" type="number" min="1" max="600" />
+            <span class="hint">连接 / 单次读超时；影子臂同样使用该超时</span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">提示词目录</span>
+          <div class="field__ctl">
+            <LInput class="w-420" v-model="llmPromptsDir" placeholder="prompts" />
+          </div>
         </div>
       </div>
       <div class="field">
         <span class="field__label">自动双判</span>
         <div class="field__ctl">
           <LSwitch v-model="llmDualJudge" aria-label="自动双判" />
-          <span class="sub">开启后每次 ③ LLM 检测并行多跑一路影子臂——影子臂有自己独立的端点、模型与密钥（见下方影子臂配置，与上方纠错模型完全无关）；双臂判定落日志（臂间对照数据），影子臂失败不影响结果。</span>
+          <span class="sub">开启后每次 ③ LLM 检测并行多跑一路下方影子臂，双臂判定落日志（臂间对照数据），影子臂失败不影响结果。上下两组配置完全独立、填写顺序无关：各自填自己的端点 / 模型 / 密钥即可。</span>
         </div>
       </div>
-      <div class="field">
-        <span class="field__label">影子端点 Base URL</span>
-        <div class="field__ctl">
-          <LInput class="w-420" v-model="llmDualBaseUrl" placeholder="https://llm.jiulu.ltd/v1（留空 = 沿用注册表预设 arm3）" />
+      <div class="arm-group" :class="{ 'arm-group--off': !llmDualJudge }">
+        <div class="arm-group__title">
+          影子臂（并行对照）
+          <LTag v-if="!llmDualJudge" tone="neutral">未启用</LTag>
         </div>
-      </div>
-      <div class="field">
-        <span class="field__label">影子模型</span>
-        <div class="field__ctl">
-          <LInput class="w-420" v-model="llmDualModelName" placeholder="arm3-l2kto-v7" />
-          <span class="hint hint--block">影子端点与影子模型需成对填写：两者都填 = 影子臂走这套独立配置；两者都留空 = 沿用注册表预设 `arm3`；只填一个会被拒绝保存。影子臂与主臂同端点同模型时双判自动跳过（同臂自对没有对照价值）。</span>
+        <div class="field">
+          <span class="field__label">影子端点 Base URL</span>
+          <div class="field__ctl">
+            <LInput class="w-420" v-model="llmDualBaseUrl" placeholder="https://llm.jiulu.ltd/v1（留空 = 沿用注册表预设 arm3）" />
+          </div>
         </div>
-      </div>
-      <div class="field">
-        <span class="field__label">影子 API Key</span>
-        <div class="field__ctl">
-          <input
-            v-model="llmDualApiKey"
-            class="l-input w-420"
-            :type="showDualKey ? 'text' : 'password'"
-            placeholder="sk-…（留空 = 复用上方主判密钥；跨网关时填影子侧自己的密钥）"
-          />
-          <LButton variant="ghost" size="sm" @click="showDualKey = !showDualKey">{{ showDualKey ? '隐藏' : '显示' }}</LButton>
+        <div class="field">
+          <span class="field__label">影子模型</span>
+          <div class="field__ctl">
+            <LInput class="w-420" v-model="llmDualModelName" placeholder="arm3-l2kto-v7" />
+            <span class="hint hint--block">影子端点与影子模型需成对填写：两者都填 = 影子臂走这套独立配置；两者都留空 = 沿用注册表预设 `arm3`；只填一个会被拒绝保存。影子臂与主臂同端点同模型时双判自动跳过（同臂自对没有对照价值）；超时复用上方设置。</span>
+          </div>
         </div>
-      </div>
-      <div class="field">
-        <span class="field__label">Base URL</span>
-        <div class="field__ctl">
-          <LInput class="w-420" v-model="llmBaseUrl" placeholder="https://api.openai.com/v1" />
-        </div>
-      </div>
-      <div class="field">
-        <span class="field__label">API Key</span>
-        <div class="field__ctl">
-          <input
-            v-model="llmApiKey"
-            class="l-input w-420"
-            :type="showLlmKey ? 'text' : 'password'"
-            placeholder="sk-…（留空 = 未配置 LLM，讲解回退静态建议）"
-          />
-          <LButton variant="ghost" size="sm" @click="showLlmKey = !showLlmKey">{{ showLlmKey ? '隐藏' : '显示' }}</LButton>
-        </div>
-      </div>
-      <div class="field">
-        <span class="field__label">模型</span>
-        <div class="field__ctl">
-          <LInput class="w-420" v-model="llmModel" placeholder="gpt-4o-mini" />
-        </div>
-      </div>
-      <div class="field">
-        <span class="field__label">超时（秒）</span>
-        <div class="field__ctl">
-          <input v-model="llmTimeoutNum" class="l-input w-120" type="number" min="1" max="600" />
-          <span class="hint">连接 / 单次读超时；流式生成只要数据持续到达就不会中断</span>
-        </div>
-      </div>
-      <div class="field">
-        <span class="field__label">提示词目录</span>
-        <div class="field__ctl">
-          <LInput class="w-420" v-model="llmPromptsDir" placeholder="prompts" />
+        <div class="field">
+          <span class="field__label">影子 API Key</span>
+          <div class="field__ctl">
+            <input
+              v-model="llmDualApiKey"
+              class="l-input w-420"
+              :type="showDualKey ? 'text' : 'password'"
+              placeholder="sk-…（留空 = 复用主判臂密钥；跨网关时填影子侧自己的密钥）"
+            />
+            <LButton variant="ghost" size="sm" @click="showDualKey = !showDualKey">{{ showDualKey ? '隐藏' : '显示' }}</LButton>
+          </div>
         </div>
       </div>
       <div class="field">
@@ -1648,6 +1657,23 @@ function setProfileCefr(v: string | number) {
 }
 .field__label { color: var(--text-2); }
 .field__ctl { display: flex; align-items: center; gap: var(--space-2); min-width: 0; flex-wrap: wrap; }
+/* ③ LLM 两臂配置分组（主判 / 影子）：视觉独立，自动双判开关居两者之间 */
+.arm-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3) 0;
+  margin: var(--space-2) 0;
+  background: var(--surface-2);
+}
+.arm-group__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-weight: 600;
+  color: var(--text);
+  padding-top: var(--space-1);
+}
+.arm-group--off { opacity: 0.55; }
 .field__ctl--checks { gap: var(--space-4); }
 .field__ctl--wrap { flex-direction: column; align-items: flex-start; }
 .w-120 { width: calc(var(--space-7) * 2 + var(--space-2)); }
