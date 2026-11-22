@@ -66,10 +66,20 @@ pub struct AppSettings {
     /// 影子臂失败（端点不可达/隧道未开）不影响主臂，只记 verdict=shadow_error。
     #[serde(default)]
     pub llm_dual_judge: bool,
-    /// 影子臂预设 id（注册表；缺省 `arm3` 自持端点）。与主臂 id 相同时回退
-    /// 用户裸 LLM 端点（即双判对 = 预设端点 × 用户 API 端点）。
+    /// 影子臂预设 id（注册表；仅作旧配置兼容：显式端点字段为空时回退此预设）。
+    /// 旧语义「与主臂相同时回退用户裸端点」已退役：两臂相同 = 同臂自对，跳过双判。
     #[serde(default = "default_llm_dual_model_id")]
     pub llm_dual_model_id: String,
+    /// ③ 双判影子臂独立端点 Base URL（与主臂完全解耦）。与影子模型同时非空时生效；
+    /// 两者留空 = 沿用 `llm_dual_model_id` 预设；两者不一致时双判跳过。
+    #[serde(default)]
+    pub llm_dual_base_url: String,
+    /// 双判影子臂独立模型名（同上；与 Base URL 成对）
+    #[serde(default)]
+    pub llm_dual_model: String,
+    /// 双判影子臂独立 API Key（留空 = 复用主判密钥；跨网关时填影子侧自己的密钥）
+    #[serde(default)]
+    pub llm_dual_api_key: String,
     /// 知识层总开关（默认开）：关闭后知识向量召回（②.5）、知识库富化与
     /// 数据驱动归点全部旁路——测评消融臂 `knowledge: false` 即切此开关。
     /// 等价环境变量 `GEC_KNOWLEDGE_ENABLED=0` 关闭。
@@ -190,6 +200,9 @@ impl AppSettings {
             llm_model_id: default_llm_model_id(),
             llm_dual_judge: false,
             llm_dual_model_id: default_llm_dual_model_id(),
+            llm_dual_base_url: String::new(),
+            llm_dual_model: String::new(),
+            llm_dual_api_key: String::new(),
             knowledge_enabled: std::env::var("GEC_KNOWLEDGE_ENABLED")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
@@ -301,6 +314,9 @@ mod tests {
             llm_model_id: "generic".into(),
             llm_dual_judge: false,
             llm_dual_model_id: "arm3".into(),
+            llm_dual_base_url: "https://shadow.example/v1".into(),
+            llm_dual_model: "shadow-x".into(),
+            llm_dual_api_key: "sk-shadow".into(),
             knowledge_enabled: false,
             media: MediaSettings::default(),
             doc_jobs: DocJobSettings::default(),

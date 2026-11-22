@@ -200,8 +200,11 @@ const llmPromptsDir = ref('')
 const llmModelId = ref('generic')
 /** ③ 自动双判开关（影子臂并行判 + 判定落 dual_judge_log） */
 const llmDualJudge = ref(false)
-/** 双判影子臂预设 id（缺省 arm3；与主臂相同时影子回退用户裸端点） */
-const llmDualModelId = ref('arm3')
+/** ③ 双判影子臂独立配置（与主臂完全解耦；端点/模型两空 = 沿用注册表预设 arm3） */
+const llmDualBaseUrl = ref('')
+const llmDualModelName = ref('')
+const llmDualApiKey = ref('')
+const showDualKey = ref(false)
 /** 可用纠错模型预设列表（「纠错模型」选择器；仅含 enabled 条目） */
 const models = ref<ModelView[]>([])
 /** 决策表目录（GEC_TABLES_DIR） */
@@ -308,7 +311,9 @@ async function load() {
     llmPromptsDir.value = s.llm.prompts_dir
     llmModelId.value = s.llm_model_id
     llmDualJudge.value = s.llm_dual_judge ?? false
-    llmDualModelId.value = s.llm_dual_model_id ?? 'arm3'
+    llmDualBaseUrl.value = s.llm_dual_base_url ?? ''
+    llmDualModelName.value = s.llm_dual_model ?? ''
+    llmDualApiKey.value = s.llm_dual_api_key ?? ''
     models.value = s.models ?? []
     tablesDir.value = s.tables_dir
     lexiconsDir.value = s.lexicons_dir
@@ -379,7 +384,9 @@ function formIsDirty(): boolean {
     llmPromptsDir.value.trim() !== s.llm.prompts_dir ||
     llmModelId.value !== s.llm_model_id ||
     llmDualJudge.value !== s.llm_dual_judge ||
-    llmDualModelId.value !== s.llm_dual_model_id ||
+    llmDualBaseUrl.value.trim() !== (s.llm_dual_base_url ?? '') ||
+    llmDualModelName.value.trim() !== (s.llm_dual_model ?? '') ||
+    llmDualApiKey.value !== (s.llm_dual_api_key ?? '') ||
     tablesDir.value.trim() !== s.tables_dir ||
     lexiconsDir.value.trim() !== s.lexicons_dir ||
     decisionEndpoint.value.trim() !== s.decision.endpoint ||
@@ -422,7 +429,9 @@ async function save(): Promise<boolean> {
       hanlp_endpoint: hanlpEndpoint.value.trim(),
       llm_model_id: llmModelId.value,
       llm_dual_judge: llmDualJudge.value,
-      llm_dual_model_id: llmDualModelId.value,
+      llm_dual_base_url: llmDualBaseUrl.value.trim(),
+      llm_dual_model: llmDualModelName.value.trim(),
+      llm_dual_api_key: llmDualApiKey.value,
       offline_mode: offlineMode.value,
       ...(dbChanged ? { db_backup_enabled: dbBackupSetting.value } : {}),
       llm: {
@@ -1288,16 +1297,32 @@ function setProfileCefr(v: string | number) {
         <span class="field__label">自动双判</span>
         <div class="field__ctl">
           <LSwitch v-model="llmDualJudge" aria-label="自动双判" />
-          <span class="sub">开启后每次 ③ LLM 检测并行多跑一路影子臂，双臂判定落日志（臂间对照数据）；
-            影子臂失败不影响结果。影子端点：
-            <LSelect
-              class="w-260"
-              aria-label="双判影子臂预设"
-              :model-value="llmDualModelId"
-              :options="modelOptions"
-              @update:model-value="llmDualModelId = String($event)"
-            />
-            （与上方纠错模型相同时，影子自动回退 Base URL / 模型端点）</span>
+          <span class="sub">开启后每次 ③ LLM 检测并行多跑一路影子臂——影子臂有自己独立的端点、模型与密钥（见下方影子臂配置，与上方纠错模型完全无关）；双臂判定落日志（臂间对照数据），影子臂失败不影响结果。</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">影子端点 Base URL</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="llmDualBaseUrl" placeholder="https://llm.jiulu.ltd/v1（留空 = 沿用注册表预设 arm3）" />
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">影子模型</span>
+        <div class="field__ctl">
+          <LInput class="w-420" v-model="llmDualModelName" placeholder="arm3-l2kto-v7" />
+          <span class="hint hint--block">影子端点与影子模型需成对填写：两者都填 = 影子臂走这套独立配置；两者都留空 = 沿用注册表预设 `arm3`；只填一个会被拒绝保存。影子臂与主臂同端点同模型时双判自动跳过（同臂自对没有对照价值）。</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field__label">影子 API Key</span>
+        <div class="field__ctl">
+          <input
+            v-model="llmDualApiKey"
+            class="l-input w-420"
+            :type="showDualKey ? 'text' : 'password'"
+            placeholder="sk-…（留空 = 复用上方主判密钥；跨网关时填影子侧自己的密钥）"
+          />
+          <LButton variant="ghost" size="sm" @click="showDualKey = !showDualKey">{{ showDualKey ? '隐藏' : '显示' }}</LButton>
         </div>
       </div>
       <div class="field">

@@ -565,17 +565,12 @@ impl AppState {
         );
         // ③ 自动双判：影子臂并行跑另一端点，双臂判定落 dual_judge_log。
         // 影子臂用独立熔断器；其失败只进判定日志，不影响本引擎结果与质量标记。
-        let dual = {
-            let s = self.settings.read().unwrap();
-            if s.llm_dual_judge {
-                Some((s.llm_model_id.clone(), s.llm_dual_model_id.clone()))
-            } else {
-                None
-            }
-        };
-        let engine = match dual
-            .and_then(|(primary_id, dual_id)| self.dual_shadow_config(lang, &primary_id, &dual_id))
-        {
+        let dual_on = self.settings.read().unwrap().llm_dual_judge;
+        let engine = match if dual_on {
+            self.dual_shadow_config(lang)
+        } else {
+            None
+        } {
             Some(cfg) => {
                 let shadow = LlmGecEngine::with_breaker(lang, cfg, self.llm_dual_breaker.clone());
                 let store = self.dual_judge.clone();
@@ -599,57 +594,75 @@ impl AppState {
         Some(Arc::new(engine))
     }
 
-    /// 解析双判影子臂端点配置：预设 id 在注册表且有独立 `base_url` 时用预设；
-    /// 与主臂 id 相同 / 不在注册表 / 无独立端点 → 回退用户裸 LLM 端点
-    ///（即双判对 = 预设端点 × 用户 API 端点）。api_key 恒取用户 LLM 配置。
-    fn dual_shadow_config(
-        &self,
-        lang: &str,
-        primary_id: &str,
-        dual_id: &str,
-    ) -> Option<LlmDetectConfig> {
+    /// 解析双判影子臂端点：与主臂**完全独立**的一套配置。
+    ///
+    /// 优先级：
+    /// 1. 显式字段（`llm_dual_base_url` + `llm_dual_model` 成对非空）→ 直接用，
+    ///    密钥用 `llm_dual_api_key`（留空复用主判密钥）；
+    /// 2. 旧配置兼容：仅预设 id 时走注册表条目（需自持端点；与主臂 id 相同 =
+    ///    同臂自对，跳过）；
+    /// 3. 都没有 → 跳过双判并点名一次（不得静默拿主臂端点冒充影子臂）。
+    fn dual_shadow_config(&self, lang: &str) -> Option<LlmDetectConfig> {
         let service = self.llm_service();
-        let entry = if dual_id == primary_id {
-            None
+        let s = self.settings.read().unwrap();
+        let base = s.llm_dual_base_url.trim().to_string();
+        let model = s.llm_dual_model.trim().to_string();
+        let api_key = if s.llm_dual_api_key.trim().is_empty() {
+            service.config.api_key.clone()
         } else {
-            self.model_registry
-                .read()
-                .unwrap()
-                .get(dual_id)
-                .cloned()
-                .filter(|e| !e.base_url.is_empty())
+            s.llm_dual_api_key.clone()
         };
-        let template = match entry
-            .as_ref()
-            .map(|e| e.prompt_template.as_str())
-            .filter(|k| !k.is_empty())
-        {
-            Some(key) => service
-                .templates
-                .get(key)
-                .or_else(|| service.templates.for_lang_cefr(lang, "detect"))?,
-            None => service.templates.for_lang_cefr(lang, "detect")?,
-        };
-        Some(match &entry {
-            Some(e) => LlmDetectConfig::from_parts(
-                e.base_url.clone(),
-                service.config.api_key.clone(),
-                e.model.clone(),
+        if !base.is_empty() && !model.is_empty() {
+            let template = service.templates.for_lang_cefr(lang, "detect")?;
+            return Some(LlmDetectConfig::from_parts(
+                base,
+                api_key,
+                model,
                 service.config.timeout_secs,
                 template.system.clone(),
                 template.user.clone(),
-            )
-            .with_output_format(e.output_format.clone())
-            .with_max_tokens(e.max_tokens),
-            None => LlmDetectConfig::from_parts(
-                service.config.base_url.clone(),
-                service.config.api_key.clone(),
-                service.config.model.clone(),
-                service.config.timeout_secs,
-                template.system.clone(),
-                template.user.clone(),
-            ),
-        })
+            ));
+        }
+        let entry = self
+            .model_registry
+            .read()
+            .unwrap()
+            .get(&s.llm_dual_model_id)
+            .cloned()
+            .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id);
+        match entry {
+            Some(e) => {
+                let template = match e.prompt_template.as_str() {
+                    key if !key.is_empty() => service
+                        .templates
+                        .get(key)
+                        .or_else(|| service.templates.for_lang_cefr(lang, "detect"))?,
+                    _ => service.templates.for_lang_cefr(lang, "detect")?,
+                };
+                Some(
+                    LlmDetectConfig::from_parts(
+                        e.base_url.clone(),
+                        api_key,
+                        e.model.clone(),
+                        service.config.timeout_secs,
+                        template.system.clone(),
+                        template.user.clone(),
+                    )
+                    .with_output_format(e.output_format.clone())
+                    .with_max_tokens(e.max_tokens),
+                )
+            }
+            None => {
+                static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+                WARN_ONCE.call_once(|| {
+                    tracing::warn!(
+                        "自动双判已开启但影子端点未配置（或与主臂同一模型）：双判自动跳过，\
+                         请在设置「AI 复查」影子臂栏填写独立端点与模型"
+                    );
+                });
+                None
+            }
+        }
     }
 
     /// 当前检测参数快照（存入历史 `params_json`；重复检测复用历史的比对依据）。

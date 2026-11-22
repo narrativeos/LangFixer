@@ -158,8 +158,15 @@ pub struct SettingsResponse {
     pub llm_model_id: String,
     /// ③ 自动双判开关（影子臂并行判 + dual_judge_log 落盘）
     pub llm_dual_judge: bool,
-    /// 双判影子臂预设 id（缺省 `arm3`；与主臂相同时影子回退用户裸端点）
+    /// 双判影子臂预设 id（旧配置兼容：显式端点字段为空时按此预设解析；缺省 `arm3`）
     pub llm_dual_model_id: String,
+    /// 双判影子臂端点 Base URL（展示的是生效值：显式配置或注册表预设解析结果；
+    /// 两者皆空 = 双判会跳过）
+    pub llm_dual_base_url: String,
+    /// 双判影子臂模型名（同上）
+    pub llm_dual_model: String,
+    /// 双判影子臂 API Key（空 = 运行时复用主判密钥）
+    pub llm_dual_api_key: String,
     /// 知识层总开关（知识向量召回 + 知识库富化 + 数据驱动归点；默认开）
     pub knowledge_enabled: bool,
     /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
@@ -196,8 +203,14 @@ pub struct UpdateSettingsRequest {
     pub llm_model_id: Option<String>,
     /// ③ 自动双判开关
     pub llm_dual_judge: Option<bool>,
-    /// 双判影子臂预设 id
+    /// 双判影子臂预设 id（旧配置兼容）
     pub llm_dual_model_id: Option<String>,
+    /// 双判影子臂独立端点 Base URL（与影子模型成对；两者留空 = 沿用预设）
+    pub llm_dual_base_url: Option<String>,
+    /// 双判影子臂独立模型名
+    pub llm_dual_model: Option<String>,
+    /// 双判影子臂独立 API Key（留空 = 复用主判密钥）
+    pub llm_dual_api_key: Option<String>,
     /// 知识层总开关（测评消融臂 `knowledge: false` 用；默认开）
     pub knowledge_enabled: Option<bool>,
     /// 载体（图片 / PDF / Word）审校设置（部分更新；两端同构）
@@ -338,6 +351,33 @@ fn to_response(
         llm_model_id: s.llm_model_id.clone(),
         llm_dual_judge: s.llm_dual_judge,
         llm_dual_model_id: s.llm_dual_model_id.clone(),
+        llm_dual_base_url: {
+            let b = s.llm_dual_base_url.trim();
+            let m = s.llm_dual_model.trim();
+            if !b.is_empty() && !m.is_empty() {
+                b.to_string()
+            } else {
+                registry
+                    .get(&s.llm_dual_model_id)
+                    .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id)
+                    .map(|e| e.base_url.clone())
+                    .unwrap_or_default()
+            }
+        },
+        llm_dual_model: {
+            let b = s.llm_dual_base_url.trim();
+            let m = s.llm_dual_model.trim();
+            if !b.is_empty() && !m.is_empty() {
+                m.to_string()
+            } else {
+                registry
+                    .get(&s.llm_dual_model_id)
+                    .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id)
+                    .map(|e| e.model.clone())
+                    .unwrap_or_default()
+            }
+        },
+        llm_dual_api_key: s.llm_dual_api_key.clone(),
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
         doc_jobs: s.doc_jobs.clone(),
@@ -528,6 +568,21 @@ pub async fn put(
             return Err(ApiError::BadRequest("llm_dual_model_id 不能为空".into()));
         }
         next.llm_dual_model_id = model_id;
+    }
+    if let Some(v) = req.llm_dual_base_url.clone() {
+        next.llm_dual_base_url = v.trim().to_string();
+    }
+    if let Some(v) = req.llm_dual_model.clone() {
+        next.llm_dual_model = v.trim().to_string();
+    }
+    // 成对校验按落盘后的最终状态：半空半满会让双判静默跳过，必须当场拒绝
+    if next.llm_dual_base_url.is_empty() != next.llm_dual_model.is_empty() {
+        return Err(ApiError::BadRequest(
+            "影子臂端点与模型需成对填写（两者同时留空 = 沿用注册表预设）".into(),
+        ));
+    }
+    if let Some(v) = req.llm_dual_api_key.clone() {
+        next.llm_dual_api_key = v;
     }
     if let Some(v) = req.knowledge_enabled {
         next.knowledge_enabled = v;

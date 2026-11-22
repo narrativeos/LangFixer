@@ -870,8 +870,14 @@ export interface AppSettings {
   llm_model_id: string
   /** ③ 自动双判开关（影子臂并行判 + 判定落库） */
   llm_dual_judge: boolean
-  /** 双判影子臂预设 id（缺省 `arm3`；与主臂相同时影子回退用户裸端点） */
+  /** 双判影子臂预设 id（旧配置兼容：显式端点字段为空时按此预设解析） */
   llm_dual_model_id: string
+  /** 双判影子臂端点 Base URL（展示生效值；空 = 预设解析不出端点，双判跳过） */
+  llm_dual_base_url?: string
+  /** 双判影子臂模型名（同上） */
+  llm_dual_model?: string
+  /** 双判影子臂 API Key（空 = 运行时复用主判密钥） */
+  llm_dual_api_key?: string
   /** 可用纠错模型预设列表（「纠错模型」选择器；仅含 enabled 条目） */
   models: ModelView[]
   /** 离线模式（等价环境变量 GEC_OFFLINE=1）：检测器仅用本地规则，跳过远端 NLP 服务 */
@@ -937,8 +943,14 @@ export interface UpdateSettingsBody {
   llm_model_id?: string
   /** ③ 自动双判开关 */
   llm_dual_judge?: boolean
-  /** 双判影子臂预设 id */
+  /** 双判影子臂预设 id（旧配置兼容） */
   llm_dual_model_id?: string
+  /** 双判影子臂独立端点 Base URL（与影子模型成对；两者留空 = 沿用预设） */
+  llm_dual_base_url?: string
+  /** 双判影子臂独立模型名 */
+  llm_dual_model?: string
+  /** 双判影子臂独立 API Key（留空 = 复用主判密钥） */
+  llm_dual_api_key?: string
   llm?: {
     base_url?: string
     api_key?: string
