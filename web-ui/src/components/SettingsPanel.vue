@@ -2,6 +2,8 @@
 import { computed, ref, watch, onMounted, nextTick } from 'vue'
 import type { Ref } from 'vue'
 import { errMsg } from '../lib/err'
+import { identity } from '../lib/auth'
+import { markOpsUserChoice } from '../lib/caps'
 import { modeLabel } from '../lib/labels'
 import {
   LButton,
@@ -61,16 +63,19 @@ function onCapToggle(key: 'learning' | 'proofreading' | 'ops', value: boolean) {
     store.setCap(key, value)
     return
   }
+  // 用户拨过开关即记录意图，后续不再自动置位
+  markOpsUserChoice()
   if (!value) {
     store.setCap('ops', false)
     showOpsToken.value = false
     return
   }
-  if (isTauri) {
+  // 桌面端本地单用户直接置位；web 形态超管写端点已受服务端鉴权，同样免 token 过场
+  if (isTauri || identity.value.admin) {
     store.setCap('ops', true)
     return
   }
-  // web 形态：先展示内联 token 验证表单，验证通过才真正开启
+  // web 形态非超管：先展示内联 token 验证表单，验证通过才真正开启
   showOpsToken.value = true
 }
 
@@ -895,8 +900,8 @@ function setProfileCefr(v: string | number) {
         <span v-if="opsUnlockError" class="apply-err">{{ opsUnlockError }}</span>
       </div>
       <p class="desc">
-        能力位是本机偏好（仅保存在此设备）。web 形态解锁平台运营需 token 验证；
-        未解锁时相关写端点本身也受服务端 token 保护。
+        能力位是本机偏好（仅保存在此设备）。超管身份下平台运营自动开启（写端点本身受服务端鉴权保护）；
+        其余情形 web 形态解锁需 token 验证，未解锁时相关写端点仍受服务端 token 保护。
       </p>
     </LSection>
 

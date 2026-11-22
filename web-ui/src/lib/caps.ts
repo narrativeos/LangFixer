@@ -51,6 +51,26 @@ export function saveCaps(caps: Caps): void {
   }
 }
 
+/**
+ * 用户手动拨过平台运营开关的记号：有它则不再自动置位（拨关是意图，跨刷新保持）；
+ * 没有它且 whoami 为超管时自动开启（服务端鉴权已在，本地走过场只会制造摩擦）。
+ */
+const OPS_USER_CHOICE_KEY = 'langfixer.caps.ops.userChoice.v1'
+export function markOpsUserChoice(): void {
+  try {
+    localStorage.setItem(OPS_USER_CHOICE_KEY, '1')
+  } catch {
+    /* 忽略 */
+  }
+}
+export function hasOpsUserChoice(): boolean {
+  try {
+    return localStorage.getItem(OPS_USER_CHOICE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 /** 顶层视图（App.vue 与能力门控共用） */
 export type AppView =
   | 'workspace'

@@ -19,7 +19,7 @@ import OnboardingDialog from './components/OnboardingDialog.vue'
 import AccessPanel from './components/AccessPanel.vue'
 import TokenGate from './components/TokenGate.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
-import { viewAllowed, type AppView } from './lib/caps'
+import { viewAllowed, hasOpsUserChoice, type AppView } from './lib/caps'
 import { ALL_VIEWS, CONSOLE_ORDER, VIEW_DEFS, shellOf } from './lib/views'
 import { api, isTauri, tauriListen } from './api/client'
 import { gateReady, identity, initGate } from './lib/auth'
@@ -164,6 +164,10 @@ const psTone = computed<'ok' | 'off' | 'missing'>(() =>
 
 /** 验证通过后才拉数据:网关形态未登录打业务端点会 401 */
 function boot() {
+  // 网关形态超管：写端点已由服务端鉴权，运营能力位自动开启；
+  // 用户拨过的以拨的为准（userChoice 记号跨刷新保持）
+  if (identity.value.gateway && identity.value.admin && !store.caps.ops && !hasOpsUserChoice())
+    store.setCap('ops', true)
   store.loadLanguages()
   store.loadSettings()
   if (store.caps.ops) {
