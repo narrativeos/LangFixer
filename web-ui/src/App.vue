@@ -153,6 +153,15 @@ const psOk = computed(
     (store.llmEnabled ? 1 : 0),
 )
 
+// 与弹层点同口径：未配置（LLM / 向量缺失）=橙；仅未启用（开关关）=灰；全绿=绿
+const psTone = computed<'ok' | 'off' | 'missing'>(() =>
+  !store.llmEnabled || !store.embeddingConfigured
+    ? 'missing'
+    : psOk.value < psTotal
+      ? 'off'
+      : 'ok',
+)
+
 /** 验证通过后才拉数据:网关形态未登录打业务端点会 401 */
 function boot() {
   store.loadLanguages()
@@ -375,7 +384,7 @@ if (isTauri) api.setWindowTheme(isDark.value)
           <template #trigger="{ toggle, open }">
             <button
               class="ps-chip"
-              :class="psOk === psTotal ? 'ps-chip-ok' : 'ps-chip-warn'"
+              :class="psTone === 'ok' ? 'ps-chip-ok' : psTone === 'missing' ? 'ps-chip-warn' : 'ps-chip-off'"
               :aria-expanded="open ? 'true' : 'false'"
               :title="`检测服务:${psOk}/${psTotal} 项可用(点击查看明细)`"
               aria-label="检测服务:查看可用情况"

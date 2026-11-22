@@ -104,6 +104,8 @@ html.desktop #app {
 .ps-chip-ok .ps-chip-dot { background: var(--ok); }
 .ps-chip-warn .ps-chip-dot { background: var(--warn); }
 .ps-chip-warn { color: var(--warn-ink); }
+/* 仅「未启用」（开关关，非故障）：用中性灰，与弹层 LDot muted 同色，不报橙警 */
+.ps-chip-off .ps-chip-dot { background: var(--muted); }
 
 .preview-empty { padding: 8px 0; }
 
