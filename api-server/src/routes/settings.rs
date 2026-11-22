@@ -776,11 +776,13 @@ pub async fn test(
         "llm_dual" => {
             let endpoint = resolve_dual_endpoint(&s, &state.model_registry.read().unwrap());
             match endpoint {
-                Some((base, model, key)) => (
-                    gec_core::settings_test::test_llm(&base, &key, &model, s.llm.timeout_secs)
-                        .await,
-                    None,
-                ),
+                Some((base, model, key)) => {
+                    let mut r =
+                        gec_core::settings_test::test_llm(&base, &key, &model, s.llm.timeout_secs)
+                            .await;
+                    r.target = "llm_dual".into(); // 探的是影子端点，响应不得自称 llm
+                    (r, None)
+                }
                 None => (
                     gec_core::settings_test::TestResult {
                         target: "llm_dual".into(),
