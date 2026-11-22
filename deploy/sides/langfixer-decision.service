@@ -1,17 +1,11 @@
 [Unit]
 Description=LangFixer decision-model service (:4804)
-After=docker.service
-Requires=docker.service
 
 [Service]
 Restart=always
 RestartSec=3
-ExecStartPre=-/usr/bin/docker rm -f langfixer-decision
-ExecStart=/usr/bin/docker run --rm --name langfixer-decision \
-  -p 127.0.0.1:4804:4804 \
-  -e DEC_HOST=0.0.0.0 -e DEC_PORT=4804 \
-  -v /srv/langfixer/decision-model:/app:ro \
-  -w /app langfixer-sides:1 python server.py
+WorkingDirectory=/srv/langfixer/decision-model
+ExecStart=/srv/langfixer/decision-model/.venv/bin/python server.py
 
 [Install]
 WantedBy=multi-user.target

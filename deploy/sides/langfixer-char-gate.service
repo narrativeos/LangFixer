@@ -1,17 +1,13 @@
 [Unit]
 Description=LangFixer char-gate sidecar service (:4811)
-After=docker.service
-Requires=docker.service
 
 [Service]
 Restart=always
 RestartSec=3
-ExecStartPre=-/usr/bin/docker rm -f langfixer-char-gate
-ExecStart=/usr/bin/docker run --rm --name langfixer-char-gate \
-  -p 127.0.0.1:4811:4811 \
-  -e CHAR_GATE_HOST=0.0.0.0 -e CHAR_GATE_PORT=4811 \
-  -v /srv/langfixer/feature-model:/app:ro \
-  -w /app langfixer-sides:1 python char_gate.py
+WorkingDirectory=/srv/langfixer/feature-model
+# 默认仅绑 127.0.0.1;L3 在 docker bridge 里的机器按 README 改 CHAR_GATE_HOST/端口发布
+Environment=CHAR_GATE_HOST=127.0.0.1
+ExecStart=/srv/langfixer/feature-model/.venv_char/bin/python char_gate.py --port 4811
 
 [Install]
 WantedBy=multi-user.target
