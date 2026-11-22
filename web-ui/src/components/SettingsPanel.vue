@@ -1332,6 +1332,16 @@ function setProfileCefr(v: string | number) {
             <LInput class="w-420" v-model="llmPromptsDir" placeholder="prompts" />
           </div>
         </div>
+        <div class="field">
+          <span class="field__label">服务测试</span>
+          <div class="field__ctl">
+            <LButton :loading="testing.llm" @click="runTest('llm')">测试主判臂</LButton>
+            <span v-if="testResults.llm" :class="testResults.llm.ok ? 'apply-ok' : 'apply-err'">
+              {{ testResults.llm.message }}
+              <span class="sub">（{{ testResults.llm.latency_ms }} ms）</span>
+            </span>
+          </div>
+        </div>
       </div>
       <div class="field">
         <span class="field__label">自动双判</span>
@@ -1370,15 +1380,18 @@ function setProfileCefr(v: string | number) {
             <LButton variant="ghost" size="sm" @click="showDualKey = !showDualKey">{{ showDualKey ? '隐藏' : '显示' }}</LButton>
           </div>
         </div>
-      </div>
-      <div class="field">
-        <span class="field__label">服务测试</span>
-        <div class="field__ctl">
-          <LButton :loading="testing.llm" @click="runTest('llm')">测试</LButton>
-          <span v-if="testResults.llm" :class="testResults.llm.ok ? 'apply-ok' : 'apply-err'">
-            {{ testResults.llm.message }}
-            <span class="sub">（{{ testResults.llm.latency_ms }} ms）</span>
-          </span>
+        <div class="field">
+          <span class="field__label">服务测试</span>
+          <div class="field__ctl">
+            <LButton :loading="testing.llm_dual" @click="runTest('llm_dual')">测试影子臂</LButton>
+            <span
+              v-if="testResults.llm_dual"
+              :class="testResults.llm_dual.skipped ? 'sub' : testResults.llm_dual.ok ? 'apply-ok' : 'apply-err'"
+            >
+              {{ testResults.llm_dual.message }}
+              <span v-if="!testResults.llm_dual.skipped" class="sub">（{{ testResults.llm_dual.latency_ms }} ms）</span>
+            </span>
+          </div>
         </div>
       </div>
       <div class="hint">

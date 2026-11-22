@@ -351,32 +351,12 @@ fn to_response(
         llm_model_id: s.llm_model_id.clone(),
         llm_dual_judge: s.llm_dual_judge,
         llm_dual_model_id: s.llm_dual_model_id.clone(),
-        llm_dual_base_url: {
-            let b = s.llm_dual_base_url.trim();
-            let m = s.llm_dual_model.trim();
-            if !b.is_empty() && !m.is_empty() {
-                b.to_string()
-            } else {
-                registry
-                    .get(&s.llm_dual_model_id)
-                    .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id)
-                    .map(|e| e.base_url.clone())
-                    .unwrap_or_default()
-            }
-        },
-        llm_dual_model: {
-            let b = s.llm_dual_base_url.trim();
-            let m = s.llm_dual_model.trim();
-            if !b.is_empty() && !m.is_empty() {
-                m.to_string()
-            } else {
-                registry
-                    .get(&s.llm_dual_model_id)
-                    .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id)
-                    .map(|e| e.model.clone())
-                    .unwrap_or_default()
-            }
-        },
+        llm_dual_base_url: resolve_dual_endpoint(&s, registry)
+            .map(|d| d.0)
+            .unwrap_or_default(),
+        llm_dual_model: resolve_dual_endpoint(&s, registry)
+            .map(|d| d.1)
+            .unwrap_or_default(),
         llm_dual_api_key: s.llm_dual_api_key.clone(),
         knowledge_enabled: s.knowledge_enabled,
         media: s.media.clone(),
@@ -393,6 +373,32 @@ fn to_response(
             })
             .collect(),
     }
+}
+
+/// 影子臂生效端点 `(base_url, model, api_key)`，与 `state::dual_shadow_config` 同口径：
+/// 显式成对字段优先；否则注册表预设（需自持端点且不与主臂同 id）；密钥留空复用主判。
+/// `None` = 解析不出端点（双判会跳过，测试也如实跳过）
+fn resolve_dual_endpoint(
+    s: &crate::settings::AppSettings,
+    registry: &gec_core::ModelRegistry,
+) -> Option<(String, String, String)> {
+    let key = if s.llm_dual_api_key.trim().is_empty() {
+        s.llm.api_key.clone()
+    } else {
+        s.llm_dual_api_key.clone()
+    };
+    let base = s.llm_dual_base_url.trim();
+    let model = s.llm_dual_model.trim();
+    if !base.is_empty() && !model.is_empty() {
+        return Some((base.to_string(), model.to_string(), key));
+    }
+    if !base.is_empty() || !model.is_empty() {
+        return None; // 半空半满：保存校验会拦，这里再兑一层
+    }
+    let entry = registry
+        .get(&s.llm_dual_model_id)
+        .filter(|e| !e.base_url.is_empty() && e.id != s.llm_model_id)?;
+    Some((entry.base_url.clone(), entry.model.clone(), key))
 }
 
 /// GET /gec/settings — 当前设置（网关形态下非超管看不到 LLM/embedding 密钥明文）
@@ -734,6 +740,8 @@ fn db_backup_view(db_path: &std::path::Path, setting_on: bool) -> DbBackupView {
 /// 对当前设置发起一次最小化真实调用（只读探测，不修改任何配置）：
 /// - `hanlp`：`POST {endpoint}/analyze`（验证分词返回）
 /// - `llm`：`POST {base_url}/chat/completions`（非流式最小提示）
+/// - `llm_dual`：同一次最小调用，但面向影子臂生效端点（显式成对 > 注册表预设；
+///   解析不出 = 如实 skipped，不拿主臂端点凑数）
 /// - `decision`：`POST {endpoint}/decide`（vegaml 决策模型）
 /// - `l3`：`POST {endpoint}/l3-detect`（feature-model 特征模型）
 /// - `embedding`：`POST {endpoint}/embeddings`（OpenAI 兼容向量接口）
@@ -765,6 +773,28 @@ pub async fn test(
             .await,
             None,
         ),
+        "llm_dual" => {
+            let endpoint = resolve_dual_endpoint(&s, &state.model_registry.read().unwrap());
+            match endpoint {
+                Some((base, model, key)) => (
+                    gec_core::settings_test::test_llm(&base, &key, &model, s.llm.timeout_secs)
+                        .await,
+                    None,
+                ),
+                None => (
+                    gec_core::settings_test::TestResult {
+                        target: "llm_dual".into(),
+                        ok: false,
+                        skipped: true,
+                        message:
+                            "影子臂端点未配置（或影子臂与主判臂同一模型）：双判会跳过，无可测端点"
+                                .into(),
+                        latency_ms: 0,
+                    },
+                    None,
+                ),
+            }
+        }
         "decision" => (
             gec_core::settings_test::test_decision(&s.decision).await,
             None,

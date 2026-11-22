@@ -29,7 +29,7 @@ use crate::l3::L3FeatureConfig;
 /// 单项测试结果（Web 端 `SettingsTestResult` / 桌面端同构）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
-    /// 测试目标（`hanlp` / `llm` / `decision` / `l3` / `embedding` / `tables_dir` / `lexicons_dir`）
+    /// 测试目标（`hanlp` / `llm` / `llm_dual` / `decision` / `l3` / `embedding` / `tables_dir` / `lexicons_dir`）
     pub target: String,
     /// 是否通过
     pub ok: bool,

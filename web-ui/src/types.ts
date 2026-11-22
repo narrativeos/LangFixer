@@ -1003,6 +1003,7 @@ export interface UpdateSettingsBody {
 export type SettingsTestTarget =
   | 'hanlp'
   | 'llm'
+  | 'llm_dual'
   | 'decision'
   | 'l3'
   | 'embedding'
