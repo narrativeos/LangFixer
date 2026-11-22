@@ -1,0 +1,17 @@
+[Unit]
+Description=LangFixer char-gate sidecar service (:4811)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=3
+ExecStartPre=-/usr/bin/docker rm -f langfixer-char-gate
+ExecStart=/usr/bin/docker run --rm --name langfixer-char-gate \
+  -p 127.0.0.1:4811:4811 \
+  -e CHAR_GATE_HOST=0.0.0.0 -e CHAR_GATE_PORT=4811 \
+  -v /srv/langfixer/feature-model:/app:ro \
+  -w /app langfixer-sides:1 python char_gate.py
+
+[Install]
+WantedBy=multi-user.target

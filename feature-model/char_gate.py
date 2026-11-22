@@ -86,6 +86,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', default=os.path.join(HERE, 'models', 'char_ctc_zh_v2'))
     ap.add_argument('--port', type=int, default=int(os.environ.get('CHAR_GATE_PORT', '4811')))
+    ap.add_argument('--host', default=os.environ.get('CHAR_GATE_HOST', '127.0.0.1'))
     args = ap.parse_args()
     global ARGS
     ARGS = args
@@ -95,8 +96,8 @@ def main():
     _dev = os.environ.get('CHAR_GATE_DEVICE') or (
         'mps' if torch.backends.mps.is_available() else 'cpu')
     _model.to(_dev)
-    print(f'char-gate on :{args.port} model={args.model} device={_dev}', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', args.port), H).serve_forever()
+    print(f'char-gate on {args.host}:{args.port} model={args.model} device={_dev}', flush=True)
+    ThreadingHTTPServer((args.host, args.port), H).serve_forever()
 
 
 if __name__ == '__main__':
