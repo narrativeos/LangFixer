@@ -35,8 +35,11 @@ pub struct TestResult {
     pub ok: bool,
     /// 结果说明（通过时为能力摘要，失败时为具体原因）
     pub message: String,
-    /// 耗时（毫秒；目录类检查为本地 IO，通常 < 1ms）
+    /// 耗时（毫秒；目录类检查为本地 IO，通常 <1ms）
     pub latency_ms: u64,
+    /// true = 未探测的跳过（该层未启用、不参与检测）：汇总时单列，不与「通过」混谈
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 fn ok_result(target: &str, message: impl Into<String>, latency: Instant) -> TestResult {
@@ -45,6 +48,18 @@ fn ok_result(target: &str, message: impl Into<String>, latency: Instant) -> Test
         ok: true,
         message: message.into(),
         latency_ms: latency.elapsed().as_millis() as u64,
+        skipped: false,
+    }
+}
+
+/// 未启用层的跳过结果：不报红（ok），但汇总里计入跳过而非通过
+fn skip_result(target: &str, message: impl Into<String>, latency: Instant) -> TestResult {
+    TestResult {
+        target: target.to_string(),
+        ok: true,
+        message: message.into(),
+        latency_ms: latency.elapsed().as_millis() as u64,
+        skipped: true,
     }
 }
 
@@ -54,6 +69,7 @@ fn err_result(target: &str, message: impl Into<String>, latency: Instant) -> Tes
         ok: false,
         message: message.into(),
         latency_ms: latency.elapsed().as_millis() as u64,
+        skipped: false,
     }
 }
 
@@ -82,6 +98,56 @@ pub async fn test_all(
         async { test_lexicons_dir(lexicons_dir) },
     );
     vec![hanlp, llm, decision, l3, embedding, tables, lexicons]
+}
+
+/// 「全部」逐项结果的汇总：通过 / 跳过（未启用） / 失败三态分列，消息如实。
+/// 跳过不得冒充「全部通过」——状态点说未启用而测试说全过是两套口径的根源。
+pub fn summarize(results: Vec<TestResult>) -> TestResult {
+    let label = |t: &str| -> String {
+        match t {
+            "decision" => "决策模型",
+            "l3" => "快速定案",
+            "embedding" => "知识查询",
+            "llm" => "AI 复查",
+            _ => return t.to_string(),
+        }
+        .to_string()
+    };
+    let passed = results.iter().filter(|r| r.ok && !r.skipped).count();
+    let skipped: Vec<String> = results
+        .iter()
+        .filter(|r| r.ok && r.skipped)
+        .map(|r| label(&r.target))
+        .collect();
+    let failed: Vec<String> = results
+        .iter()
+        .filter(|r| !r.ok)
+        .map(|r| label(&r.target))
+        .collect();
+    let total = results.len();
+    let latency = results.iter().map(|r| r.latency_ms).max().unwrap_or(0);
+    let message = match (failed.is_empty(), skipped.is_empty()) {
+        (true, true) => format!("全部 {total} 项测试通过"),
+        (true, false) => format!(
+            "全部 {total} 项通过（跳过 {} 项未启用：{}）",
+            skipped.len(),
+            skipped.join("、")
+        ),
+        (false, true) => format!("{passed} / {total} 项通过；未通过：{}", failed.join("、")),
+        (false, false) => format!(
+            "{passed} / {total} 项通过，跳过 {} 项未启用（{}）；未通过：{}",
+            skipped.len(),
+            skipped.join("、"),
+            failed.join("、")
+        ),
+    };
+    TestResult {
+        target: "all".to_string(),
+        ok: failed.is_empty(),
+        message,
+        latency_ms: latency,
+        skipped: false,
+    }
 }
 
 /// HanLP 服务测试：`POST {endpoint}/analyze`（HanLP v2 分词 + POS）
@@ -235,7 +301,7 @@ pub async fn test_decision(config: &DecisionConfig) -> TestResult {
     // 待发布层且未显式开启：该层暂不参与校正，不探测、不报红
     // （设置页对未启用的服务探测必然报红，与产品现实矛盾）
     if !config.enabled() {
-        return ok_result(
+        return skip_result(
             target,
             "决策模型未启用（待发布：正在寻找更合适的决策模型，找到后上线）",
             started,
@@ -372,7 +438,7 @@ pub async fn test_l3(config: &L3FeatureConfig) -> TestResult {
     let started = Instant::now();
     // 显式关闭时该层不参与校正（回退无条件 LLM），不探测、不报红
     if !config.enabled() {
-        return ok_result(
+        return skip_result(
             target,
             "特征模型未启用（校正由 LLM 复查层直接处理）",
             started,
@@ -818,7 +884,7 @@ mod tests {
             ..Default::default()
         };
         let r = test_decision(&decision).await;
-        assert!(r.ok, "message: {}", r.message);
+        assert!(r.ok && r.skipped, "message: {}", r.message);
         assert!(r.message.contains("未启用"), "message: {}", r.message);
         let l3 = L3FeatureConfig {
             endpoint: "http://127.0.0.1:9".into(),
@@ -826,7 +892,7 @@ mod tests {
             ..Default::default()
         };
         let r = test_l3(&l3).await;
-        assert!(r.ok, "message: {}", r.message);
+        assert!(r.ok && r.skipped, "message: {}", r.message);
         assert!(r.message.contains("未启用"), "message: {}", r.message);
     }
 

@@ -315,6 +315,7 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                     ok: true,
                     message: "侧车在线".to_string(),
                     latency_ms: 0,
+                    skipped: false,
                 }
             } else {
                 gec_core::settings_test::TestResult {
@@ -322,6 +323,7 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                     ok: false,
                     message: format!("{url} 无响应"),
                     latency_ms: 0,
+                    skipped: false,
                 }
             }
         }
@@ -335,6 +337,7 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                     ok: true,
                     message: "深度纠错服务在线（/health）".to_string(),
                     latency_ms: 0,
+                    skipped: false,
                 }
             } else {
                 let client = reqwest::Client::builder()
@@ -352,18 +355,21 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                         ok: true,
                         message: "深度纠错服务在线（POST /gec 探测句）".to_string(),
                         latency_ms: 0,
+                        skipped: false,
                     },
                     Ok(r) => gec_core::settings_test::TestResult {
                         target: id.to_string(),
                         ok: false,
                         message: format!("{base}/gec 探测句返回 {}", r.status()),
                         latency_ms: 0,
+                        skipped: false,
                     },
                     Err(e) => gec_core::settings_test::TestResult {
                         target: id.to_string(),
                         ok: false,
                         message: format!("{base} 无响应：{e}"),
                         latency_ms: 0,
+                        skipped: false,
                     },
                 }
             }

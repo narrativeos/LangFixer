@@ -1006,6 +1006,8 @@ export interface SettingsTestResult {
   message: string
   /** 耗时（毫秒） */
   latency_ms: number
+  /** 未探测的跳过（该层未启用）：不与「通过」混谈 */
+  skipped?: boolean
   /** target = "all" 时：全部项目的逐项结果 */
   results?: SettingsTestResult[]
 }

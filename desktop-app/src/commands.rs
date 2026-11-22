@@ -4080,6 +4080,9 @@ pub struct SettingsTestResponse {
     pub ok: bool,
     pub message: String,
     pub latency_ms: u64,
+    /// 未探测的跳过（该层未启用）：不与「通过」混谈
+    #[serde(default)]
+    pub skipped: bool,
     /// `target = "all"` 时：全部项目的逐项结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results: Option<Vec<SettingsTestResponse>>,
@@ -4091,6 +4094,7 @@ fn to_test_response(r: &gec_core::settings_test::TestResult) -> SettingsTestResp
         ok: r.ok,
         message: r.message.clone(),
         latency_ms: r.latency_ms,
+        skipped: r.skipped,
         results: None,
     }
 }
@@ -4153,32 +4157,8 @@ pub async fn test_setting(
                 &s.lexicons_dir,
             )
             .await;
-            let ok_count = results.iter().filter(|r| r.ok).count();
-            let failed: Vec<String> = results
-                .iter()
-                .filter(|r| !r.ok)
-                .map(|r| r.target.clone())
-                .collect();
-            let message = if failed.is_empty() {
-                format!("全部 {} 项测试通过", results.len())
-            } else {
-                format!(
-                    "{} / {} 项通过；未通过：{}",
-                    ok_count,
-                    results.len(),
-                    failed.join("、")
-                )
-            };
-            let latency = results.iter().map(|r| r.latency_ms).max().unwrap_or(0);
-            (
-                gec_core::settings_test::TestResult {
-                    target: "all".to_string(),
-                    ok: failed.is_empty(),
-                    message,
-                    latency_ms: latency,
-                },
-                Some(results),
-            )
+            let summary = gec_core::settings_test::summarize(results.clone());
+            (summary, Some(results))
         }
         other => {
             return Err(format!(

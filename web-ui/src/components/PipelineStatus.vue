@@ -128,12 +128,17 @@ async function testAll() {
     const r = await api.testSetting('all')
     testResult.value = r
     toast(r.message, r.ok ? 'ok' : 'warn')
+    // 探测结果以服务端为准：顺手刷新各层状态点，免得「全部通过」与旧状态点同屏矛盾
+    void store.refreshEngineStatus()
   } catch (e) {
     toast(`测试失败：${errMsg(e)}`, 'danger')
   } finally {
     testing.value = false
   }
 }
+
+/** 通过但含未探测项（该层未启用）：标签如实标注，不与「全部通过」混谈 */
+const hasSkipped = computed(() => !!testResult.value?.results?.some((r) => r.skipped))
 </script>
 
 <template>
@@ -163,7 +168,7 @@ async function testAll() {
       :class="testResult.ok ? 'apply-ok' : 'apply-err'"
       :title="testResult.message"
     >
-      {{ testResult.ok ? '✓ 全部通过' : '✗ 部分未通过' }}
+      {{ testResult.ok ? (hasSkipped ? '✓ 通过（含跳过）' : '✓ 全部通过') : '✗ 部分未通过' }}
       <span class="ps-latency">（{{ testResult.latency_ms }} ms）</span>
     </span>
   </div>
