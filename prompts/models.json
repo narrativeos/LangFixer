@@ -32,6 +32,16 @@
       "enabled": true
     },
     {
+      "id": "arm3",
+      "name": "JEV arm3（Qwen3-4B + L2-kto-v7，自持端点 3090:8091）",
+      "base_url": "http://127.0.0.1:8091/v1",
+      "model": "arm3-l2kto-v7",
+      "prompt_template": "zh_detect",
+      "output_format": "json",
+      "max_tokens": 192,
+      "enabled": true
+    },
+    {
       "id": "custom",
       "name": "自训模型（CPT→COT SFT→GRPO 管线产出）",
       "base_url": "",
