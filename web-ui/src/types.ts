@@ -959,6 +959,8 @@ export interface UpdateSettingsBody {
     model?: string
     timeout_secs?: number
     prompts_dir?: string
+    /** 思考模式开关（后端已接受，见 settings.rs LlmSettings.thinking） */
+    thinking?: boolean
   }
   offline_mode?: boolean
   /** 生产库每日备份开关：true 注册 launchd 任务，false 撤销；失败报错不落盘 */

@@ -28,6 +28,8 @@ describe('mergeIdentity', () => {
       token_id: null,
       authenticated: true,
       locked: true,
+      // 用户名账号视图：本次 whoami 未带 username → 按契约回 null（非旧字段丢失）
+      username: null,
       admin_token_source: 'env',
       admin_token_fp: '68f0f109',
     })
