@@ -3,6 +3,11 @@ use std::time::Duration;
 /// HanLP（NarrativeOS narrative-operator-nlp）服务默认地址
 pub const DEFAULT_HANLP_ENDPOINT: &str = "http://127.0.0.1:8000";
 
+/// `/analyze` 分块字数上限默认值。sidecar 对长文是三次方级劣化
+/// （实测 500 字 ≈ 1.9s、1000 字 ≈ 18s、6200 字外推 ≈ 数小时），500 对
+/// 10s 超时留约 10 倍余量；立方劣化下小块串行总耗时反而更优。
+pub const DEFAULT_NLP_CHUNK_CHARS: usize = 500;
+
 /// 检测器配置
 #[derive(Debug, Clone)]
 pub struct DetectorConfig {
@@ -14,11 +19,14 @@ pub struct DetectorConfig {
     pub offline_only: bool,
     /// 外置词表目录（`{dir}/en_gec_lexicon.json`；缺失时用内置默认词表）
     pub lexicons_dir: std::path::PathBuf,
+    /// `/analyze` 长文本按句分块的字数上限（0 = 不分块，整段单发）
+    pub chunk_chars: usize,
 }
 
 impl DetectorConfig {
     /// 从环境变量读取：`HANLP_ENDPOINT`（服务地址）、`GEC_OFFLINE=1`（强制离线）、
-    /// `GEC_LEXICONS_DIR`（词表目录，默认 `lexicons`）
+    /// `GEC_LEXICONS_DIR`（词表目录，默认 `lexicons`）、
+    /// `GEC_NLP_CHUNK_CHARS`（`/analyze` 分块上限，默认 500，0 = 不分块）
     pub fn from_env() -> Self {
         let endpoint = std::env::var("HANLP_ENDPOINT")
             .ok()
@@ -29,11 +37,16 @@ impl DetectorConfig {
         let lexicons_dir = std::path::PathBuf::from(
             std::env::var("GEC_LEXICONS_DIR").unwrap_or_else(|_| "lexicons".to_string()),
         );
+        let chunk_chars = std::env::var("GEC_NLP_CHUNK_CHARS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_NLP_CHUNK_CHARS);
         Self {
             endpoint,
             timeout: Duration::from_secs(10),
             offline_only,
             lexicons_dir,
+            chunk_chars,
         }
     }
 
@@ -44,6 +57,7 @@ impl DetectorConfig {
             timeout: Duration::from_secs(10),
             offline_only: true,
             lexicons_dir: std::path::PathBuf::from("lexicons"),
+            chunk_chars: DEFAULT_NLP_CHUNK_CHARS,
         }
     }
 }

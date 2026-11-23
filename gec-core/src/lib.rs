@@ -23,6 +23,7 @@ pub mod language;
 pub mod llm;
 pub mod mask;
 pub mod models;
+pub mod nlpchunk;
 pub mod optimization_round;
 pub mod pipeline;
 pub mod progress;

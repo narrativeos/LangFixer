@@ -40,6 +40,7 @@ mod tests {
             timeout: std::time::Duration::from_secs(1),
             offline_only: true,
             lexicons_dir: dir.clone(),
+            chunk_chars: crate::config::DEFAULT_NLP_CHUNK_CHARS,
         };
         let detector = EnglishDetector::new(cfg);
         let errors = detector
@@ -68,6 +69,8 @@ pub struct EnglishDetector {
     fallback: OfflineEnglishDetector,
     lexicon: rules::Lexicon,
     offline_only: bool,
+    /// `/analyze` 长文本分块字数上限（0 = 不分块）
+    chunk_chars: usize,
     /// NLP 服务是否已完成首次成功调用（冷启动预热完成）
     nlp_warmed: AtomicBool,
     /// 最近一次 NLP 服务调用（`None` = 未调用，如纯本地检测）
@@ -87,6 +90,7 @@ impl EnglishDetector {
             fallback: OfflineEnglishDetector::new(lexicon.clone()),
             lexicon,
             offline_only: config.offline_only,
+            chunk_chars: config.chunk_chars,
             nlp_warmed: AtomicBool::new(false),
             nlp_last: Mutex::new(None),
         }
@@ -148,14 +152,47 @@ impl EnglishDetector {
     /// 标记 `cold_start = true`（成功调用后才视为预热完成；失败不置位）。
     async fn analyze(&self, text: &str) -> Result<Vec<rules::Token>, DetectorError> {
         let t = std::time::Instant::now();
-        let result = self.analyze_inner(text).await;
-        let ms = t.elapsed().as_millis() as u64;
         let cold_start = !self.nlp_warmed.load(Ordering::Relaxed);
+        let result = self.analyze_chunks(text).await;
+        let ms = t.elapsed().as_millis() as u64;
         if result.is_ok() {
             self.nlp_warmed.store(true, Ordering::Relaxed);
         }
         *self.nlp_last.lock().unwrap_or_else(|e| e.into_inner()) = Some(NlpCall { ms, cold_start });
         result
+    }
+
+    /// 分块调用 `/analyze`：长文本按句边界切成字符数 ≤ `chunk_chars` 的块
+    /// **串行**发送（sidecar 单 worker，且对长文是三次方级劣化，见
+    /// `gec_core::nlpchunk`），每块 token 的字符 span 加上块起始字符下标后按
+    /// 文档顺序合并；任一块失败 → 整体 Err（离线兜底语义不变）。
+    /// 短文 / 不分块配置下单发，行为与旧实现完全一致。
+    async fn analyze_chunks(&self, text: &str) -> Result<Vec<rules::Token>, DetectorError> {
+        if self.chunk_chars == 0 {
+            return self.analyze_inner(text).await;
+        }
+        let pieces = gec_core::nlpchunk::split_capped_by_sentences(text, self.chunk_chars);
+        if pieces.len() <= 1 {
+            return self.analyze_inner(text).await;
+        }
+        tracing::debug!(
+            chunks = pieces.len(),
+            chars = text.chars().count(),
+            "NLP /analyze 长文本分块串行调用"
+        );
+        let mut merged: Vec<rules::Token> = Vec::new();
+        for piece in pieces {
+            let slice = &text[piece[0]..piece[1]];
+            // 服务返回的是块内**字符**偏移，平移回全文字符空间（字节换算在 detect 入口）
+            let base = text[..piece[0]].chars().count();
+            let tokens = self.analyze_inner(slice).await?;
+            merged.extend(tokens.into_iter().map(|t| rules::Token {
+                text: t.text,
+                pos: t.pos,
+                span: [t.span[0] + base, t.span[1] + base],
+            }));
+        }
+        Ok(merged)
     }
 
     async fn analyze_inner(&self, text: &str) -> Result<Vec<rules::Token>, DetectorError> {
