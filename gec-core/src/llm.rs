@@ -1227,6 +1227,12 @@ impl LlmGecEngine {
                 .post(&url)
                 .bearer_auth(&self.config.api_key)
                 .json(&body)
+                // 请求级总超时：connect/read 各自有超时不假，但网关连上后长期不回话
+                // （frps 转发后的 LiteLLM 上游挂死 ~120s 才吐 503）时，单靠预算检查
+                // 会让一次挂死耗光整个挂钟预算、重试次数恒为 0。请求级 .timeout() 把
+                // 挂死在 timeout_secs 处掐断，落入下方 is_timeout() 重试分支，退避表
+                // 才真正有机会吸收 503/挂死。
+                .timeout(Duration::from_secs(self.config.timeout_secs.max(1)))
                 .send()
                 .await
             {

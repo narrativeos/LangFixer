@@ -440,6 +440,12 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
 
 ### 修复
 
+- **LLM 请求级总超时：挂死请求不再耗光重试预算**：网关连上后长期不回话（实测 frps 转发后的
+ LiteLLM 上游挂 ~120s 才吐 503）时，原有 connect/read 超时管不住这种静默挂死，一次挂死
+ 即耗满挂钟预算 `LLM_RETRY_BUDGET_SECS`，退避重试恒为 0 次。现 `chat_completion_parts`
+ 每次尝试加请求级 `.timeout(llm.timeout_secs)`，挂死在 timeout_secs 处掐断、落入传输层
+ 超时分支退避重试，偶发 503/挂死可被退避表吸收；单块挂死最坏挂钟由 ~155s 降至
+ ~80s+重试。线上同步把 `llm.timeout_secs` 150→75。
 - **media 回映射分隔符起点减法下溢 panic（金集评测实捕）**：检测错误 span 起点落在
   文本单元间分隔符上时，`remap` 的单元内局部 span 计算 `s - r[0]` 在 debug 构建
   直接 panic（`gold_upper_bound_with_perfect_extraction` 红）；现钉回单元头 0，
