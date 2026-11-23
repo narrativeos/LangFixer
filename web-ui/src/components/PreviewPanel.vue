@@ -1,60 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useGecStore } from '../stores/gec'
+import { buildSegments } from '../lib/highlight'
 import { LEmpty } from '../ui'
-import type { ErrorItem } from '../types'
 
 const store = useGecStore()
 
-/** 预览片段：纯文本 或 带高亮标记的片段（对应 store.errors 下标） */
-interface Segment {
-  text: string
-  mark?: { index: number; category: string; confidence: number; correction: string | null }
-}
-
 /** 将待检测文本切分为「普通文本 / 高亮片段」序列。
- *  优先使用后端返回的 span 定位；若检测后文本被修改导致 span 失配，回退为按 original 子串查找。
- *  结果过期（resultsStale）时禁用子串回退：indexOf 会把高亮打到错误的位置，只信任 span 精确匹配。 */
-const segments = computed<Segment[]>(() => {
-  const text = store.text
-  if (!text) return []
-  if (store.errors.length === 0) return [{ text }]
-
-  const stale = store.resultsStale
-  const marks: { start: number; end: number; index: number; category: string; confidence: number; correction: string | null }[] = []
-  store.errors.forEach((e: ErrorItem, i: number) => {
-    let start = e.span?.[0] ?? -1
-    let end = e.span?.[1] ?? -1
-    if (start < 0 || end <= start || text.slice(start, end) !== e.original) {
-      if (stale) return // 过期结果：span 失配的标记直接放弃，避免错位高亮
-      const idx = e.original ? text.indexOf(e.original) : -1
-      if (idx < 0) return
-      start = idx
-      end = idx + e.original.length
-    }
-    marks.push({
-      start,
-      end,
-      index: i,
-      category: e.category || 'other',
-      confidence: e.confidence ?? 1,
-      correction: e.correction,
-    })
-  })
-  if (marks.length === 0) return [{ text }]
-
-  marks.sort((a, b) => a.start - b.start)
-  const out: Segment[] = []
-  let cursor = 0
-  for (const m of marks) {
-    if (m.start < cursor) continue // 重叠区间：保留先出现的标记
-    if (m.start > cursor) out.push({ text: text.slice(cursor, m.start) })
-    out.push({ text: text.slice(m.start, m.end), mark: m })
-    cursor = m.end
-  }
-  if (cursor < text.length) out.push({ text: text.slice(cursor) })
-  return out
-})
+ *  定位与回退规则见 lib/highlight（span 字节→UTF-16 换算、失配回退、过期放弃）；
+ *  与编辑态 backdrop 镜像层共用同一实现，两态高亮位置必然一致。 */
+const segments = computed(() => buildSegments(store.text, store.errors, store.resultsStale))
 
 const hasMarks = computed(() => store.errors.length > 0)
 
@@ -64,6 +19,31 @@ function confClass(c: number): string {
   if (c < 0.8) return 'm-mid'
   return ''
 }
+
+// 列表→原文正向联动：点检测结果卡片 → 焦点 mark 短暂强调并滚动居中
+const previewRef = ref<HTMLElement | null>(null)
+const focusedIdx = ref(-1)
+let focusTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => store.focusErrorNonce,
+  (n) => {
+    if (n === 0) return
+    const idx = store.focusErrorIndex
+    nextTick(() => {
+      // 标签页内容可能刚挂载（v-show 切换），再等一帧确保 DOM 就绪
+      requestAnimationFrame(() => {
+        const el = previewRef.value?.querySelector<HTMLElement>(`[data-idx="${idx}"]`)
+        if (!el) return
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        focusedIdx.value = idx
+        if (focusTimer) clearTimeout(focusTimer)
+        focusTimer = setTimeout(() => {
+          if (focusedIdx.value === idx) focusedIdx.value = -1
+        }, 1600)
+      })
+    })
+  },
+)
 
 const legend: { cat: string; label: string }[] = [
   { cat: 'spelling', label: '拼写' },
@@ -85,15 +65,16 @@ const legend: { cat: string; label: string }[] = [
         </span>
         <span v-if="hasMarks" class="lg-count">{{ store.errors.length }} 处错误</span>
       </div>
-      <div class="l-canvas-text preview-text" :class="{ 'is-stale': store.resultsStale }">
+      <div ref="previewRef" class="l-canvas-text preview-text" :class="{ 'is-stale': store.resultsStale }">
         <template v-for="(seg, i) in segments" :key="i">
           <mark
             v-if="seg.mark"
             :class="[
               `cat-${seg.mark.category}`,
               confClass(seg.mark.confidence),
-              { 'is-stale': store.resultsStale },
+              { 'is-stale': store.resultsStale, 'is-active': focusedIdx === seg.mark.index },
             ]"
+            :data-idx="seg.mark.index"
             :title="seg.mark.correction ? '建议修正：' + seg.mark.correction : '错误位置'"
             role="button"
             tabindex="0"
@@ -145,5 +126,13 @@ html.desktop .preview-text {
 .preview-text mark.is-stale {
   opacity: 0.45;
   text-decoration-style: dotted;
+}
+/* 列表→原文联动：焦点 mark 短暂强调（is-active 底色见 ui.css，这里叠加呼吸闪烁） */
+.preview-text mark.is-active {
+  animation: mark-focus-flash 1.6s ease;
+}
+@keyframes mark-focus-flash {
+  0%, 55% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 2px transparent; }
 }
 </style>

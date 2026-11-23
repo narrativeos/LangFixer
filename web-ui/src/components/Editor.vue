@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { randomSessionId } from '../lib/format'
 import { computePipelineLayers } from '../lib/pipeline'
 import { guideFor } from '../lib/guide'
+import { buildSegments } from '../lib/highlight'
 import { isTauri } from '../api/client'
 import { useGecStore } from '../stores/gec'
 import { LButton, LInput, LPopover, LTag } from '../ui'
@@ -79,6 +80,104 @@ const l2Warn = computed(() => {
     ? 'AI 复查这次不会触发，相当于快速检查。可以在设置里开启快速定案。'
     : 'AI 复查与快速定案都还没配置，这次相当于快速检查。可以在设置里配置。'
 })
+
+// ── 编辑态原文同步高亮：textarea 背后的镜像底纹层（backdrop）──────────────
+// textarea 本身不能画背景，故用绝对定位镜像层在相同位置铺半透明色块：
+// 文字由 textarea 绘制，镜像层文字透明只出底纹。镜像必须与 textarea 像素级
+// 对齐（字体/padding/换行逐项从计算样式复制），错位比不高亮更糟；切段逻辑
+// 与校样态共用 lib/highlight，两态位置必然一致。
+const areaRef = ref<HTMLTextAreaElement | null>(null)
+const backdropRef = ref<HTMLDivElement | null>(null)
+const innerRef = ref<HTMLDivElement | null>(null)
+
+const segments = computed(() => buildSegments(store.text, store.errors, store.resultsStale))
+// textarea 末尾换行在 textarea 内占一行，pre-wrap 镜像会丢弃行尾换行 → 补一个对齐行数
+const endsWithNewline = computed(() => store.text.endsWith('\n'))
+
+/** 逐项复制影响文本排版的计算样式（textarea 默认 UA 字体与页面字体不同，必须照抄） */
+const MIRROR_PROPS = [
+  'fontFamily', 'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
+  'lineHeight', 'letterSpacing', 'wordSpacing', 'textTransform', 'textIndent',
+  'whiteSpace', 'wordBreak', 'overflowWrap', 'tabSize',
+  'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+] as const
+
+function syncMirror() {
+  const ta = areaRef.value
+  const inner = innerRef.value
+  if (!ta || !inner) return
+  const cs = getComputedStyle(ta)
+  for (const p of MIRROR_PROPS) inner.style[p] = cs[p as 'fontSize']
+  // 宽＝ textarea 内容宽（clientWidth 已排滚动条），镜像换行才会一致
+  inner.style.boxSizing = 'border-box'
+  inner.style.width = `${ta.clientWidth}px`
+}
+
+function syncScroll() {
+  const ta = areaRef.value
+  const inner = innerRef.value
+  if (!ta || !inner) return
+  inner.style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`
+}
+
+// 列表→原文正向联动：点检测结果卡片 → 镜像底纹闪烁 + 滚动居中 + 选中错误区间
+const flashIdx = ref(-1)
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => store.focusErrorNonce,
+  (n) => {
+    if (n === 0) return
+    const idx = store.focusErrorIndex
+    nextTick(() => {
+      // 标签页/画布态刚切换时等一帧，确保镜像内 DOM 就绪
+      requestAnimationFrame(() => {
+        const ta = areaRef.value
+        const bd = backdropRef.value
+        // 画布在「校样」态时编辑区被 v-show 隐藏，交由 PreviewPanel 处理
+        if (!ta || !bd || !ta.offsetParent) return
+        const el = bd.querySelector<HTMLElement>(`[data-idx="${idx}"]`)
+        if (!el) return
+        ta.scrollTop = Math.max(0, el.offsetTop - Math.round((ta.clientHeight - el.offsetHeight) / 2))
+        // 整页滚动布局（非 desktop）下顺带把画布滚进视口
+        ta.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        syncScroll()
+        const seg = segments.value.find((s) => s.mark?.index === idx)
+        if (seg?.mark) {
+          ta.focus({ preventScroll: true })
+          ta.setSelectionRange(seg.mark.start, seg.mark.end)
+        }
+        flashIdx.value = idx
+        if (flashTimer) clearTimeout(flashTimer)
+        flashTimer = setTimeout(() => {
+          if (flashIdx.value === idx) flashIdx.value = -1
+        }, 1600)
+      })
+    })
+  },
+)
+
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  syncMirror()
+  syncScroll()
+  areaRef.value?.addEventListener('scroll', syncScroll)
+  // textarea 可拖拽调高 / 滚动条出现都会改变内容宽，镜像尺寸跟着重算
+  if (areaRef.value && 'ResizeObserver' in window) {
+    ro = new ResizeObserver(() => {
+      syncMirror()
+      syncScroll()
+    })
+    ro.observe(areaRef.value)
+  }
+})
+onBeforeUnmount(() => {
+  areaRef.value?.removeEventListener('scroll', syncScroll)
+  ro?.disconnect()
+  if (flashTimer) clearTimeout(flashTimer)
+})
+// 文本被程序替换（采纳/替换修正全文）时 textarea 不一定发 scroll 事件，主动同步一次
+watch(segments, () => nextTick(syncScroll))
 </script>
 
 <template>
@@ -100,13 +199,29 @@ const l2Warn = computed(() => {
       </span>
     </div>
 
-    <textarea
-      v-model="store.text"
-      class="l-canvas-text l-editor-area"
-      rows="10"
-      placeholder="在此粘贴或输入待检测文本… 例如：他昨天报复很大。"
-      aria-label="待检测文本"
-    />
+    <div class="l-editor-mirror">
+      <div ref="backdropRef" class="l-editor-backdrop" aria-hidden="true">
+        <div ref="innerRef" class="l-editor-mirror-inner">
+          <template v-for="(seg, i) in segments" :key="i">
+            <span
+              v-if="seg.mark"
+              :data-idx="seg.mark.index"
+              :class="{ 'is-flash': flashIdx === seg.mark.index }"
+            >{{ seg.text }}</span>
+            <template v-else>{{ seg.text }}</template>
+          </template>
+          <template v-if="endsWithNewline">{{ '\n' }}</template>
+        </div>
+      </div>
+      <textarea
+        ref="areaRef"
+        v-model="store.text"
+        class="l-canvas-text l-editor-area"
+        rows="10"
+        placeholder="在此粘贴或输入待检测文本… 例如：他昨天报复很大。"
+        aria-label="待检测文本"
+      />
+    </div>
 
     <div class="editor-actions">
       <LButton
@@ -230,6 +345,37 @@ const l2Warn = computed(() => {
   cursor: default;
 }
 /* 画布即正文:无边框、留白即容器;行长在 .l-canvas-text 内已限 76ch */
+/* 镜像底纹层：绝对定位在 textarea 后面，文字透明只出半透明色块；
+   尺寸/字体由脚本从 textarea 计算样式复制，保证逐行对齐 */
+.l-editor-mirror {
+  position: relative;
+}
+.l-editor-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.l-editor-mirror-inner {
+  position: relative;
+  color: transparent;
+}
+.l-editor-area {
+  position: relative;
+  z-index: 1;
+}
+.l-editor-mirror-inner span[data-idx] {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-radius: 2px;
+}
+.l-editor-mirror-inner span.is-flash {
+  animation: locate-flash 1.6s ease;
+}
+@keyframes locate-flash {
+  0%, 55% { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  100% { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+}
 .l-editor-area {
   display: block;
   width: 100%;

@@ -159,13 +159,20 @@ const {
 } = useErrorFeedback(visible)
 
 // 预览高亮联动：滚动定位到对应错误卡片并短暂高亮
+// 点卡片自身发起的 focusError 不重新滚动/闪烁本页（原位已可见，滚动只会捣乱），
+// 由 onCardClick 预置一次性标记，定位 watcher 消费后清除
 const listRef = ref<HTMLElement | null>(null)
 const flashIdx = ref(-1)
+let selfFocusPending = false
 let flashTimer: ReturnType<typeof setTimeout> | null = null
 watch(
   () => store.focusErrorNonce,
   (n) => {
     if (n === 0) return
+    if (selfFocusPending) {
+      selfFocusPending = false
+      return
+    }
     const idx = store.focusErrorIndex
     nextTick(() => {
       // 标签页内容可能刚挂载（从归因/讲解标签切回），再等一帧确保 DOM 就绪
@@ -201,6 +208,23 @@ watch(
     if (g && g.items.length > 1) expanded[g.key] = true
   },
 )
+
+// 卡片→原文联动：点卡片空白/文本区即定位原文（不拦截卡内按钮/输入/链接）；
+// 键盘用户用 Enter 触发同一定位。合并组卡片定位到首个实例。
+function onCardClick(g: MergedGroup, ev: MouseEvent) {
+  if ((ev.target as HTMLElement).closest('button, a, input, select, textarea, label, [role="button"], .instances')) return
+  selfFocusPending = true
+  store.focusError(g.first.i)
+}
+function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
+  const t = ev.target as HTMLElement
+  if (t !== ev.currentTarget) return // 卡内控件自己的键盘操作不串扰
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault()
+    selfFocusPending = true
+    store.focusError(g.first.i)
+  }
+}
 </script>
 
 
@@ -324,9 +348,17 @@ watch(
       class="error-item"
       :class="[
         'cat-' + (g.first.e.category || 'other'),
-        { merged: g.items.length > 1, flash: flashIdx === g.first.i },
+        {
+          merged: g.items.length > 1,
+          flash: flashIdx === g.first.i,
+          'is-current': store.focusErrorIndex === g.first.i,
+        },
       ]"
       :data-idx="g.first.i"
+      tabindex="0"
+      title="点击在原文中定位此错误"
+      @click="onCardClick(g, $event)"
+      @keydown="onCardKeydown(g, $event)"
       @contextmenu.prevent="onItemContext(g.first.i)"
     >
       <div class="line">
@@ -629,6 +661,14 @@ watch(
 </template>
 
 <style scoped>
+/* 卡片整卡可点 → 原文定位；悬停微亮提示可点，当前焦点卡片持续描边 */
+.error-item { cursor: pointer; }
+.error-item:hover { border-color: var(--border-strong); }
+.error-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.error-item.is-current {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
 /* 预览高亮联动：定位到的错误卡片短暂闪烁提示 */
 .error-item.flash { animation: error-flash 1.6s ease; }
 @keyframes error-flash {
