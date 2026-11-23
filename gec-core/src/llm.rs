@@ -224,6 +224,22 @@ pub struct ShadowArm {
     sink: DualJudgeSink,
 }
 
+/// 发送队列默认容量：`GEC_LLM_QUEUE`（缺省 2，0 = 不限流）。LLM 是串行慢资源，
+/// 洪峰（分块并行 × 并发文档任务）应排在自家队列里，而不是全数压到网关上。
+/// api-server 构造进程级共享队列与每请求现构建引擎的默认值都走这一处。
+pub fn default_llm_queue() -> tokio::sync::Semaphore {
+    let n = std::env::var("GEC_LLM_QUEUE")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(2);
+    let permits = if n == 0 {
+        tokio::sync::Semaphore::MAX_PERMITS
+    } else {
+        n.max(1)
+    };
+    tokio::sync::Semaphore::new(permits)
+}
+
 /// 影子臂失败时的 span 重叠判定（与 `engine::spans_overlap` 同义，零长 span 不相交）。
 fn spans_overlap(a: [usize; 2], b: [usize; 2]) -> bool {
     a[0] < b[1] && b[0] < a[1]
@@ -241,6 +257,11 @@ pub struct LlmGecEngine {
     /// 结果并集合并（双臂同 span 记共识徽章），双臂判定经 sink 落盘。
     /// 影子臂失败只记日志，**永不**影响主臂结果与质量标记。（Box：自指类型）
     shadow: Option<Box<ShadowArm>>,
+    /// 端点侧在途请求队列（信号量）：任何调用方（分块并行、文档任务、定向复查）
+    /// 都先领许可再发 HTTP，网关看到的并发恒定小个位数。检测引擎每次请求现构建，
+    /// 队列必须与熔断器同理从外部注入进程级共享实例（`State::llm_queue`），
+    /// 否则每次全新队列 = 不限流。默认 2（`GEC_LLM_QUEUE`，0 = 不限）。
+    queue: Arc<tokio::sync::Semaphore>,
 }
 
 impl LlmGecEngine {
@@ -278,7 +299,15 @@ impl LlmGecEngine {
             config,
             breaker,
             shadow: None,
+            queue: Arc::new(default_llm_queue()),
         }
+    }
+
+    /// 注入共享发送队列（api-server / 桌面端进程级单例；与 `with_breaker` 同理，
+    /// 每请求现构建的引擎必须共用同一队列才能形成跨请求的在途上限）。
+    pub fn with_queue(mut self, queue: Arc<tokio::sync::Semaphore>) -> Self {
+        self.queue = queue;
+        self
     }
 
     /// 接入 ③ 自动双判影子臂：每次检测同时跑影子端点，结果并集合并
@@ -1121,6 +1150,14 @@ impl LlmGecEngine {
         system: &str,
         user: &str,
     ) -> Result<(String, String), DetectorError> {
+        // 发送队列：先领在途许可再计时重试预算——排队等待是自家队列的队深，
+        // 不该算进对网关的预算；许可持有到响应读完，重试退避期间同样占位
+        // （429 退让的正确形态：排队等下一轮，而不是提前放行新请求继续压网关）。
+        let _queue_permit = self
+            .queue
+            .acquire()
+            .await
+            .map_err(|_| DetectorError::ServiceUnavailable("LLM 发送队列已关闭".to_string()))?;
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')

@@ -583,9 +583,12 @@ pub async fn targeted_llm_review(
 /// （文档级架构 P1：10 万字+ 不再可能一次调用，且长文单发召回塌陷）。
 ///
 /// 阈值与并发（环境变量，运行时设置后续接入）：
-/// - `GEC_LLM_CHUNK_CHARS`：走分块路径的字符阈值（默认 12000；0 = 恒单发）；
+/// - `GEC_LLM_CHUNK_CHARS`：走分块路径的字符阈值（默认 2000；0 = 恒单发）。
+///   默认压低是为了「小请求」：长文单发既慢（思考模型实测 ~40s/1500 字）又易
+///   触顶超时；超过阈值就切块并行，每块只带 `GEC_LLM_CHUNK_TARGET` 字；
 /// - `GEC_LLM_CHUNK_TARGET`：目标块大小字符数（默认 1500）；
-/// - `GEC_LLM_CONCURRENCY`：块并发（默认 8）。
+/// - `GEC_LLM_CONCURRENCY`：块拉取并发（默认 2；真正卡在网关前的在途上限由
+///   发送队列 `GEC_LLM_QUEUE`（默认 2）控制，跨并发文档任务也排队）。
 ///
 /// 返回（错误列表，层状态，`llm_confirmed_clean`，段级执行摘要，dropped 账本）：
 /// - 解析失败（单发）或块失败/解析失败（分块）→ 层状态 `partial`，
@@ -613,7 +616,7 @@ pub async fn llm_layer_detect(
     // 与被掩区域重叠的 LLM 检出丢弃。GEC_LLM_MASK_PII=0 可关
     let mask = crate::mask::maybe_mask(text);
     let text: &str = mask.as_ref().map(|m| m.text.as_str()).unwrap_or(text);
-    let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 12000);
+    let threshold = env_usize("GEC_LLM_CHUNK_CHARS", 2000);
     if threshold == 0 || text.chars().count() < threshold {
         let (mut errors, parse_failed) = llm.detect_tracked(text).await?;
         let mut dropped = crate::quality::DroppedLedger::default();
@@ -637,7 +640,7 @@ pub async fn llm_layer_detect(
         ))
     } else {
         let target = env_usize("GEC_LLM_CHUNK_TARGET", crate::docchunk::DEFAULT_CHUNK_CHARS);
-        let concurrency = env_usize("GEC_LLM_CONCURRENCY", 8);
+        let concurrency = env_usize("GEC_LLM_CONCURRENCY", 2);
         let mut o = llm
             .detect_document(text, target, concurrency, progress)
             .await?;

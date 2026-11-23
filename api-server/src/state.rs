@@ -83,6 +83,11 @@ pub struct AppState {
     pub llm_breaker: Arc<gec_core::CircuitBreaker>,
     /// ③ 双判影子臂专用熔断器（与主臂分开：影子端点故障不得误伤主臂健康判定）
     pub llm_dual_breaker: Arc<gec_core::CircuitBreaker>,
+    /// LLM 主臂进程级发送队列（在途 HTTP 上限；引擎每请求现构建，
+    /// 共享这一只才谈得上跨请求限流；`GEC_LLM_QUEUE` 缺省 2，0 = 不限）
+    pub llm_queue: Arc<tokio::sync::Semaphore>,
+    /// 双判影子臂专用发送队列（另一端点、另一队列：主影互不占位）
+    pub llm_dual_queue: Arc<tokio::sync::Semaphore>,
     /// 学习知识存储（向量召回用；SQLite 持久化，与 lexicon_store 共用同一 db 文件）
     pub learned_knowledge: Arc<LearnedKnowledgeStore>,
     /// 嵌入引擎（调用 LLM /v1/embeddings 端点；未配置时为 None；
@@ -456,6 +461,8 @@ impl AppState {
             db_path: db_path.clone(),
             llm_breaker: Arc::new(gec_core::CircuitBreaker::default()),
             llm_dual_breaker: Arc::new(gec_core::CircuitBreaker::default()),
+            llm_queue: Arc::new(gec_core::llm::default_llm_queue()),
+            llm_dual_queue: Arc::new(gec_core::llm::default_llm_queue()),
             llm_templates,
             model_registry,
             zh_base_cfg: zh_cfg,
@@ -562,7 +569,8 @@ impl AppState {
             .with_output_format(output_format)
             .with_max_tokens(max_tokens),
             self.llm_breaker.clone(),
-        );
+        )
+        .with_queue(self.llm_queue.clone());
         // ③ 自动双判：影子臂并行跑另一端点，双臂判定落 dual_judge_log。
         // 影子臂用独立熔断器；其失败只进判定日志，不影响本引擎结果与质量标记。
         let dual_on = self.settings.read().unwrap().llm_dual_judge;
@@ -572,7 +580,8 @@ impl AppState {
             None
         } {
             Some(cfg) => {
-                let shadow = LlmGecEngine::with_breaker(lang, cfg, self.llm_dual_breaker.clone());
+                let shadow = LlmGecEngine::with_breaker(lang, cfg, self.llm_dual_breaker.clone())
+                    .with_queue(self.llm_dual_queue.clone());
                 let store = self.dual_judge.clone();
                 let sink: gec_core::llm::DualJudgeSink = std::sync::Arc::new(move |ev| {
                     if let Err(e) = store.insert(
