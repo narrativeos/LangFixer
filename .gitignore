@@ -75,3 +75,7 @@ desktop-app/no-prebuild.json
 
 # 每日备份任务产出（sqlite 快照含真实用户数据，绝不入库）
 backups/
+
+# 可视化分析工具的本地产出（archify / design-flow 画图会话，非仓库产物）
+.archify/
+.design-flow/
