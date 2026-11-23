@@ -3,10 +3,12 @@ use std::time::Duration;
 /// HanLP（NarrativeOS narrative-operator-nlp）服务默认地址
 pub const DEFAULT_HANLP_ENDPOINT: &str = "http://127.0.0.1:8000";
 
-/// `/analyze` 分块字数上限默认值。sidecar 对长文是三次方级劣化
-/// （实测 500 字 ≈ 1.9s、1000 字 ≈ 18s、6200 字外推 ≈ 数小时），500 对
-/// 10s 超时留约 10 倍余量；立方劣化下小块串行总耗时反而更优。
-pub const DEFAULT_NLP_CHUNK_CHARS: usize = 500;
+/// `/analyze` 分块字数上限默认值。sidecar 实测耗时在 50–500 字区间近似
+/// 平方（T ≈ 0.035s + 1.7e-5·n²，每请求固定开销仅 ~33ms），吞吐在 ~50–150 字
+/// 达峰（50 字 ≈ 533 字/s，150 字 ≈ 365，500 字 ≈ 114）；150 取近最优吞吐且
+/// 请求数适中（6200 字 ≈ 42 块 ≈ 16s vs 500 字块 ≈ 52s），单块 ~0.4s 对 10s
+/// 超时留 25 倍余量，块间事件循环空出、健康探针不再饿死。
+pub const DEFAULT_NLP_CHUNK_CHARS: usize = 150;
 
 /// 检测器配置
 #[derive(Debug, Clone)]
@@ -26,7 +28,7 @@ pub struct DetectorConfig {
 impl DetectorConfig {
     /// 从环境变量读取：`HANLP_ENDPOINT`（服务地址）、`GEC_OFFLINE=1`（强制离线）、
     /// `GEC_LEXICONS_DIR`（词表目录，默认 `lexicons`）、
-    /// `GEC_NLP_CHUNK_CHARS`（`/analyze` 分块上限，默认 500，0 = 不分块）
+    /// `GEC_NLP_CHUNK_CHARS`（`/analyze` 分块上限，默认 150，0 = 不分块）
     pub fn from_env() -> Self {
         let endpoint = std::env::var("HANLP_ENDPOINT")
             .ok()

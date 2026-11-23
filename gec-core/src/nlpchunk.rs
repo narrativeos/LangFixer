@@ -17,7 +17,8 @@ use crate::docchunk::sentence_spans;
 /// 不变式：
 /// - 总字符数 ≤ `max_chars` 时返回单块 `[0, len]`（调用方可与不分块路径合并）；
 /// - 否则每块字符数 ≤ `max_chars`，**唯一例外**是单个句子段本身就超过
-///   `max_chars`（此时该块为这一整段，其大小由句表自动断句兜底在字数 cap 量级）；
+///   `max_chars`（此时该块为这一整段，其大小由句表自动断句兜底在 ~200 字
+///   量级；对 10s 请求超时仍留 ≥ 25 倍余量）；
 /// - 块按文档顺序返回，拼接等于原文。
 pub fn split_capped_by_sentences(text: &str, max_chars: usize) -> Vec<[usize; 2]> {
     if text.is_empty() {
