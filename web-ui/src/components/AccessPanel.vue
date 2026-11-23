@@ -11,6 +11,7 @@ import {
   loginWithKey,
   mcpConfigJson,
   mcpEndpoint,
+  refreshIdentity,
   signOut,
   webShareUrl,
 } from '../lib/auth'
@@ -122,6 +123,58 @@ async function changePw() {
     pwBusy.value = false
   }
 }
+
+/**
+ * 评审账号自助（仅网关形态的非管理员已登录用户）：用户名是同一枚密钥的口令别名。
+ * 未设过 → 首次创建（用户名+口令）；已设 → 凭旧口令改新口令。
+ * 成功后补一次 whoami 刷新 username/must_change（must_change 由自设回 false）。
+ */
+const myUname = ref('')
+const myPwOld = ref('')
+const myPwNew = ref('')
+const myPwConfirm = ref('')
+const myBusy = ref(false)
+const showMyAccount = computed(
+  () => identity.value.gateway && !identity.value.admin && identity.value.authenticated,
+)
+async function saveMyAccount() {
+  const create = !identity.value.username
+  const uname = myUname.value.trim()
+  if (create && !uname) {
+    toast('先填写用户名（2–32 位小写字母/数字/._-）', 'warn')
+    return
+  }
+  if (!create && !myPwOld.value) {
+    toast('请填写当前口令', 'warn')
+    return
+  }
+  if (Array.from(myPwNew.value).length < 8) {
+    toast('新口令至少 8 位', 'warn')
+    return
+  }
+  if (myPwNew.value !== myPwConfirm.value) {
+    toast('两次输入的新口令不一致', 'warn')
+    return
+  }
+  myBusy.value = true
+  try {
+    await api.setCredentials(myPwNew.value, create ? { username: uname } : { oldPassword: myPwOld.value })
+    myPwOld.value = ''
+    myPwNew.value = ''
+    myPwConfirm.value = ''
+    await refreshIdentity()
+    toast(
+      create
+        ? `已创建账号 ${uname}：以后可用它登录，MCP 仍用这枚密钥`
+        : '口令已更新：旧口令与其他登录会话作废，本窗口已换新会话',
+      'ok',
+    )
+  } catch (e) {
+    toast(`保存失败：${cleanError(e)}`, 'danger')
+  } finally {
+    myBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -195,6 +248,57 @@ async function changePw() {
           <LButton @click="copy(mcpJson, 'MCP 配置')">复制配置</LButton>
         </section>
       </template>
+
+      <!-- 评审账号：密钥身份的口令别名自助（网关形态）；配额/历史/MCP 仍按密钥计 -->
+      <section v-if="showMyAccount" class="access-block">
+        <h3>我的账号</h3>
+        <p v-if="!identity.username">
+          当前密钥还没有登录口令。设置后即可用「用户名 + 口令」直接登录本页；
+          MCP 仍用这枚密钥，配额与检测历史都是同一本账。
+        </p>
+        <p v-else>
+          账号 <code>{{ identity.username }}</code>：口令是这枚密钥的登录别名。
+          改完旧口令与其他登录会话立即作废，本窗口自动换新会话。
+        </p>
+        <div v-if="identity.must_change" class="banner banner-warn">
+          这是管理员代发的临时口令，请立即改为自己的口令。
+        </div>
+        <div class="pw-form">
+          <LInput
+            v-if="!identity.username"
+            v-model="myUname"
+            :disabled="myBusy"
+            placeholder="用户名（2–32 位小写）"
+            autocomplete="username"
+          />
+          <LInput
+            v-else
+            v-model="myPwOld"
+            type="password"
+            :disabled="myBusy"
+            placeholder="当前口令"
+            autocomplete="current-password"
+          />
+          <LInput
+            v-model="myPwNew"
+            type="password"
+            :disabled="myBusy"
+            placeholder="新口令（至少 8 位）"
+            autocomplete="new-password"
+          />
+          <LInput
+            v-model="myPwConfirm"
+            type="password"
+            :disabled="myBusy"
+            placeholder="确认新口令"
+            autocomplete="new-password"
+            @keyup.enter="saveMyAccount"
+          />
+          <LButton variant="primary" :loading="myBusy" @click="saveMyAccount">
+            {{ identity.username ? '更新口令' : '创建账号' }}
+          </LButton>
+        </div>
+      </section>
 
       <!-- 改密：只对已验证超管且后端确实有密码登录时露出（桌面端不经 whoami，不展示） -->
       <section v-if="identity.authenticated && identity.admin && identity.password_login" class="access-block">

@@ -17,7 +17,10 @@
 ## 身份模型：一张令牌表 = 唯一身份原语
 
 - **评审令牌** `lf_<40hex>`：超管经 `POST /admin/tokens` 签发，**明文只在签发响应出现一次**，库中只存 SHA-256 摘要；Bearer 直连与「换会话 cookie」两条路共用同一校验；未来 MCP 面（D2）挂同一 middleware，即「web 与 MCP 共同一套 token」。
-- **会话**：`POST /auth/session {"token": "…"}` 换 12h httpOnly cookie（免注册、无找回密码、无用户资料）；`/auth/logout` 注销。
+- **会话**：`POST /auth/session {"token": "…"}` 换 12h httpOnly cookie（免注册、无找回密码、无用户资料）；`/auth/logout` 注销。口令登录 `{"username","password"}` 换的是同一枚会话。
+- **用户名账号**（`gw_users`）：**同一枚评审密钥的口令别名**，不是新身份——配额、历史、MCP
+  仍按密钥归属；由管理面代建或试用者自助创建（无注册流程）。密钥吊销 / 删除后口令登录
+  一并失效（孤立账号行不是登录后门）。详见「用户名账号」。
 - **超级管理员密钥**（`LANGFIXER_ADMIN_TOKEN`，`.env`，≥32 字符，`openssl rand -hex 32`；
   **不设则首次启动自动生成 `lf_<40hex>`**，见下节）：
   - **env 设了则全程不进数据库**，内存只留摘要；**自动生成那把必须明文落 `gw_meta.admin_token`**
@@ -43,6 +46,15 @@ curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/adm
 curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/tokens/<id>/revoke
 curl -X DELETE -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/tokens/<id>
 curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/stats
+
+# 用户名账号：给已签发的密钥建 web 登录口令（临时口令只回这一次）
+curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
+     -H 'content-type: application/json' -d '{"token_id":"<id>","username":"zhang-laoshi"}' \
+     http://127.0.0.1:4801/admin/users
+# 清单 / 重置口令（清在途会话 + must_change）/ 删别名（密钥保留）
+curl -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/users
+curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/users/zhang-laoshi/reset
+curl -X DELETE -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" http://127.0.0.1:4801/admin/users/zhang-laoshi
 ```
 
 存储：`auth.db`（独立于产品数据 `langfixer.db`，删文件即重置整条评测通道）。
@@ -79,6 +91,28 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
 - 连带清掉超管会话（`gw_sessions.token_id = '~admin'`）：那些 cookie 是旧钥匙换来的，
   留着等于旧钥匙仍有一条有效通路。评审密钥与其会话**不受影响**，参赛报名材料里那枚不用动。
 - 日志只记指纹（`tracing::warn!`），不记明文。
+
+### 用户名账号（密钥的口令别名，供 web 口令登录）
+
+token 直链适合发链接，但收藏夹里没有 token 的试用用户需要「用户名 + 密码」登录；
+MCP 继续用密钥。一张 `gw_users` 把两者接起来：
+
+- **一个密钥至多一个用户名**（`token_id UNIQUE`）；用户名全局唯一，规则为
+  2–32 位小写字母/数字/`._-` 且含字母数字，保留名 `admin`（入库前 `normalize_username`）；
+- **口令存储**与超管同口径（带盐 SHA-256，`s1$`），拒默认密码，≥ 8 字符；
+- **两条创建路径**：管理面代设（签发带 `username` 或 `POST /admin/users`，临时口令只回一次，
+  `must_change=1`）与试用者自助（`POST /auth/credentials`，需登录态；首次创建带
+  `username`，已有账号带 `old_password`；自设 `must_change=0`）；超管走自助端点回 400；
+- **核验顺序**：口令登录先比内建 admin（超管），再查 `gw_users`；密钥已吊销 / 已删则
+  口令登录 401（LEFT JOIN 后 token 行不存在也算死）；
+- **作废链**：重置口令 / 自助改密连带清该身份全部在途会话（旧口令外泄的那批 cookie
+  不能幸存；自助改密当场重发新会话）；revoke 密钥清会话（既有行为）；
+  `DELETE /admin/users/:username` 只删别名，密钥与 MCP 不受影响；删密钥连带删别名行；
+- `whoami` 对评审身份带 `username` / `must_change`（临时口令未改时前端黄条催改）；
+  口令登录响应在临时口令时带 `must_change: true`。
+
+界面入口：管理面「密钥分发」每行的「账号」列（建 / 重置）；评审侧「接入」页「我的账号」
+（创建 / 改口令）；门禁页网关形态可切「用户名 + 口令」登录。
 
 ### 用量统计（密钥分发表上那一列）
 
@@ -149,7 +183,8 @@ curl -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
    `gw_meta` 来源可用，env 来源回 409；`whoami` 对已验证超管回 `admin_token_source` /
    `admin_token_fp` 指明这把归谁、活的是哪把。详见「轮换超级管理员密钥」。
 2. **验证前不露界面**：`GET /auth/whoami` 匿名可用（不进 gate），回
-   `{gateway, admin, token_id, authenticated, locked, password_login}`（已验证超管额外带密钥来源与指纹）。
+   `{gateway, admin, token_id, authenticated, locked, password_login}`（已验证超管额外带密钥来源与指纹；
+   已设口令的评审身份额外带 `username` / `must_change`）。
    `locked` = 界面是否需要验证：
    网关形态恒 `true`；单机形态登录门开启即 `true`，关闭时看 `gw_meta.owner_claimed`。前端 `showGate` / `showApp` 二选一，
    未验证时整个产品界面（header 与主区）不渲染；密钥只进 `sessionStorage`（关标签页即失效，

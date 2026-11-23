@@ -39,8 +39,53 @@ pub const META_ADMIN_PASSWORD: &str = "admin_password_hash";
 /// 默认管理员密码：首次启动落库（摘要）；登录后应尽快改（`POST /auth/password`）。
 pub const DEFAULT_ADMIN_PASSWORD: &str = "LangFixer@2026";
 
-/// 内建登录用户名：本产品无注册、无多用户，密码登录只认这一个账号。
+/// 内建登录用户名：无注册流程；除它之外只有管理面为用户密钥创建的**账号别名**
+/// （`gw_users`，见 `normalize_username`），用户名登录最终仍落到同一枚密钥身份。
 pub const ADMIN_USERNAME: &str = "admin";
+
+/// 用户名规范：小写字母/数字/`._-`，2–32 位，须含字母或数字；保留名 `admin`
+/// 归内建账号，不得占用（否则口令分支会撞进超管校验）。
+pub fn normalize_username(raw: &str) -> Option<String> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.len() < 2 || s.len() > 32 || s == ADMIN_USERNAME {
+        return None;
+    }
+    let mut alnum = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            alnum = true;
+        } else if !matches!(c, '.' | '_' | '-') {
+            return None;
+        }
+    }
+    alnum.then_some(s)
+}
+
+/// 用户口令落库串：与管理员密码同款带盐格式 `s1$<hex salt>$<hex digest>`。
+pub fn hash_password(plain: &str) -> String {
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    encode_salted(&salt, &salted_digest(&salt, plain))
+}
+
+/// 校验用户口令摘要（带盐新格式；旧无盐格式兼容比较）。
+pub fn verify_password_hash(stored: &str, plain: &str) -> bool {
+    match decode_stored_pw(stored) {
+        StoredPw::Salted { salt, digest } => salted_digest(&salt, plain) == digest,
+        StoredPw::Legacy(d) => sha256(plain) == d,
+        StoredPw::Invalid => false,
+    }
+}
+
+/// 管理面代生成的临时口令：12 位、剔除易混字符（0/O/1/l/I），必过 8 位下限。
+pub fn gen_temp_password() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+    let mut raw = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut raw);
+    raw.iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
+}
 
 /// 解析 `.env`（KEY=VALUE，支持注释与引号；不覆盖进程环境已有的变量）。
 ///
@@ -284,6 +329,13 @@ impl TokenStore {
                   key   TEXT PRIMARY KEY,
                   value TEXT NOT NULL
               );
+             CREATE TABLE IF NOT EXISTS gw_users(
+                 username    TEXT PRIMARY KEY,
+                 token_id    TEXT NOT NULL UNIQUE,
+                 pw          TEXT NOT NULL,
+                 must_change INTEGER NOT NULL DEFAULT 0,
+                 created_at  INTEGER NOT NULL
+             );
               CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);
               CREATE INDEX IF NOT EXISTS idx_call_ts ON gw_call_log(ts);",
         )
@@ -388,15 +440,163 @@ impl TokenStore {
         Ok(hit > 0)
     }
 
-    /// 彻底删除（revoked 行的清理；连带在途会话）
+    /// 彻底删除（revoked 行的清理；连带在途会话与该密钥的用户名账号）
     pub fn remove(&self, id: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM gw_sessions WHERE token_id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM gw_users WHERE token_id = ?1", [id])
             .map_err(|e| e.to_string())?;
         let hit = conn
             .execute("DELETE FROM access_tokens WHERE id = ?1", [id])
             .map_err(|e| e.to_string())?;
         Ok(hit > 0)
+    }
+
+    // ── 用户名账号：同一枚密钥身份的口令别名（MCP / 配额 / 历史仍按 token 归属）──
+
+    /// 为密钥创建账号。错误信息面向用户：区分「用户名被占」与「密钥已有账号」。
+    pub fn create_user(
+        &self,
+        token_id: &str,
+        username: &str,
+        pw: &str,
+        must_change: bool,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let taken: Option<String> = conn
+            .query_row(
+                "SELECT username FROM gw_users WHERE username = ?1 OR token_id = ?2",
+                rusqlite::params![username, token_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(t) = taken {
+            return Err(if t == username {
+                "该用户名已被占用".to_string()
+            } else {
+                "该密钥已有用户名账号（先删除再创建）".to_string()
+            });
+        }
+        conn.execute(
+            "INSERT INTO gw_users(username, token_id, pw, must_change, created_at) VALUES(?,?,?,?,?)",
+            rusqlite::params![username, token_id, pw, must_change as i64, now_secs()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 登录核验用：(token_id, 摘要, must_change, 密钥是否已死)。吊销或已删都算死
+    /// （LEFT JOIN 后 token 行不存在也算），孤立账号行不得成为登录后门。
+    pub fn get_user(&self, username: &str) -> Result<Option<(String, String, bool, bool)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let row = conn
+            .query_row(
+                "SELECT u.token_id, u.pw, u.must_change, a.id IS NULL OR a.revoked_at IS NOT NULL \
+                 FROM gw_users u LEFT JOIN access_tokens a ON a.id = u.token_id \
+                 WHERE u.username = ?1",
+                [username],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? != 0,
+                        r.get::<_, i64>(3)? != 0,
+                    ))
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
+    /// whoami 用：当前密钥对应的用户名与 must_change 标记。
+    pub fn user_for_token(&self, token_id: &str) -> Result<Option<(String, bool)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let row = conn
+            .query_row(
+                "SELECT username, must_change FROM gw_users WHERE token_id = ?1",
+                [token_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
+            )
+            .ok();
+        Ok(row)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<(String, String, bool, bool, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT u.username, u.token_id, u.must_change, \
+                        a.id IS NULL OR a.revoked_at IS NOT NULL, u.created_at \
+                 FROM gw_users u LEFT JOIN access_tokens a ON a.id = u.token_id \
+                 ORDER BY u.created_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get::<_, i64>(3)? != 0,
+                    r.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// 改密（本人自服务或管理面重置）；must_change 由调用方定（自服务置 0）。
+    /// 连带清掉该身份全部在途会话——改密的典型动机就是旧口令外泄；调用方
+    /// 若要保留当前会话，自行 `create_session` 重发（与超管改密同口径）。
+    pub fn update_user_password(
+        &self,
+        username: &str,
+        pw: &str,
+        must_change: bool,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let hit = conn
+            .execute(
+                "UPDATE gw_users SET pw = ?2, must_change = ?3 WHERE username = ?1",
+                rusqlite::params![username, pw, must_change as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        if hit > 0 {
+            conn.execute(
+                "DELETE FROM gw_sessions WHERE token_id = (SELECT token_id FROM gw_users WHERE username = ?1)",
+                [username],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(hit > 0)
+    }
+
+    /// 只删口令别名，密钥本身保留（MCP 仍可用）。
+    pub fn delete_user(&self, username: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM gw_sessions WHERE token_id = (SELECT token_id FROM gw_users WHERE username = ?1)",
+            [username],
+        )
+        .map_err(|e| e.to_string())?;
+        let hit = conn
+            .execute("DELETE FROM gw_users WHERE username = ?1", [username])
+            .map_err(|e| e.to_string())?;
+        Ok(hit > 0)
+    }
+
+    /// 密钥是否存在（未删）；吊销与否不算。
+    pub fn token_exists(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let hit: Option<i64> = conn
+            .query_row("SELECT 1 FROM access_tokens WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .ok();
+        Ok(hit.is_some())
     }
 
     /// 绑定并校验会话归属：首次使用即绑定；已绑定但归属他人 → false（fail-closed）。

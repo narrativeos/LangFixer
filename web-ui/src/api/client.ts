@@ -296,6 +296,10 @@ export interface Whoami {
   admin_token_source?: 'env' | 'generated'
   /** 当前超管密钥指纹（SHA-256 前 8 位 hex），用于核对「这台实例活的是哪把」，非密钥本身 */
   admin_token_fp?: string | null
+  /** 当前密钥的用户名账号（已创建时）；超管 / 未设口令为 null 或缺省 */
+  username?: string | null
+  /** 口令是管理面临时口令，登录后应立即修改 */
+  must_change?: boolean
 }
 
 export const api = {
@@ -315,18 +319,33 @@ export const api = {
   },
 
   /** POST /auth/session — 一枚密钥（评审或超管）换短时效会话 cookie（body `{"token":...}`） */
-  login(token: string): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+  login(token: string): Promise<{ token_id: string | null; label: string; admin: boolean; must_change?: boolean }> {
     if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
     return http.post('/auth/session', { token }).then((r) => r.data)
   },
 
-  /** POST /auth/session — 用户名密码登录（单机形态登录门的内建 admin 账号） */
+  /** POST /auth/session — 用户名密码登录（超管账号或密钥的用户名账号） */
   loginPassword(
     username: string,
     password: string,
-  ): Promise<{ token_id: string | null; label: string; admin: boolean }> {
+  ): Promise<{ token_id: string | null; label: string; admin: boolean; must_change?: boolean }> {
     if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
     return http.post('/auth/session', { username, password }).then((r) => r.data)
+  },
+
+  /** POST /auth/credentials — 当前密钥身份自服务：首次设口令（给 username）或改口令（给 oldPassword） */
+  setCredentials(
+    newPassword: string,
+    opts: { username?: string; oldPassword?: string },
+  ): Promise<{ ok: boolean; username: string; must_change: boolean }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无此体系'))
+    return http
+      .post('/auth/credentials', {
+        new_password: newPassword,
+        username: opts.username,
+        old_password: opts.oldPassword,
+      })
+      .then((r) => r.data)
   },
 
   /** POST /auth/password — 改管理员密码（需已验证的管理员登录态） */
@@ -401,14 +420,61 @@ export const api = {
       .then((r) => r.data)
   },
 
-  /** POST /admin/tokens — 签发一枚评审密钥（明文只在这一次响应里出现） */
-  adminIssueToken(label: string, quotaChars: number): Promise<{ id: string; token: string }> {
+  /** POST /admin/tokens — 签发一枚评审密钥（明文只在这一次响应里出现）；
+   *  可同时创建用户名账号，代生成的临时口令也只回这一次 */
+  adminIssueToken(
+    label: string,
+    quotaChars: number,
+    user?: { username: string; password?: string },
+  ): Promise<{ id: string; token: string; username?: string; password?: string }> {
     return http
-      .post<{ id: string; token: string }>('/admin/tokens', {
+      .post<{ id: string; token: string; username?: string; password?: string }>('/admin/tokens', {
         label,
         quota_chars: quotaChars,
+        username: user?.username,
+        password: user?.password,
       })
       .then((r) => r.data)
+  },
+
+  /** GET /admin/users — 用户名账号清单（仅超管） */
+  adminUsers(): Promise<
+    { username: string; token_id: string; must_change: boolean; revoked: boolean; created_at: number }[]
+  > {
+    return http
+      .get<{
+        users: { username: string; token_id: string; must_change: boolean; revoked: boolean; created_at: number }[]
+      }>('/admin/users')
+      .then((r) => r.data.users)
+  },
+
+  /** POST /admin/users — 为已签发的密钥创建用户名账号；缺省口令时服务端生成临时口令（只回这一次） */
+  adminCreateUser(
+    tokenId: string,
+    username: string,
+    password?: string,
+  ): Promise<{ username: string; token_id: string; password?: string }> {
+    return http
+      .post<{ username: string; token_id: string; password?: string }>('/admin/users', {
+        token_id: tokenId,
+        username,
+        password,
+      })
+      .then((r) => r.data)
+  },
+
+  /** POST /admin/users/:username/reset — 重置口令（临时口令只回一次；在途会话作废） */
+  adminResetUser(username: string, password?: string): Promise<{ ok: boolean; password?: string }> {
+    return http
+      .post<{ ok: boolean; password?: string }>(`/admin/users/${encodeURIComponent(username)}/reset`, {
+        password,
+      })
+      .then((r) => r.data)
+  },
+
+  /** DELETE /admin/users/:username — 删口令别名（密钥本身保留，MCP 仍可用） */
+  adminDeleteUser(username: string): Promise<void> {
+    return http.delete(`/admin/users/${encodeURIComponent(username)}`).then(() => undefined)
   },
 
   /** POST /admin/tokens/:id/revoke — 吊销（在途会话即刻失效） */

@@ -25,9 +25,10 @@ const mode = ref<'password' | 'token'>(
   identity.value.password_login && !identity.value.gateway ? 'password' : 'token',
 )
 const showPasswordForm = computed(
-  () => mode.value === 'password' && !!identity.value.password_login,
+  () => mode.value === 'password' && (identity.value.password_login || identity.value.gateway),
 )
-const usernameInput = ref('admin')
+// 网关形态的用户名账号由管理员创建；单机形态默认内建 admin
+const usernameInput = ref(identity.value.gateway ? '' : 'admin')
 const passwordInput = ref('')
 
 const emit = defineEmits<{ (e: 'entered'): void }>()
@@ -112,13 +113,19 @@ function reset() {
       <template v-if="!identity.authenticated">
         <template v-if="showPasswordForm">
           <label class="gate-label" for="gate-user">用户名</label>
-          <LInput id="gate-user" v-model="usernameInput" autofocus :disabled="busy" placeholder="admin" />
+          <LInput
+            id="gate-user"
+            v-model="usernameInput"
+            autofocus
+            :disabled="busy"
+            :placeholder="identity.gateway ? '用户名（管理员创建）' : 'admin'"
+          />
           <label class="gate-label" for="gate-pass">密码</label>
           <LInput
             id="gate-pass"
             v-model="passwordInput"
             type="password"
-            placeholder="管理员密码"
+            placeholder="登录密码"
             :disabled="busy"
             @keyup.enter="enterAccount"
           />
@@ -154,7 +161,12 @@ function reset() {
           <LButton v-if="hadKey" variant="ghost" size="sm" @click="reset">
             清除本标签页记住的密钥
           </LButton>
-          <LButton v-if="identity.password_login" variant="ghost" size="sm" @click="mode = 'password'; error = ''">
+          <LButton
+            v-if="identity.password_login || identity.gateway"
+            variant="ghost"
+            size="sm"
+            @click="mode = 'password'; error = ''"
+          >
             改用账号密码登录
           </LButton>
           <ul class="gate-hint">

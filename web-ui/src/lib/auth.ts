@@ -51,6 +51,19 @@ export function mergeIdentity(
     password_login: me?.password_login ?? prev.password_login,
     admin_token_source: me?.admin_token_source,
     admin_token_fp: me?.admin_token_fp ?? null,
+    // 用户名账号状态：老服务端不带字段时保留已知值（登录后都会补一次 whoami）
+    username: me?.username !== undefined ? me.username : (prev.username ?? null),
+    must_change: me?.must_change ?? prev.must_change,
+  }
+}
+
+/** 重取一次 whoami 并合成进身份视图（改密/设口令后刷新 username/must_change） */
+export async function refreshIdentity(): Promise<void> {
+  try {
+    const me = await api.whoami()
+    identity.value = mergeIdentity(identity.value, me)
+  } catch {
+    /* 老服务端：维持现视图 */
   }
 }
 
@@ -215,6 +228,8 @@ export async function signOut(): Promise<void> {
       token_id: null,
       admin_token_source: undefined,
       admin_token_fp: null,
+      username: null,
+      must_change: undefined,
     }
     identityLabel.value = ''
   }

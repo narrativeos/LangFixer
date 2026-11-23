@@ -12,7 +12,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::auth::{
-    ADMIN_TOKEN_ID, AuthContext, GatewayConfig, META_OWNER_CLAIMED, RequestScope, SESSION_TTL_SECS,
+    ADMIN_TOKEN_ID, AuthContext, DEFAULT_ADMIN_PASSWORD, GatewayConfig, META_OWNER_CLAIMED,
+    RequestScope, SESSION_TTL_SECS, hash_password, normalize_username, verify_password_hash,
 };
 use crate::routes::ApiError;
 
@@ -22,6 +23,7 @@ pub fn router(cfg: Arc<GatewayConfig>) -> Router {
         .route("/auth/logout", post(logout))
         .route("/auth/whoami", axum::routing::get(whoami))
         .route("/auth/password", post(change_password))
+        .route("/auth/credentials", post(set_credentials))
         .with_state(cfg)
 }
 
@@ -41,6 +43,17 @@ struct PasswordReq {
     new_password: String,
 }
 
+#[derive(Deserialize)]
+struct CredentialsReq {
+    /// 首次创建时必填；已有账号时忽略（用户名不可自改，删除由管理面做）
+    #[serde(default)]
+    username: Option<String>,
+    /// 已有账号改密必填；首次创建时忽略
+    #[serde(default)]
+    old_password: Option<String>,
+    new_password: String,
+}
+
 async fn create_session(
     State(cfg): State<Arc<GatewayConfig>>,
     peer: Option<ConnectInfo<std::net::SocketAddr>>,
@@ -54,22 +67,45 @@ async fn create_session(
             "登录尝试过于频繁，请 60 秒后重试".into(),
         ));
     }
-    let (tid, label, admin) = if let Some(token) = body.token.as_deref() {
+    let (tid, label, admin, must_change) = if let Some(token) = body.token.as_deref() {
         if cfg.admin.matches(token) {
-            (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
+            (
+                ADMIN_TOKEN_ID.to_string(),
+                "管理员".to_string(),
+                true,
+                false,
+            )
         } else if let Some(info) = cfg.store.verify_token(token).map_err(ApiError::Internal)? {
-            (info.id, info.label, false)
+            (info.id, info.label, false, false)
         } else {
             note_login_failure(&cfg, &ip);
             return Err(ApiError::Unauthorized("令牌无效或已吊销".into()));
         }
     } else if body.password.is_some() {
-        // 用户名密码登录：只认内建的 admin 账号（无注册、无多用户）
-        if cfg.verify_password(
-            body.username.as_deref().unwrap_or(""),
-            body.password.as_deref().unwrap_or(""),
-        ) {
-            (ADMIN_TOKEN_ID.to_string(), "管理员".to_string(), true)
+        // 用户名密码登录：先比内建 admin（超管），再查密钥用户名账号（网关形态）。
+        // 两条路都只核验、不注册；失败同样计入限流。
+        let uname = body
+            .username
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let pw = body.password.as_deref().unwrap_or("");
+        let user = cfg.store.get_user(&uname).map_err(ApiError::Internal)?;
+        if cfg.verify_password(body.username.as_deref().unwrap_or(""), pw) {
+            (
+                ADMIN_TOKEN_ID.to_string(),
+                "管理员".to_string(),
+                true,
+                false,
+            )
+        } else if let Some((tid, stored, mc, dead)) = &user {
+            if !dead && verify_password_hash(stored, pw) {
+                (tid.clone(), uname.clone(), false, *mc)
+            } else {
+                note_login_failure(&cfg, &ip);
+                return Err(ApiError::Unauthorized("用户名或密码错误".into()));
+            }
         } else {
             note_login_failure(&cfg, &ip);
             return Err(ApiError::Unauthorized("用户名或密码错误".into()));
@@ -95,6 +131,14 @@ async fn create_session(
     // 认证成功：清除该 IP 的失败计数，误触封锁不惩罚正常用户
     note_login_success(&cfg, &ip);
     let secure = if cfg.cookie_secure { "; Secure" } else { "" };
+    let mut body = serde_json::json!({
+        "token_id": if admin { serde_json::Value::Null } else { serde_json::json!(tid) },
+        "label": label,
+        "admin": admin,
+    });
+    if must_change {
+        body["must_change"] = serde_json::json!(true);
+    }
     Ok((
         StatusCode::OK,
         [(
@@ -103,11 +147,7 @@ async fn create_session(
                 "lf_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}{secure}"
             ),
         )],
-        Json(serde_json::json!({
-            "token_id": if admin { serde_json::Value::Null } else { serde_json::json!(tid) },
-            "label": label,
-            "admin": admin,
-        })),
+        Json(body),
     )
         .into_response())
 }
@@ -216,6 +256,14 @@ async fn whoami(
         "locked": locked,
         "password_login": cfg.password.is_set(),
     });
+    // 评审身份带出用户名账号状态（是否已设口令 / 是否临时口令待改），
+    // 门禁页与「我的账号」面板据此提示；超管不查（用 /auth/password 体系）。
+    if let Some(tid) = scope.token_id.as_deref() {
+        if let Ok(Some((username, must_change))) = cfg.store.user_for_token(tid) {
+            body["username"] = serde_json::json!(username);
+            body["must_change"] = serde_json::json!(must_change);
+        }
+    }
     // 密钥来源与指纹**只给已验证的超管**：whoami 未登录也回 200（门禁页要探测），
     // 匿名请求一律不回，避免把「这台实例活的是哪把」的信息白送出去。
     // 指纹是 SHA-256 前 8 位，用于核对钥匙，不足以据此认证。
@@ -224,6 +272,94 @@ async fn whoami(
         body["admin_token_fp"] = serde_json::json!(cfg.admin.fingerprint());
     }
     Json(body)
+}
+
+/// 试用者自服务：给当前密钥身份设置（首次）或更换用户名口令，无注册流程。
+/// 用户名是同一枚密钥身份的**口令别名**：配额、历史、MCP 仍按密钥归属，
+/// 吊销密钥后用户名登录一并失效。超管不走这里（用 `/auth/password`）。
+async fn set_credentials(
+    State(cfg): State<Arc<GatewayConfig>>,
+    Extension(ctx): Extension<AuthContext>,
+    Extension(scope): Extension<RequestScope>,
+    Json(body): Json<CredentialsReq>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !ctx.authed {
+        return Err(ApiError::Unauthorized("需要登录态（密钥或会话）".into()));
+    }
+    if ctx.admin {
+        return Err(ApiError::BadRequest(
+            "超级管理员请用 /auth/password 改管理员密码；用户账号在管理面（密钥分发）创建".into(),
+        ));
+    }
+    let tid = scope
+        .token_id
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("当前身份没有可设口令的密钥".into()))?;
+    // 按字符计：与超管改密同口径，三个汉字不得冒充「至少 8 位」
+    if body.new_password.chars().count() < 8 {
+        return Err(ApiError::BadRequest("新密码至少 8 位".into()));
+    }
+    if body.new_password == DEFAULT_ADMIN_PASSWORD {
+        return Err(ApiError::BadRequest(
+            "不能沿用默认密码（公开文档里有，等于没有口令）".into(),
+        ));
+    }
+    match cfg.store.user_for_token(&tid).map_err(ApiError::Internal)? {
+        // 首次创建：用户名必填且全局唯一
+        None => {
+            let uname = body
+                .username
+                .as_deref()
+                .and_then(normalize_username)
+                .ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into(),
+                    )
+                })?;
+            cfg.store
+                .create_user(&tid, &uname, &hash_password(&body.new_password), false)
+                .map_err(ApiError::Conflict)?;
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true, "username": uname, "must_change": false })),
+            )
+                .into_response())
+        }
+        // 改密：验原口令；update 会清掉该身份全部在途会话（旧口令外泄的
+        // 那批 cookie 不能幸存），当场重发新会话让当前操作不用重新登录。
+        Some((uname, _)) => {
+            let stored = cfg
+                .store
+                .get_user(&uname)
+                .map_err(ApiError::Internal)?
+                .ok_or_else(|| ApiError::Internal("账号行丢失".into()))?;
+            if !verify_password_hash(&stored.1, body.old_password.as_deref().unwrap_or("")) {
+                return Err(ApiError::Unauthorized("原密码错误".into()));
+            }
+            let hit = cfg
+                .store
+                .update_user_password(&uname, &hash_password(&body.new_password), false)
+                .map_err(ApiError::Internal)?;
+            if !hit {
+                return Err(ApiError::NotFound("账号不存在".into()));
+            }
+            let sid = cfg.store.create_session(&tid).map_err(ApiError::Internal)?;
+            let secure = if cfg.cookie_secure { "; Secure" } else { "" };
+            Ok((
+                StatusCode::OK,
+                [
+                    (
+                        SET_COOKIE,
+                        format!(
+                            "lf_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}{secure}"
+                        ),
+                    ),
+                ],
+                Json(serde_json::json!({ "ok": true, "username": uname, "must_change": false })),
+            )
+                .into_response())
+        }
+    }
 }
 
 /// 改管理员密码：需已验证的管理员身份（会话或超管 Bearer）。

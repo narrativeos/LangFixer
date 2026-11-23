@@ -47,12 +47,34 @@ const issuing = ref(false)
 /** 刚签发的一枚：{token} 只存在于这里，关掉就再也取不到 */
 const fresh = ref<{ id: string; label: string; token: string } | null>(null)
 
+/** 用户名账号（密钥的口令别名）：按 token_id 对到密钥行上 */
+interface UserRow {
+  username: string
+  token_id: string
+  must_change: boolean
+  revoked: boolean
+  created_at: number
+}
+const users = ref<UserRow[]>([])
+/** 行内建账号草稿：正在填用户名的密钥行 id → 用户名 */
+const accountDraft = ref<{ id: string; username: string } | null>(null)
+const acctBusy = ref(false)
+/** 代生成的临时口令：{password} 只存在于这里，关掉就取不回 */
+const freshPw = ref<{ username: string; password: string } | null>(null)
+
+const userByToken = computed(() => {
+  const m = new Map<string, UserRow>()
+  for (const u of users.value) m.set(u.token_id, u)
+  return m
+})
+
 /** 行内两步吊销确认：处于确认态的行 id（不落弹窗，按 ui 契约用行内确认） */
 const confirmId = ref<string | null>(null)
 
 const tokenColumns: LColumn<TokenRow>[] = [
   { key: 'label', label: '用途' },
   { key: 'state', label: '状态', width: '84px' },
+  { key: 'user', label: '账号', width: '190px' },
   { key: 'usage', label: '今日用量' },
   { key: 'total', label: '累计 / 最近' },
   { key: 'calls', label: '调用次数' },
@@ -98,6 +120,12 @@ async function load() {
     stats.value = await api.adminStats()
   } catch {
     stats.value = null
+  }
+  // 用户名账号：同样对老服务端宽容（没有这个面就当没有账号）
+  try {
+    users.value = await api.adminUsers()
+  } catch {
+    users.value = []
   }
 }
 onMounted(load)
@@ -145,6 +173,41 @@ async function leave() {
     toast('已退出登录', 'ok')
   } catch (e) {
     toast(`退出失败：${errMsg(e)}`, 'danger')
+  }
+}
+
+/** 行内建账号：服务端生成临时口令（只回这一次），首次登录要求改密 */
+async function createUser(row: TokenRow) {
+  const uname = accountDraft.value?.id === row.id ? accountDraft.value.username.trim() : ''
+  if (!uname) {
+    toast('先填写用户名（2–32 位小写字母/数字/._-）', 'warn')
+    return
+  }
+  acctBusy.value = true
+  try {
+    const r = await api.adminCreateUser(row.id, uname)
+    freshPw.value = r.password ? { username: r.username, password: r.password } : null
+    accountDraft.value = null
+    toast(`已为「${row.label}」创建账号 ${r.username}`, 'ok')
+    await load()
+  } catch (e) {
+    toast(`创建账号失败：${errMsg(e)}`, 'danger')
+  } finally {
+    acctBusy.value = false
+  }
+}
+
+async function resetUser(u: UserRow) {
+  acctBusy.value = true
+  try {
+    const r = await api.adminResetUser(u.username)
+    freshPw.value = r.password ? { username: u.username, password: r.password } : null
+    toast(`已重置「${u.username}」的口令：旧口令与其会话作废`, 'ok')
+    await load()
+  } catch (e) {
+    toast(`重置失败：${errMsg(e)}`, 'danger')
+  } finally {
+    acctBusy.value = false
   }
 }
 
@@ -275,6 +338,19 @@ const keyOrigin = computed(() => {
       </div>
     </div>
 
+    <!-- 代生成的临时口令：同样只出现这一次，首次登录必须改密 -->
+    <div v-if="freshPw" class="keys-fresh">
+      <div class="keys-fresh-head">
+        <span>临时口令 · {{ freshPw.username }}</span>
+        <code>{{ freshPw.password }}</code>
+        <LButton size="sm" @click="copy(freshPw.password, '临时口令')">复制</LButton>
+        <LButton size="sm" variant="ghost" @click="freshPw = null">知道了</LButton>
+      </div>
+      <div class="keys-fresh-warn">
+        口令只显示这一次，请复制发给对方；{{ freshPw.username }} 首次登录后需自行改密。
+      </div>
+    </div>
+
     <LEmpty
       v-if="!error && !loading && rows.length === 0"
       text="还没有签发过密钥"
@@ -290,6 +366,41 @@ const keyOrigin = computed(() => {
     >
       <template #col-state="{ row }">
         <LTag :tone="row.revoked ? 'neutral' : 'ok'">{{ row.revoked ? '已吊销' : '有效' }}</LTag>
+      </template>
+      <template #col-user="{ row }">
+        <!-- 账号是这枚密钥的口令别名：一行一个，未建可在行内直接建 -->
+        <div v-if="userByToken.get(row.id)" class="keys-user">
+          <code>{{ userByToken.get(row.id)!.username }}</code>
+          <LTag v-if="userByToken.get(row.id)!.must_change" tone="warn">临时口令</LTag>
+          <LButton
+            variant="ghost"
+            size="sm"
+            :loading="acctBusy"
+            :disabled="row.revoked"
+            @click="resetUser(userByToken.get(row.id)!)"
+          >
+            重置口令
+          </LButton>
+        </div>
+        <div v-else-if="accountDraft?.id === row.id" class="keys-user-form">
+          <LInput
+            v-model="accountDraft.username"
+            placeholder="用户名"
+            class="keys-user-input"
+            @keydown.enter="createUser(row)"
+          />
+          <LButton size="sm" :loading="acctBusy" @click="createUser(row)">建账号</LButton>
+          <LButton size="sm" variant="ghost" @click="accountDraft = null">取消</LButton>
+        </div>
+        <LButton
+          v-else
+          size="sm"
+          variant="ghost"
+          :disabled="row.revoked"
+          @click="accountDraft = { id: row.id, username: '' }"
+        >
+          建账号
+        </LButton>
       </template>
       <template #col-usage="{ row }">
         <div class="keys-usage">
@@ -419,6 +530,24 @@ const keyOrigin = computed(() => {
 .keys-id {
   font-size: var(--fs-sm);
   color: var(--muted);
+}
+.keys-user {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.keys-user code {
+  font-size: var(--fs-sm);
+}
+.keys-user-form {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+.keys-user-input {
+  width: 120px;
+  min-width: 0;
 }
 .keys-usage {
   display: flex;
