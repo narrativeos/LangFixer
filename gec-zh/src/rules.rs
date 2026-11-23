@@ -1025,7 +1025,7 @@ fn detect_subj_drowned(text: &str) -> Vec<Error> {
     for (s, next_s) in starts
         .iter()
         .copied()
-        .zip(starts[1..].iter().copied().chain(std::iter::once(n)))
+        .zip(starts.iter().skip(1).copied().chain(std::iter::once(n)))
     {
         // A1：使(得) 句段首 + 前句段介词引导
         if s > 0 && chars[s] == '使' {
@@ -2297,6 +2297,15 @@ mod tests {
         assert!(hits("有的人很有钱。").is_empty(), "有的成词");
         assert!(hits("他的慢慢是出了名的。").is_empty(), "的字结构非状语");
         assert!(hits("他高兴得跳起来。").is_empty(), "单侧合法");
+    }
+
+    #[test]
+    fn subj_drowned_degenerate_text_no_panic() {
+        // 空/纯空白文本：句段起点列表为空，旧实现切片 starts[1..] 会 panic
+        // （range start index 1 out of range for slice of length 0 → 网关 502）
+        for s in ["", "   ", "，。、"] {
+            assert!(detect_subj_drowned(s).is_empty(), "退化文本不应命中: {s:?}");
+        }
     }
 
     #[test]
