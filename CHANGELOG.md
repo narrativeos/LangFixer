@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **NLP sidecar 僵死看门狗**：新 systemd 定时单元 `langfixer-nlp-watchdog.{sh,service,timer}`
+（deploy/gateway，与 retention 同款）：每 5 分钟探 `$HANLP_ENDPOINT/analyze`（200=健康），
+连续 2 次失败自动 `docker restart narrative-operator-nlp`，重启后 15 分钟冷却防模型
+重载期误判循环重启。背景（实发）：容器 Up 但 uvicorn 静默挂死数小时——端口在听、
+请求不回话、日志停更、无 OOM 无重启记录，LangFixer 逐请求降级每轮白烧 10s 连接超时；
+`--restart unless-stopped` 只救进程退出救不了应用僵死。判断轨迹进
+`journalctl -u langfixer-nlp-watchdog.service`。
+
 - **思考模式开关（默认关闭）**：设置新增 `llm.thinking`（web「设置→模型」开关 / `PUT /gec/settings` /
 env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约请求发
 `chat_template_kwargs:{"enable_thinking":false}` 显式关思考（实测 detect 从分钟级降到秒级且 JSON 更干净）；

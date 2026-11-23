@@ -1,0 +1,9 @@
+[Unit]
+Description=每 5 分钟探活中文 NLP sidecar（连续 2 次失败自动重启容器）
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

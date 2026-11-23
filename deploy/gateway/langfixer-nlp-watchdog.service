@@ -1,0 +1,9 @@
+[Unit]
+Description=LangFixer 中文 NLP sidecar 探活看门狗
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/srv/langfixer/langfixer.env
+ExecStart=/srv/langfixer/bin/langfixer-nlp-watchdog.sh

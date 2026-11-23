@@ -65,12 +65,13 @@ LF_SERVICE / LF_PORT` 传入。
 3. **环境**：`cp langfixer.env.example /srv/langfixer/langfixer.env`，
    填 `LANGFIXER_ADMIN_TOKEN`（`openssl rand -hex 32`），`chmod 600`。
 
-4. **服务**：拷 `langfixer.service`、`langfixer-retention.{sh,service,timer}` 到
+4. **服务**：拷 `langfixer.service`、`langfixer-retention.{sh,service,timer}`、
+   `langfixer-nlp-watchdog.{sh,service,timer}` 到
    `/etc/systemd/system/`（sh 落 `/srv/langfixer/bin/`，`chmod +x`）：
 
    ```sh
    systemctl daemon-reload
-   systemctl enable --now langfixer langfixer-retention.timer
+   systemctl enable --now langfixer langfixer-retention.timer langfixer-nlp-watchdog.timer
    ```
 
 5. **入口**：把 `Caddyfile.snippet` 追加进 `/dnmp/services/caddy/config/caddyfile`，
@@ -101,7 +102,12 @@ docker run -d --name narrative-operator-nlp --network dnmp_default \
   `HANLP_ENDPOINT=http://172.18.0.1:8000`、`GEC_OFFLINE=0`；
 - 模型卷需预置（`file.hankcs.com` 在云服务器上可能不可达）：从已有环境
   `docker run --rm -v <src-vol>:/d alpine tar cf - -C /d .` 管道搬运；
-- 该容器异常时 LangFixer 不瘫痪：zh 管线自动退化为纯规则离线模式。
+- 该容器异常时 LangFixer 不瘫痪：zh 管线自动退化为纯规则离线模式；
+- **僵死看门狗**（实发事故：容器 Up 但 uvicorn 静默挂死数小时，端口在听、请求
+  无响应、日志停更，`--restart unless-stopped` 救不了应用僵死）：装
+  `langfixer-nlp-watchdog.{sh,service,timer}`（同上第 4 步）——每 5 分钟探
+  `$HANLP_ENDPOINT/analyze`，连续 2 次失败自动 `docker restart`，重启后 15 分钟冷却；
+  判断轨迹进 `journalctl -u langfixer-nlp-watchdog.service`。
 
 ## 冒烟清单（公网）
 
