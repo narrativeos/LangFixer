@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api/client'
 import { errMsg } from '../lib/err'
+import { useGecStore } from '../stores/gec'
 import type { EvalLayerStats, EvalReport } from '../types'
 import { LButton, LEmpty, LProgress, LSection, LSelect, LTable, LTag } from '../ui'
 import type { LColumn } from '../ui'
@@ -12,6 +13,8 @@ import type { LColumn } from '../ui'
  * 与进化中心「测评」页的区别：那里是运营侧发起评测 + 看报告全文；
  * 这里只做只读陈列（报告选择 + 两报告对比），评审密钥可达。
  */
+
+const store = useGecStore()
 
 const reports = ref<EvalReport[]>([])
 const dir = ref('')
@@ -31,12 +34,11 @@ const LAYERS: { key: string; label: string }[] = [
   { key: 'llm', label: '③ LLM 兜底' },
 ]
 
-/** 层 → 报告 config 开关键（规则/统计无开关恒开） */
-const LAYER_CFG_KEY: Record<string, 'decision_enabled' | 'knowledge_enabled' | 'l3_enabled' | 'llm_enabled'> = {
-  decision: 'decision_enabled',
-  knowledge: 'knowledge_enabled',
-  feature: 'l3_enabled',
-  llm: 'llm_enabled',
+/** 层 → 消融字段键（消融报告里该层当时被临时关闭；规则/统计无消融开关） */
+const LAYER_ABLATION_KEY: Record<string, 'decision' | 'knowledge' | 'l3'> = {
+  decision: 'decision',
+  knowledge: 'knowledge',
+  feature: 'l3',
 }
 
 function pct(x: number | null | undefined): string {
@@ -120,12 +122,14 @@ const rows = computed<LayerRow[]>(() => {
   const extra = Object.keys(sel.layers)
     .filter((k) => !LAYERS.some((l) => l.key === k))
     .map((k) => ({ key: k, label: k }))
+  const abl = sel.ablation ?? null
   return [...known, ...extra].map(({ key, label }) => {
     const s = sel.layers[key]
-    const cfgKey = LAYER_CFG_KEY[key]
+    const ablKey = LAYER_ABLATION_KEY[key]
     let state: LayerRow['state']
-    if (cfgKey && sel.config?.[cfgKey] === false)
-      state = { text: key === 'decision' ? '未启用（待发布）' : '未启用', tone: 'neutral' }
+    // 服务状态不在这里判定（统一读下方实时 chips）；行状态只说这份报告里该层的表现：
+    // 消融关掉的层由 ablation 字段说明，其余按数据（当时该层确实零预测就是零预测）
+    if (abl && ablKey && abl[ablKey] === false) state = { text: '消融关闭', tone: 'neutral' }
     else if (s.attributed_gold > 0) state = { text: '有自定案', tone: 'ok' }
     else if (s.n_pred > 0) state = { text: '有预测零命中', tone: 'warn' }
     else state = { text: '零预测', tone: 'neutral' }
@@ -142,17 +146,17 @@ const rows = computed<LayerRow[]>(() => {
   })
 })
 
-/** 报告 config 开关 chips（一眼看清这轮评测哪几层在跑） */
-const cfgChips = computed(() => {
-  const c = selected.value?.config
-  if (!c) return []
-  return [
-    { k: 'LLM', on: c.llm_enabled !== false, extra: c.llm_model },
-    { k: '特征模型', on: c.l3_enabled !== false, extra: undefined },
-    { k: '知识召回', on: c.knowledge_enabled !== false, extra: c.embedding_configured === false ? '未配嵌入' : undefined },
-    { k: '决策模型', on: c.decision_enabled === true, extra: c.decision_enabled === true ? undefined : '待发布' },
-  ]
-})
+/**
+ * 服务状态 chips：读全局实时设置（store，与检测页「标准检查」/PipelineStatus 同口径），
+ * 不再读报告内嵌 config 快照——历史快照只反映当时，会让本页与全站状态打架。
+ * 「这份报告当时怎么跑的」由「消融」字段 + 各层数据表达；LLM 模型名是报告属性，保留。
+ */
+const svcChips = computed(() => [
+  { k: 'LLM', on: store.llmEnabled, extra: selected.value?.config?.llm_model },
+  { k: '特征模型', on: store.l3Enabled, extra: undefined },
+  { k: '知识召回', on: store.embeddingConfigured, extra: undefined },
+  { k: '决策模型', on: store.decisionEnabled, extra: undefined },
+])
 
 const funnelCumulative = computed(() => selected.value?.funnel?.cumulative ?? [])
 
@@ -258,9 +262,11 @@ onMounted(load)
           </div>
         </dl>
         <div class="cfg-row">
-          <LTag v-for="c in cfgChips" :key="c.k">
+          <span class="k">服务状态</span>
+          <LTag v-for="c in svcChips" :key="c.k">
             {{ c.k }} {{ c.on ? '开' : '关' }}<template v-if="c.extra"> · {{ c.extra }}</template>
           </LTag>
+          <span class="cfg-note">实时全局设置，与检测页一致；该报告当时各层表现见「消融」与层级数据</span>
         </div>
       </LSection>
 
@@ -386,8 +392,13 @@ onMounted(load)
 .cfg-row {
   margin-top: var(--space-3);
   display: flex;
+  align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
+}
+.cfg-note {
+  color: var(--muted);
+  font-size: var(--fs-sm);
 }
 .metric-row {
   display: flex;
