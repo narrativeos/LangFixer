@@ -834,6 +834,11 @@ pub struct CascadeDetector {
     pub decision: Option<Arc<DecisionGecEngine>>,
     /// 知识向量召回（可选；未配置嵌入引擎时为 None，静默跳过）
     pub knowledge_recall: Option<Arc<dyn KnowledgeRecall>>,
+    /// ②.5 知识短路门（`GEC_KNOWLEDGE_LLM_GATE=1` 开启，默认关）：全文每句都以
+    /// sim ≥ [`crate::knowledge_recall::LLM_GATE_SIM`] 命中知识库时，level 2 弃权
+    /// 不再送 ③ 全文 LLM（重复错误已由知识库定案）。L3 与决策模型的「明确无错」
+    /// 冲突、③-T 灰区定向复查与 level 3 深扫臂均不受此门影响（保守回退）。
+    pub knowledge_gates_llm: bool,
     /// L3 特征模型（三期门控层：level 2 先跑特征模型，LLM 收缩到纯长尾；
     /// level 3 定案仍合并但不终结全文 LLM（漏报兜底臂）；未启用时为 None）
     pub l3: Option<Arc<L3FeatureEngine>>,
@@ -859,6 +864,7 @@ impl CascadeDetector {
             rule,
             decision,
             knowledge_recall: None,
+            knowledge_gates_llm: false,
             l3: None,
             l3_disabled: false,
             terminology: None,
@@ -1087,6 +1093,10 @@ impl GecEngine for CascadeDetector {
         // 命中后两级定位：精确子串 → 精确 span；高相似非子串 → 句级粗定位（模糊召回）。
         // 嵌入服务不可用时实现侧静默返回空，不阻断检测
         let mut recall_ms = None;
+        // ②.5 短路判据（块内赋值，块外的 need_llm 门控消费）：全文每一句都有
+        // ≥ LLM_GATE_SIM 且成功定案的知识命中
+        let mut knowledge_settled = false;
+        let mut gate_spans: Vec<(usize, usize)> = Vec::new();
         if let Some(kb) = &self.knowledge_recall {
             let t = std::time::Instant::now();
             let hits = kb.recall(&self.lang, text).await;
@@ -1103,8 +1113,18 @@ impl GecEngine for CascadeDetector {
                 if let Some(err) = knowledge_hit_to_error(hit) {
                     recall_found += 1;
                     merge_errors(&mut errors, vec![err]);
+                    if hit.sim >= crate::knowledge_recall::LLM_GATE_SIM {
+                        gate_spans.push(hit.sentence_span);
+                    }
                 }
             }
+            knowledge_settled = self.knowledge_gates_llm && !gate_spans.is_empty() && {
+                let sentences = crate::knowledge_recall::split_sentences(text);
+                !sentences.is_empty()
+                    && sentences
+                        .iter()
+                        .all(|(_, st, en)| gate_spans.contains(&(*st, *en)))
+            };
             layers.push(LayerReport::new(sources::KNOWLEDGE, "ran", recall_found));
             match hits.first().map(|h| h.sim) {
                 Some(top) => tracing::debug!(
@@ -1144,6 +1164,8 @@ impl GecEngine for CascadeDetector {
         // **部分定案**（`unreviewed_spans` 非空）：定案部分保留，灰区句不再全文
         // 兜底，改由 ③-T 定向 LLM 复查（成本 ≈ 灰区句长度）
         let mut targeted_spans: Vec<[usize; 2]> = Vec::new();
+        // L3 定案「明确无错」但决策模型弃权：②.5 知识短路对此冲突让行，不开闸
+        let mut l3_clean_conflict = false;
         // ③-T 是否已自行落定（ran / unavailable）；在计划但未触发则尾部记 skipped
         let mut targeted_settled = false;
         if let Some(l3_res) = l3_res {
@@ -1169,8 +1191,9 @@ impl GecEngine for CascadeDetector {
                         // 保留 LLM 长尾兜底并记 warn（L3 负样本源自 LLM 判定，
                         // 存在系统性盲区时此处是最后防线）
                         if abstained {
+                            l3_clean_conflict = true;
                             tracing::warn!(
-                                "L3 特征模型判「明确无错」但决策模型弃权：模型冲突，保留 LLM 长尾兜底"
+                                "L3 特征模型判「明确无错」但决策模型弃权：模型冲突，保留 LLM 长尾兑底"
                             );
                         } else if level <= 2 {
                             need_llm = false;
@@ -1196,6 +1219,12 @@ impl GecEngine for CascadeDetector {
                     );
                 }
             }
+        }
+        // ②.5 知识短路：知识库逐句近精确命中已定案全文 → 弃权长尾不再送 ③ 全文
+        // LLM；L3 与决策模型冲突时让位于其防线，level 3 深扫臂不短路（与 ③-F 同口径：
+        // 存在意义是漏报兑底）；③-T 灰区定向复查不受影响（成本高 ≈ 灰区句长度）
+        if knowledge_settled && !force_llm && level <= 2 && !l3_clean_conflict {
+            need_llm = false;
         }
         let mut llm_confirmed_clean = false;
         let mut llm_ms = None;
@@ -1523,6 +1552,8 @@ pub fn compose_detector<D: GECDetector + 'static>(
         .map(|c| Arc::new(L3FeatureEngine::new(lang, c.clone())));
     // 显式关闭（配置在但 enabled=false）与从未配置区分：前者 level 2 开闸回退无条件 LLM
     let l3_disabled = l3.as_ref().is_some_and(|c| !c.enabled());
+    // ②.5 知识短路门开关：默认关 = 生产语义零变化；灰度 / 隔离评测实例显式开启
+    let knowledge_gates_llm = std::env::var("GEC_KNOWLEDGE_LLM_GATE").ok().as_deref() == Some("1");
     match GecEngineKind::from_env(lang) {
         GecEngineKind::Statistical => {
             let primary = Arc::new(StatisticalGecEngine::from_env(lang));
@@ -1548,6 +1579,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
             let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                 .with_kind_override(GecEngineKind::Decision);
             det.knowledge_recall = knowledge_recall;
+            det.knowledge_gates_llm = knowledge_gates_llm;
             det.l3_disabled = l3_disabled;
             det.terminology = terminology.clone();
             if let Some(e) = l3_engine {
@@ -1574,6 +1606,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                 let mut det = CascadeDetector::new(lang, rule, Some(secondary))
                     .with_kind_override(GecEngineKind::Decision);
                 det.knowledge_recall = knowledge_recall;
+                det.knowledge_gates_llm = knowledge_gates_llm;
                 det.l3_disabled = l3_disabled;
                 det.terminology = terminology.clone();
                 if let Some(e) = l3_engine {
@@ -1595,6 +1628,7 @@ pub fn compose_detector<D: GECDetector + 'static>(
                     );
                     let mut det = CascadeDetector::new(lang, rule, None);
                     det.knowledge_recall = Some(kr);
+                    det.knowledge_gates_llm = knowledge_gates_llm;
                     det.l3_disabled = l3_disabled;
                     det.terminology = terminology.clone();
                     if let Some(e) = l3_engine {
@@ -1995,6 +2029,178 @@ mod tests {
             "知识召回命中应合并进错误列表: {:?}",
             outcome.errors
         );
+    }
+
+    /// ②.5 短路门假召回：每句一条命中（条目文本 = 句子原文 → 精确定位），
+    /// sim 可调；only_first = 只有首句命中（验证「逐句全覆盖」判据）
+    struct PerSentenceRecall {
+        sim: f64,
+        only_first: bool,
+    }
+
+    #[async_trait]
+    impl KnowledgeRecall for PerSentenceRecall {
+        async fn recall(&self, _lang: &str, text: &str) -> Vec<RecallHit> {
+            crate::knowledge_recall::split_sentences(text)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !self.only_first || *i == 0)
+                .map(|(_, (sentence, start, end))| RecallHit {
+                    item: LearnedKnowledge {
+                        id: 1,
+                        lang: "en".into(),
+                        text: sentence.clone(),
+                        error_type: "grammar".into(),
+                        correction: sentence.replace("gpus", "GPUs"),
+                        embedding: vec![],
+                        source: "test".into(),
+                        created_at: String::new(),
+                    },
+                    sim: self.sim,
+                    sentence,
+                    sentence_span: (start, end),
+                })
+                .collect()
+        }
+    }
+
+    /// 恒弃权 mock 决策服务（abstain=true → level 2 打开 ③ LLM 兑底门）
+    async fn mock_decide_endpoint_abstain() -> String {
+        let app = axum::Router::new().route(
+            "/decide",
+            axum::routing::post(|_body: axum::body::Bytes| async move {
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "has_error": false,
+                        "has_error_prob": 0.2,
+                        "error_type": "missing",
+                        "abstain": true,
+                        "errors": []
+                    })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    fn gate_cascade(
+        recall: PerSentenceRecall,
+        gates: bool,
+    ) -> impl std::future::Future<Output = CascadeDetector> {
+        async move {
+            let endpoint = mock_decide_endpoint_abstain().await;
+            let decision = Arc::new(DecisionGecEngine::new("en", decision_cfg(endpoint, true)));
+            let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
+                lang: "en",
+                fail: false,
+            });
+            let mut det = CascadeDetector::new("en", rule, Some(decision));
+            det.knowledge_recall = Some(Arc::new(recall));
+            det.knowledge_gates_llm = gates;
+            det
+        }
+    }
+
+    fn llm_unconfigured(outcome: &DetectOutcome) -> bool {
+        outcome
+            .quality
+            .as_ref()
+            .is_some_and(|q| q.degraded_reasons.iter().any(|r| r == "llm_unconfigured"))
+    }
+
+    #[tokio::test]
+    async fn knowledge_gate_off_keeps_llm_planned() {
+        // 开关默认关：逐句高置信命中也不短接，弃权仍计划 ③ 全文 LLM（未配置→降级原因）
+        let det = gate_cascade(
+            PerSentenceRecall {
+                sim: 0.95,
+                only_first: false,
+            },
+            false,
+        )
+        .await;
+        let outcome = det
+            .detect_level("the gpus are fast.", 2, false, None)
+            .await
+            .unwrap();
+        assert!(
+            llm_unconfigured(&outcome),
+            "开关关闭时 LLM 层应仍在计划（弃权触发）"
+        );
+    }
+
+    #[tokio::test]
+    async fn knowledge_gate_settles_full_hit() {
+        // 开关开 + 全文逐句 ≥ LLM_GATE_SIM 命中 → ③ 全文 LLM 短接：不得再记
+        // llm_unconfigured（那是「触发了但未配置」的降级，短接 = 本轮不该触发），
+        // 知识错误仍合并
+        let det = gate_cascade(
+            PerSentenceRecall {
+                sim: 0.95,
+                only_first: false,
+            },
+            true,
+        )
+        .await;
+        let outcome = det
+            .detect_level("the gpus are fast.", 2, false, None)
+            .await
+            .unwrap();
+        assert!(
+            !llm_unconfigured(&outcome),
+            "逐句高置信命中应短接 LLM（不再按触发未配置降级）"
+        );
+        assert!(
+            outcome.errors.iter().any(|e| {
+                e.source.as_deref() == Some("knowledge")
+                    || e.also_found_by.iter().any(|s| s == "knowledge")
+            }),
+            "短接只关 LLM，不得丢知识命中（共识归因也算）: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[tokio::test]
+    async fn knowledge_gate_requires_every_sentence() {
+        // 只有首句命中 → 不得短接（长尾句仍有漏报风险）
+        let det = gate_cascade(
+            PerSentenceRecall {
+                sim: 0.95,
+                only_first: true,
+            },
+            true,
+        )
+        .await;
+        let outcome = det
+            .detect_level("the gpus are fast. they work fine.", 2, false, None)
+            .await
+            .unwrap();
+        assert!(llm_unconfigured(&outcome), "未逐句覆盖时不得短接 LLM");
+    }
+
+    #[tokio::test]
+    async fn knowledge_gate_rejects_low_similarity() {
+        // sim < LLM_GATE_SIM（模糊召回区）→ 不得短接，避免模糊命中遮蔽长尾
+        let det = gate_cascade(
+            PerSentenceRecall {
+                sim: 0.85,
+                only_first: false,
+            },
+            true,
+        )
+        .await;
+        let outcome = det
+            .detect_level("the gpus are fast.", 2, false, None)
+            .await
+            .unwrap();
+        assert!(llm_unconfigured(&outcome), "低相似命中不得短接 LLM");
     }
 
     #[tokio::test]

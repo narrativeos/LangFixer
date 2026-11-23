@@ -19,6 +19,12 @@ use shared_model::{Error, LearnedKnowledge, sources};
 /// 模糊召回阈值：知识条目与句子的字符 bigram Jaccard 相似度 ≥ 该值 → 句级命中
 pub const FUZZY_THRESHOLD: f64 = 0.8;
 
+/// ②.5 LLM 短路门控阈值（`GEC_KNOWLEDGE_LLM_GATE=1` 时生效，默认关闭）：
+/// 全文**每一句**都有余弦相似度 ≥ 该值的知识命中时，level 2 弃权不再送 ③ 全文
+/// LLM（重复错误已由知识库定案，见 `crate::engine` 的 need_llm 门控）。
+/// 高于召回阈值：只有近精确的句子命中才允许掐断 LLM，避免模糊召回遮蔽长尾漏报。
+pub const LLM_GATE_SIM: f64 = 0.9;
+
 /// 知识召回命中：知识条目 + 它在输入文本中匹配到的句子（带字节偏移锚点）
 #[derive(Debug, Clone)]
 pub struct RecallHit {

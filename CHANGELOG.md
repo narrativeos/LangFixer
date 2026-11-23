@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **②.5 知识短路门（`GEC_KNOWLEDGE_LLM_GATE=1`，默认关）**：全文**每一句**都以余弦
+相似度 ≥ `LLM_GATE_SIM`（0.9，高于召回阈值 0.7）命中知识库并定案时，level 2 弃权不再
+送 ③ 全文 LLM——重复错误已由知识库定案，长尾不必再付 LLM 成本；与 ③-F 定案同口径
+（LLM 层记 skipped 不记降级原因，漏斗 LLM 触达率随之下降）。保守回退三条：L3 判「明确
+无错」但决策模型弃权的模型冲突不让知识开门；③-T 灰区句定向复查不受影响；level 3 深扫
+臂（漏报兑底）永不短路。未开启时零语义变化（字段默认 false）；灰度 / 隔离评测实例显式
+开启验证知识层降本价值（seed313 demo 复跑）。
+
 - **NLP sidecar 僵死看门狗**：新 systemd 定时单元 `langfixer-nlp-watchdog.{sh,service,timer}`
 （deploy/gateway，与 retention 同款）：每 5 分钟探 `$HANLP_ENDPOINT/analyze`（200=健康），
 连续 2 次失败自动 `docker restart narrative-operator-nlp`，重启后 15 分钟冷却防模型
