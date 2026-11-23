@@ -908,6 +908,19 @@ function setProfileCefr(v: string | number) {
         <LButton variant="primary" :loading="opsUnlocking" @click="unlockOps">验证并解锁</LButton>
         <span v-if="opsUnlockError" class="apply-err">{{ opsUnlockError }}</span>
       </div>
+      <!-- 解锁后的账号管理串联：运营 token 与超管密钥是两套凭证，试用账号不在本卡管 -->
+      <div v-if="store.caps.ops && !isTauri && identity.gateway" class="ops-account">
+        <span class="sub">
+          {{
+            identity.admin
+              ? '试用账号管理在「接入」页的密钥分发：每行「建账号」生成登录用户名与一次性临时口令（首登催改），“重置口令”作废旧口令与在途会话。本卡解锁的运营 token 只管规则 / 知识 / 进化等写端点——账号写端点归超管密钥。'
+              : '本卡解锁的运营 token 只管规则 / 知识 / 进化等写端点；试用账号（用户名 + 口令）需用超管密钥登录后，在「接入」页密钥分发每行的「账号」列创建或重置。'
+          }}
+        </span>
+        <LButton size="sm" variant="ghost" @click="store.requestNav('access')">
+          去接入页
+        </LButton>
+      </div>
       <p class="desc">
         能力位是本机偏好（仅保存在此设备）。超管身份下平台运营自动开启（写端点本身受服务端鉴权保护）；
         其余情形 web 形态解锁需 token 验证，未解锁时相关写端点仍受服务端 token 保护。
@@ -1653,6 +1666,21 @@ function setProfileCefr(v: string | number) {
 </template>
 
 <style scoped>
+.ops-account {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.ops-account .sub {
+  flex: 1;
+  min-width: 0;
+}
 .settings-wrap { display: flex; flex-direction: column; gap: var(--space-3); max-width: 760px; }
 .settings-wrap .l-section { margin-bottom: 0; }
 /* 锚点直达高亮（PipelineStatus 点击 → 对应卡片滚动定位后短暂高亮） */
