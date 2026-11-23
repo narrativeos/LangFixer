@@ -240,7 +240,15 @@ impl DecisionGecEngine {
     ///
     /// 决策服务是句级分类器：整篇文本一次送检会把「某一句有错」合成成
     /// `[0, 全文]` 的整篇错误。这里按 `docchunk::sentence_spans` 切句（与块矩阵
-    /// 句表同一切句器），逐句并发送检，句内 span 按句字节起点平移回全文。
+    /// 句表同一切句器；无标点长串由其 auto_break 兜底在 [`docchunk::SENTENCE_HARD_CAP`]
+    /// 字内），逐句**小并发**送检，句内 span 按句字节起点平移回全文。
+    ///
+    /// 并发必须受限（[`DECIDE_CONCURRENCY`]）：vegaml 服务单 worker 串行推理
+    /// （实测 ~18 req/s，CPU 句级分类，并发不提升吞吐只堆队），一次性全并发
+    /// 会让最后一句的排队时间计入客户端 10s 超时——6200 字 ≈ 275 句一发即
+    /// 尾句等待 15s → 超时 → 整层 unavailable（实测 decision_ms=10011 →
+    /// `decision_unavailable`）。受限并发下超时只约束在途时间（每句 <1s），
+    /// 排队只延长 `decide` 总时长（与规则/NLP 层并行段重叠）。
     /// 任一请求失败整体报错（调用方按既有回退路径降级）。
     pub async fn decide(&self, text: &str) -> Result<DecideOutcome, DetectorError> {
         let units: Vec<[usize; 2]> = crate::docchunk::sentence_spans(text)
@@ -250,16 +258,23 @@ impl DecisionGecEngine {
         if units.is_empty() {
             return Ok(DecideOutcome::default());
         }
-        let results = futures_util::future::join_all(
-            units
+        let mut results: Vec<(usize, DecideOutcome)> = {
+            use futures_util::stream::{StreamExt as _, TryStreamExt as _};
+            // 先收集再建流：闭包直接返回 async 块会在泛型边界上触发 HRTB 推断问题
+            let futs = units
                 .iter()
-                .map(|[s, e]| async { self.decide_unit(&text[*s..*e]).await.map(|o| (*s, o)) }),
-        )
-        .await;
+                .map(|&[s, e]| async move { self.decide_unit(&text[s..e]).await.map(|o| (s, o)) })
+                .collect::<Vec<_>>();
+            futures_util::stream::iter(futs)
+                .buffer_unordered(DECIDE_CONCURRENCY)
+                .try_collect()
+                .await?
+        };
+        // 句序恢复文档顺序（buffer_unordered 按完成先后出流）
+        results.sort_by_key(|(base, _)| *base);
         let mut errors = Vec::new();
         let mut any_abstained = false;
-        for r in results {
-            let (base, o) = r?;
+        for (base, o) in results {
             any_abstained |= o.abstained;
             for mut err in o.errors {
                 err.span = [err.span[0] + base, err.span[1] + base];
@@ -401,6 +416,11 @@ pub struct DecideOutcome {
 /// 弃权灰区下界：`has_error_prob` 低于该值视为「明确无错」，
 /// 落在 `[0.25, abstain_threshold)` 视为弃权（模糊情况交由 LLM 兜底层）
 const GRAY_ZONE_LOW: f64 = 0.25;
+
+/// 决策层逐句送检的并发上限（小请求小并发，与 LLM 队列 `GEC_LLM_CONCURRENCY`
+/// 同思路）：服务侧单 worker 串行处理，>2 的并发只会把队等堆进在途时间；
+/// 2 用于重叠网络往返。见 [`DecisionGecEngine::decide`] 的实测依据。
+const DECIDE_CONCURRENCY: usize = 2;
 
 /// vegaml 服务 `/decide` 响应（句级判断 + 可选 span 级错误）
 #[derive(Debug, Deserialize)]
@@ -561,6 +581,54 @@ mod tests {
             axum::serve(listener, app).await.ok();
         });
         format!("http://{addr}")
+    }
+
+    /// 回归：逐句送检必须受限并发（≤ DECIDE_CONCURRENCY），不得一次性全文扇出。
+    /// 长文（数百句）一发时尾句队等会计入客户端超时 → 整层 unavailable（线上实测
+    /// 6200 字 decision_ms=10011）；本测试用峰值在途数直接卡住该回归。
+    #[tokio::test]
+    async fn decide_bounds_inflight_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let inflight = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let (inf, pk) = (inflight.clone(), peak.clone());
+        let app = axum::Router::new().route(
+            "/decide",
+            axum::routing::post(move |_body: axum::body::Bytes| {
+                let (inf, pk) = (inf.clone(), pk.clone());
+                async move {
+                    let now = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                    pk.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                    inf.fetch_sub(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "has_error": true,
+                        "has_error_prob": 0.9,
+                        "error_type": "grammar",
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let engine = DecisionGecEngine::new("zh", config(format!("http://{addr}")));
+        let text: String = (0..30).map(|i| format!("第{i}句都有语病。")).collect();
+        let out = engine.decide(&text).await.unwrap();
+        // 每句一条合成句级错误，按文档顺序产出且铺满全文
+        assert_eq!(out.errors.len(), 30);
+        assert_eq!(out.errors.first().unwrap().span[0], 0);
+        assert_eq!(out.errors.last().unwrap().span[1], text.len());
+        for w in out.errors.windows(2) {
+            assert_eq!(w[0].span[1], w[1].span[0], "句块应按文档顺序铺满");
+        }
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(
+            peak <= DECIDE_CONCURRENCY,
+            "在途并发峰值 {peak} 超过上限 {DECIDE_CONCURRENCY}：尾句队等会计入超时"
+        );
     }
 
     #[tokio::test]
