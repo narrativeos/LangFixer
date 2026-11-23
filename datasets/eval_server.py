@@ -50,6 +50,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# api-server 鉴权凭证（网关锁定后 detect/settings 需要登录态）：传超管密钥的 Bearer。
+# 用法：GEC_API_KEY="$LANGFIXER_ADMIN_TOKEN" EVAL_PORT=4807 python3 eval_server.py
+API_KEY = os.environ.get("GEC_API_KEY") or None
 REPORTS_DIR = HERE / "eval_reports"
 CACHE_DIR = REPORTS_DIR / "cache"
 
@@ -87,15 +90,22 @@ def short_id(*parts) -> str:
 # api-server 交互（detect / settings）
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _auth(headers: dict) -> dict:
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    return headers
+
+
 def api_get(server: str, path: str, timeout: float = 30.0):
-    with urllib.request.urlopen(f"{server}{path}", timeout=timeout) as r:
+    req = urllib.request.Request(f"{server}{path}", headers=_auth({}))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
 def api_put(server: str, path: str, body: dict, timeout: float = 30.0):
     req = urllib.request.Request(
         f"{server}{path}", data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="PUT",
+        headers=_auth({"Content-Type": "application/json"}), method="PUT",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
@@ -120,7 +130,7 @@ def detect(server: str, lang: str, text: str, force_llm: bool,
         try:
             req = urllib.request.Request(
                 f"{server.rstrip('/')}/gec/detect", data=body,
-                headers={"Content-Type": "application/json"},
+                headers=_auth({"Content-Type": "application/json"}),
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
