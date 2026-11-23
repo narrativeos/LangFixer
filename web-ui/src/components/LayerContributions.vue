@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { errMsg } from '../lib/err'
 import { useGecStore } from '../stores/gec'
 import type { EvalLayerStats, EvalReport } from '../types'
-import { LButton, LEmpty, LProgress, LSection, LSelect, LTable, LTag } from '../ui'
+import { LButton, LCheckbox, LEmpty, LProgress, LSection, LSelect, LTable, LTag } from '../ui'
 import type { LColumn } from '../ui'
 
 /**
@@ -108,6 +108,15 @@ const layerCols = computed<LColumn<LayerRow>[]>(() => {
   }
   return cols
 })
+
+/** 忽略无产出层：零预测且零自定案的层默认收起（决策待发布/统计未接入时全是噪声行）；
+ *  关掉开关可展开核对。消融报告里被显式关闭的层不受此开关影响（状态列有说明，保留） */
+const hideEmpty = ref(true)
+const emptyCount = computed(() => rows.value.filter((r) => isEmptyLayer(r)).length)
+function isEmptyLayer(r: LayerRow): boolean {
+  return r.state.text === '零预测'
+}
+const visibleRows = computed(() => (hideEmpty.value ? rows.value.filter((r) => !isEmptyLayer(r)) : rows.value))
 
 const funnelCols: LColumn<EvalFunnelStep>[] = [
   { key: 'prefix', label: '层前缀' },
@@ -309,7 +318,10 @@ onMounted(load)
 
       <!-- 层级贡献 -->
       <LSection title="各层贡献" desc="召回份额 = 该层自定案命中的金标编辑 ÷ 金标编辑全集；对比列是相对所选报告的差">
-        <LTable :columns="layerCols" :rows="rows" row-key="key" compact>
+        <div v-if="emptyCount" class="hide-row">
+          <LCheckbox v-model="hideEmpty" :label="`忽略无产出层（当前隐藏 ${emptyCount} 行）`" />
+        </div>
+        <LTable :columns="layerCols" :rows="visibleRows" row-key="key" compact>
           <template #col-state="{ row }">
             <LTag :tone="row.state.tone">{{ row.state.text }}</LTag>
           </template>
@@ -348,6 +360,14 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+.hide-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .pick-row {
   display: flex;

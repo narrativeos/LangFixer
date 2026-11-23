@@ -83,7 +83,9 @@ const qualityBadge = computed(() => {
 watch(
   () => store.resultsVersion,
   () => {
-    if (store.errors.length > 0) view.value = 'errors'
+    // 不论有无错误都落回「检测结果」：零错误时若停留在归因/讲解页签，用户会以为
+    // 检测没跑或效果没出现（11-23 用户反馈：自动切到错误归因导致「看不到效果」）
+    view.value = 'errors'
   },
 )
 // 预览高亮联动：点击校样高亮片段 → 切回「检测结果」（ErrorList 负责滚动定位）
