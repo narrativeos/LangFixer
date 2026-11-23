@@ -77,12 +77,13 @@ const qualityBadge = computed(() => {
 })
 
 // 新结果到达时自动切到对应视图：仅在「检测完成」（resultsVersion 变化）时触发，
-// 用户手动切换页签后不会被中途打断（旧实现 watch length，任何长度变化都会抢 tab）
+// 用户手动切换页签后不会被中途打断（旧实现 watch length，任何长度变化都会抢 tab）。
+// 默认落在「检测结果」：归因面是第二视角，不应抢在列表前（否则点卡片定位时
+// 列表不在眼前，联动效果看不见）
 watch(
   () => store.resultsVersion,
   () => {
-    if (attributableCount.value > 0) view.value = 'attribution'
-    else if (store.errors.length > 0) view.value = 'errors'
+    if (store.errors.length > 0) view.value = 'errors'
   },
 )
 // 预览高亮联动：点击校样高亮片段 → 切回「检测结果」（ErrorList 负责滚动定位）
