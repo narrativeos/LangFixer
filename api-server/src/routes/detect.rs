@@ -612,6 +612,22 @@ async fn collect_clean_sentences(state: &AppState, lang: &str, text: &str) {
 /// - 全程非阻断：失败仅告警，不影响检测结果返回。
 const ANOMALY_AUTO_ADOPT_CONF: f64 = 0.9;
 
+/// 沉淀粒度守卫阈值：异常沉淀必须是「单句」，且不过短/不过长。
+/// - 整段（多句）：②.5 是句级召回，段级条目比任何句子都长，
+///   精确子串与模糊定位两级必然落空，沉淀即死重（且下次照样走 LLM）；
+/// - 超短通用片段（如「意见建议:」）：会以子串命中任意含该短语的正常文本，
+///   自定案成无修正的污染标记，属生产误报源。
+/// 与 desktop-app `commands.rs` 同名常量保持同步。
+const ANOMALY_DEPOSIT_MIN_CHARS: usize = 12;
+const ANOMALY_DEPOSIT_MAX_CHARS: usize = 150;
+
+fn deposit_granularity_ok(original: &str) -> bool {
+    // 单句判定：切句恰好一句（纯标点/空白被切句器过滤后为 0，同样拒绝）
+    gec_core::knowledge_recall::split_sentences(original).len() == 1
+        && (ANOMALY_DEPOSIT_MIN_CHARS..=ANOMALY_DEPOSIT_MAX_CHARS)
+            .contains(&original.trim().chars().count())
+}
+
 async fn auto_adopt_anomalies(state: &AppState, lang: &str, errors: &[Error]) {
     let candidates: Vec<&Error> = errors
         .iter()
@@ -619,6 +635,7 @@ async fn auto_adopt_anomalies(state: &AppState, lang: &str, errors: &[Error]) {
             e.error_type == error_types::ANOMALY
                 && e.source.as_deref() == Some(sources::LLM)
                 && e.confidence >= ANOMALY_AUTO_ADOPT_CONF
+                && deposit_granularity_ok(&e.original)
         })
         .collect();
     if candidates.is_empty() {
@@ -829,4 +846,31 @@ pub async fn detect_lang(
         sentences: outcome.sentences,
         version,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deposit_granularity_ok;
+
+    #[test]
+    fn single_sentence_deposits() {
+        assert!(deposit_granularity_ok(
+            "他Yesterday在图书馆借了三本书,但是他还忘记带借书证."
+        ));
+        assert!(deposit_granularity_ok("I saw a apple in the park yesterday."));
+    }
+
+    #[test]
+    fn fragment_and_blob_rejected() {
+        // 超短通用片段：子串误伤正常文本
+        assert!(!deposit_granularity_ok("意见建议:"));
+        assert!(!deposit_granularity_ok("Yesterday"));
+        assert!(!deposit_granularity_ok("你好，根据你的描述，"));
+        // 多句整段：句级召回永远不命中
+        assert!(!deposit_granularity_ok("第一句话在这里。第二句话也在这里。第三句话仍然存在。"));
+        // 重复整段（生产见过的病理输入）
+        assert!(!deposit_granularity_ok(&"他每天早晨六点半就起床跑步，坚持了三年。".repeat(16)));
+        // 超长单句：超出沉淀粒度上限
+        assert!(!deposit_granularity_ok(&format!("{}。", "词".repeat(151))));
+    }
 }

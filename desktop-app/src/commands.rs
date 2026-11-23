@@ -4226,6 +4226,17 @@ pub fn remove_learned_knowledge(
 /// （source `llm_adopt`，②.5 向量召回）。全程非阻断。
 const ANOMALY_AUTO_ADOPT_CONF: f64 = 0.9;
 
+/// 沉淀粒度守卫（与 api-server `routes/detect.rs` 同名常量/函数保持同步）：
+/// 异常沉淀必须是单句，且不过短（子串误伤）/不过长（段级条目在句级召回中永不命中）。
+const ANOMALY_DEPOSIT_MIN_CHARS: usize = 12;
+const ANOMALY_DEPOSIT_MAX_CHARS: usize = 150;
+
+fn deposit_granularity_ok(original: &str) -> bool {
+    gec_core::knowledge_recall::split_sentences(original).len() == 1
+        && (ANOMALY_DEPOSIT_MIN_CHARS..=ANOMALY_DEPOSIT_MAX_CHARS)
+            .contains(&original.trim().chars().count())
+}
+
 async fn auto_adopt_anomalies_cmd(core: &Arc<Core>, lang: &str, errors: &[Error]) {
     let candidates: Vec<&Error> = errors
         .iter()
@@ -4233,6 +4244,7 @@ async fn auto_adopt_anomalies_cmd(core: &Arc<Core>, lang: &str, errors: &[Error]
             e.error_type == error_types::ANOMALY
                 && e.source.as_deref() == Some(shared_model::sources::LLM)
                 && e.confidence >= ANOMALY_AUTO_ADOPT_CONF
+                && deposit_granularity_ok(&e.original)
         })
         .collect();
     if candidates.is_empty() {
