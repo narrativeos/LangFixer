@@ -771,6 +771,8 @@ export interface LlmSettingsView {
   timeout_secs: number
   /** 提示词模板目录（等价环境变量 LLM_PROMPTS_DIR） */
   prompts_dir: string
+  /** 思考模式开关（false = 缺省，检测链路请求显式关闭服务端思考） */
+  thinking: boolean
   /** true = LLM 已配置（api_key 非空） */
   enabled: boolean
 }

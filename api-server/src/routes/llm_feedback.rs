@@ -341,6 +341,7 @@ pub async fn anomaly_adopt(
                 ),
                 state.llm_breaker.clone(),
             )
+            .with_thinking(settings.llm.thinking)
             .with_queue(state.llm_queue.clone());
             match distill_pattern(&llm, &t.system, &t.user, wrong, &existing, &gold).await {
                 Ok(p) => {

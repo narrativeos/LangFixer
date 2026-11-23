@@ -195,6 +195,7 @@ mod tests {
                 api_key: "sk-file".into(),
                 model: "deepseek-chat".into(),
                 timeout_secs: 99,
+                thinking: false,
                 prompts_dir: std::path::PathBuf::from("prompts"),
             },
             offline_mode: false,

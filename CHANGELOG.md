@@ -6,6 +6,11 @@
 
 ### 新增
 
+- **思考模式开关（默认关闭）**：设置新增 `llm.thinking`（web「设置→模型」开关 / `PUT /gec/settings` /
+env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约请求发
+`chat_template_kwargs:{"enable_thinking":false}` 显式关思考（实测 detect 从分钟级降到秒级且 JSON 更干净）；
+开启时不发该参数、听凭服务端默认。plain/COT 契约（output_format≠json）不受影响；影子臂同样生效。
+
 - **LLM 发送队列：小请求小并发**：所有 LLM 发请求统一过全局发送队列（`chat_completion_parts`
 单点 acquire，主臂与影子臂分用两个信号量），在途请求不再随分块 / 文档作业 / 蒸馏一次性全发出去。
 新 env `GEC_LLM_QUEUE`（默认 2，0=不限）；429 退避期间持住许可，排队等待不占 retry_budget。

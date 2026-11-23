@@ -175,6 +175,7 @@ fn ctx_with(wd: &Path, mode: &str, broken_cli: bool) -> FlowCtx {
             api_key: String::new(),
             model: "x".to_string(),
             timeout_secs: 5,
+            thinking: false,
             prompts_dir: PathBuf::from("prompts"),
         },
         prompts: langfixer_llm::templates::TemplateStore::default(),

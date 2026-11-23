@@ -27,6 +27,13 @@ pub struct LlmConfig {
     pub timeout_secs: u64,
     /// 提示词模板目录（`{dir}/*_prompt.json`）
     pub prompts_dir: std::path::PathBuf,
+    /// 思考模式开关：false（缺省）= 检测链路发请求时显式关闭服务端思考
+    /// （`chat_template_kwargs.enable_thinking=false`，vllm / llama.cpp Qwen 类模板读取，
+    /// 网关型代理透传）；true = 不发该参数，听凭服务端缺省。
+    /// 仅作用于 JSON 契约模型；think 块即契约的 plain（COT）模型不受影响。
+    /// 环境变量 `LLM_THINKING` 可覆盖。
+    #[serde(default)]
+    pub thinking: bool,
 }
 
 impl LlmConfig {
@@ -36,6 +43,7 @@ impl LlmConfig {
     /// - `LLM_MODEL`（默认 `gpt-4o-mini`）
     /// - `LLM_TIMEOUT_SECS`（默认 30）
     /// - `LLM_PROMPTS_DIR`（默认 `prompts`）
+    /// - `LLM_THINKING`（`1`/`true` 开启思考；缺省关闭）
     pub fn from_env() -> Self {
         Self {
             base_url: std::env::var("LLM_BASE_URL")
@@ -49,6 +57,9 @@ impl LlmConfig {
             prompts_dir: std::path::PathBuf::from(
                 std::env::var("LLM_PROMPTS_DIR").unwrap_or_else(|_| "prompts".to_string()),
             ),
+            thinking: std::env::var("LLM_THINKING")
+                .map(|v| matches!(v.trim(), "1" | "true" | "on" | "yes"))
+                .unwrap_or(false),
         }
     }
 
@@ -378,6 +389,7 @@ mod tests {
             model: "gpt-4o-mini".into(),
             timeout_secs: 60,
             prompts_dir: std::path::PathBuf::from("prompts"),
+            thinking: false,
         };
         let json = serde_json::to_string(&config).unwrap();
         let back: LlmConfig = serde_json::from_str(&json).unwrap();

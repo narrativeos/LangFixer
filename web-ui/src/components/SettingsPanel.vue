@@ -196,6 +196,7 @@ const llmModel = ref('')
 const llmTimeout = ref(30)
 /** LLM 提示词模板目录（LLM_PROMPTS_DIR） */
 const llmPromptsDir = ref('')
+const llmThinking = ref(false)
 /** 当前选中的纠错模型预设 id（`prompts/models.json` 注册表；缺省 `generic`） */
 const llmModelId = ref('generic')
 /** ③ 自动双判开关（影子臂并行判 + 判定落 dual_judge_log） */
@@ -309,6 +310,7 @@ async function load() {
     llmModel.value = s.llm.model
     llmTimeout.value = s.llm.timeout_secs
     llmPromptsDir.value = s.llm.prompts_dir
+    llmThinking.value = s.llm.thinking ?? false
     llmModelId.value = s.llm_model_id
     llmDualJudge.value = s.llm_dual_judge ?? false
     llmDualBaseUrl.value = s.llm_dual_base_url ?? ''
@@ -382,6 +384,7 @@ function formIsDirty(): boolean {
     llmModel.value.trim() !== s.llm.model ||
     llmTimeout.value !== s.llm.timeout_secs ||
     llmPromptsDir.value.trim() !== s.llm.prompts_dir ||
+    llmThinking.value !== (s.llm.thinking ?? false) ||
     llmModelId.value !== s.llm_model_id ||
     llmDualJudge.value !== s.llm_dual_judge ||
     llmDualBaseUrl.value.trim() !== (s.llm_dual_base_url ?? '') ||
@@ -440,6 +443,7 @@ async function save(): Promise<boolean> {
         model: llmModel.value.trim(),
         timeout_secs: llmTimeout.value,
         prompts_dir: llmPromptsDir.value.trim(),
+        thinking: llmThinking.value,
       },
       tables_dir: tablesDir.value.trim(),
       lexicons_dir: lexiconsDir.value.trim(),
@@ -1343,6 +1347,13 @@ function setProfileCefr(v: string | number) {
           <span class="field__label">提示词目录</span>
           <div class="field__ctl">
             <LInput class="w-420" v-model="llmPromptsDir" placeholder="prompts" />
+          </div>
+        </div>
+        <div class="field">
+          <span class="field__label">思考模式</span>
+          <div class="field__ctl">
+            <LSwitch v-model="llmThinking" aria-label="思考模式" />
+            <span class="hint">关闭（缺省）时检测请求显式关闭服务端思考，思考模型单次请求从分钟级降到秒级；think 块即契约的 COT 模型（cec3/cec4）不受影响</span>
           </div>
         </div>
         <div class="field">

@@ -709,6 +709,7 @@ mod tests {
             user_template: String::new(),
             output_format: "json".into(),
             max_tokens: 0,
+            thinking: false,
             retry_backoff_secs: Vec::new(),
             retry_budget_secs: 0,
         };

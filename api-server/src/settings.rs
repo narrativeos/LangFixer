@@ -304,6 +304,7 @@ mod tests {
                 model: "deepseek-chat".into(),
                 timeout_secs: 99,
                 prompts_dir: std::path::PathBuf::from("prompts"),
+                thinking: false,
             },
             offline_mode: true,
             tables_dir: "custom-tables".into(),

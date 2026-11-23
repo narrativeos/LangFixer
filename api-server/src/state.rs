@@ -567,7 +567,8 @@ impl AppState {
                 template.user.clone(),
             )
             .with_output_format(output_format)
-            .with_max_tokens(max_tokens),
+            .with_max_tokens(max_tokens)
+            .with_thinking(service.config.thinking),
             self.llm_breaker.clone(),
         )
         .with_queue(self.llm_queue.clone());
@@ -623,14 +624,17 @@ impl AppState {
         };
         if !base.is_empty() && !model.is_empty() {
             let template = service.templates.for_lang_cefr(lang, "detect")?;
-            return Some(LlmDetectConfig::from_parts(
-                base,
-                api_key,
-                model,
-                service.config.timeout_secs,
-                template.system.clone(),
-                template.user.clone(),
-            ));
+            return Some(
+                LlmDetectConfig::from_parts(
+                    base,
+                    api_key,
+                    model,
+                    service.config.timeout_secs,
+                    template.system.clone(),
+                    template.user.clone(),
+                )
+                .with_thinking(service.config.thinking),
+            );
         }
         let entry = self
             .model_registry
@@ -658,7 +662,8 @@ impl AppState {
                         template.user.clone(),
                     )
                     .with_output_format(e.output_format.clone())
-                    .with_max_tokens(e.max_tokens),
+                    .with_max_tokens(e.max_tokens)
+                    .with_thinking(service.config.thinking),
                 )
             }
             None => {

@@ -59,6 +59,12 @@ pub struct LlmDetectConfig {
     /// 生成 max_tokens（0 = 服务端默认；CEC4 需 ≥ 1024 容纳 think 块）
     #[serde(default)]
     pub max_tokens: u32,
+    /// 思考模式开关：false（缺省）= JSON 契约模型的请求体带
+    /// `chat_template_kwargs: {"enable_thinking": false}` 显式关闭服务端思考——
+    /// 思考模型的 think 块进 `reasoning_content`，关掉它可大幅缩短单次请求耗时；
+    /// plain 契约模型（think 块即契约）不受本开关影响，永不发该参数。
+    #[serde(default)]
+    pub thinking: bool,
     /// 瞬时故障（网关排队 / 过载 / 传输层超时）的退避表（秒）：**长度即重试次数**
     ///
     /// 缺省 `[5, 20]`：真实网关是共享 / 单槽的，503 常常只是「没排到」，一次就降级
@@ -110,9 +116,16 @@ impl LlmDetectConfig {
             user_template: user_template.into(),
             output_format: default_output_format(),
             max_tokens: 0,
+            thinking: false,
             retry_backoff_secs: default_llm_retry_backoff(),
             retry_budget_secs: default_llm_retry_budget(),
         }
+    }
+
+    /// 思考模式开关（缺省关闭，见 `thinking` 字段）
+    pub fn with_thinking(mut self, thinking: bool) -> Self {
+        self.thinking = thinking;
+        self
     }
 
     /// 覆盖输出格式（`json` / `plain`）
@@ -307,6 +320,12 @@ impl LlmGecEngine {
     /// 每请求现构建的引擎必须共用同一队列才能形成跨请求的在途上限）。
     pub fn with_queue(mut self, queue: Arc<tokio::sync::Semaphore>) -> Self {
         self.queue = queue;
+        self
+    }
+
+    /// 思考模式开关（缺省关闭，见 `LlmDetectConfig::thinking`）。
+    pub fn with_thinking(mut self, thinking: bool) -> Self {
+        self.config.thinking = thinking;
         self
     }
 
@@ -1175,6 +1194,12 @@ impl LlmGecEngine {
         if self.config.max_tokens > 0 {
             body["max_tokens"] = serde_json::json!(self.config.max_tokens);
         }
+        // 思考模式开关（缺省关闭）：JSON 契约模型显式关闭服务端思考——思考块进
+        // reasoning_content 只会拖长耗时（实测 xhigh 思考单次 78~150s+，关闭后亚秒级）。
+        // plain 契约的 think 块就是契约本身，不受开关影响。
+        if !self.config.thinking && self.config.output_format == crate::models::OUTPUT_JSON {
+            body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+        }
         // 排队感知：网关过载 / 限流（429、5xx）与传输层超时都按「没排到」处理——
         // 按退避表与网关给的 `Retry-After` 重试。4xx（鉴权、路径、参数）不重试：
         // 那是要人修配置，重试只会把一次明确的失败拖成几分钟的卡死。
@@ -2006,6 +2031,64 @@ mod tests {
         // 2026-11 起按挂钟报「已耗时」（含尝试本身），不再是纯睡眠「共等待」
         assert!(err.contains("已耗时 1s"), "要给出这轮烧了多久：{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 3, "退避表用完就收手");
+    }
+
+    /// 思考模式开关：缺省（关）时 JSON 契约请求体带 chat_template_kwargs 显式关思考；
+    /// 开关置开时不发该参数；plain 契约（think 块即契约）永不受开关影响。
+    #[tokio::test]
+    async fn thinking_toggle_controls_request_body() {
+        use std::sync::{Arc, Mutex};
+        let bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = bodies.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(&body).unwrap());
+                    let resp = serde_json::json!({
+                        "choices": [{ "message": { "content": "[]" } }]
+                    });
+                    (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let base = format!("http://{addr}/v1");
+
+        // 缺省：开关关 → 显式关思考
+        LlmGecEngine::new("zh", config(&base))
+            .detect("测试文本")
+            .await
+            .unwrap();
+        // 显式打开 → 不发该参数，听凭服务端缺省
+        LlmGecEngine::new("zh", config(&base).with_thinking(true))
+            .detect("测试文本")
+            .await
+            .unwrap();
+        // plain 契约：think 块就是契约，开关不适用
+        LlmGecEngine::new("zh", config(&base).with_output_format(crate::OUTPUT_PLAIN))
+            .detect("测试文本")
+            .await
+            .unwrap();
+
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0]["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(
+            bodies[1].get("chat_template_kwargs").is_none(),
+            "思考打开时不应发 chat_template_kwargs"
+        );
+        assert!(
+            bodies[2].get("chat_template_kwargs").is_none(),
+            "plain 契约不应被思考开关波及"
+        );
     }
 
     #[tokio::test]

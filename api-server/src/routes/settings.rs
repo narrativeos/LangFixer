@@ -121,6 +121,8 @@ pub struct LlmSettingsView {
     pub timeout_secs: u64,
     /// 提示词模板目录（等价环境变量 `LLM_PROMPTS_DIR`）
     pub prompts_dir: String,
+    /// 思考模式开关（false = 缺省，检测链路请求显式关闭服务端思考）
+    pub thinking: bool,
     /// 是否已启用（API Key 非空）
     pub enabled: bool,
 }
@@ -305,6 +307,8 @@ pub struct UpdateLlmRequest {
     pub model: Option<String>,
     pub timeout_secs: Option<u64>,
     pub prompts_dir: Option<String>,
+    /// 思考模式开关（缺省 = 保持不变）
+    pub thinking: Option<bool>,
 }
 
 fn to_response(
@@ -321,6 +325,7 @@ fn to_response(
             model: s.llm.model.clone(),
             timeout_secs: s.llm.timeout_secs,
             prompts_dir: s.llm.prompts_dir.display().to_string(),
+            thinking: s.llm.thinking,
             enabled: s.llm.enabled(),
         },
         llm_modes: LlmModes::default(),
@@ -488,6 +493,9 @@ pub async fn put(
                 return Err(ApiError::BadRequest("llm.prompts_dir 不能为空".into()));
             }
             next.llm.prompts_dir = std::path::PathBuf::from(v);
+        }
+        if let Some(v) = llm.thinking {
+            next.llm.thinking = v;
         }
     }
     if let Some(v) = req.offline_mode {

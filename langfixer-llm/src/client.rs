@@ -389,6 +389,7 @@ mod tests {
             model: "gpt-4o-mini".into(),
             timeout_secs: 5,
             prompts_dir: std::path::PathBuf::new(),
+            thinking: false,
         }
     }
 
