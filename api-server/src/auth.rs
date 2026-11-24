@@ -36,7 +36,12 @@ pub const META_ADMIN_TOKEN: &str = "admin_token";
 /// 管理员登录密码在 `gw_meta` 里的存储键：只存 SHA-256 hex 摘要，不存明文。
 pub const META_ADMIN_PASSWORD: &str = "admin_password_hash";
 
-/// 默认管理员密码：首次启动落库（摘要）；登录后应尽快改（`POST /auth/password`）。
+/// 管理员账号是否已由用户自设口令初始化：首屏 `/auth/admin/init` 成功时置 1。
+/// 首次启动**不再播种**公开默认密码，未初始化时口令登录不存在。
+pub const META_ADMIN_INITIALIZED: &str = "admin_initialized";
+
+/// 旧默认密码：不再播种（首次启动的口令由首屏「初始化」自设，见 `/auth/admin/init`）；
+/// 保留本常量只为在改密 / 设口令时**拒绝**沿用这个公开值。
 pub const DEFAULT_ADMIN_PASSWORD: &str = "LangFixer@2026";
 
 /// 内建登录用户名：无注册流程；除它之外只有管理面为用户密钥创建的**账号别名**
@@ -255,6 +260,26 @@ pub struct TokenInfo {
     pub quota_chars: i64,
 }
 
+/// 邀请码一行（不含明文码，码只存 SHA-256 摘要）。
+#[derive(Debug, Clone)]
+pub struct InviteRow {
+    pub id: String,
+    pub label: String,
+    pub quota_chars: i64,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub used_at: Option<i64>,
+    pub used_by: Option<String>,
+}
+
+/// `consume_invite` 的结果：占用成功 / 码不存在 / 已被使用 / 已过期。
+pub enum InviteOutcome {
+    Consumed(InviteRow),
+    Invalid,
+    Used,
+    Expired,
+}
+
 /// 管理面「密钥 + 用量」一行。用量取自 `gw_usage` 日账，因此
 /// `used_retained` 是**保留期内**累计（清理 timer 删掉的旧账不在其中）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -335,6 +360,16 @@ impl TokenStore {
                  pw          TEXT NOT NULL,
                  must_change INTEGER NOT NULL DEFAULT 0,
                  created_at  INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS gw_invites(
+                 id          TEXT PRIMARY KEY,
+                 code_hash   TEXT NOT NULL UNIQUE,
+                 label       TEXT NOT NULL DEFAULT '',
+                 quota_chars INTEGER NOT NULL DEFAULT 0,
+                 created_at  INTEGER NOT NULL,
+                 expires_at  INTEGER NOT NULL,
+                 used_at     INTEGER,
+                 used_by     TEXT
              );
               CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(hash);
               CREATE INDEX IF NOT EXISTS idx_call_ts ON gw_call_log(ts);",
@@ -646,6 +681,143 @@ impl TokenStore {
                 r.get(0)
             })
             .ok())
+    }
+
+    // ── 邀请码：一次性激活链接的凭据。明文 `lfi_<40hex>` 只在生成响应里出现
+    // 一次，库里只存 SHA-256 摘要；用过即废，过期作废。配额直接进新账号密钥。──
+
+    pub fn create_invite(
+        &self,
+        label: &str,
+        quota_chars: i64,
+        ttl_secs: i64,
+    ) -> Result<(InviteRow, String), String> {
+        let mut raw = [0u8; 20];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let code = format!("lfi_{}", hex(&raw));
+        let id = format!("inv_{}", hex(&raw[..8]));
+        let hash = hex(&sha256(&code));
+        let now = now_secs();
+        let expires_at = now + ttl_secs;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO gw_invites(id, code_hash, label, quota_chars, created_at, expires_at) VALUES(?,?,?,?,?,?)",
+            rusqlite::params![id, hash, label, quota_chars, now, expires_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok((
+            InviteRow {
+                id,
+                label: label.to_string(),
+                quota_chars,
+                created_at: now,
+                expires_at,
+                used_at: None,
+                used_by: None,
+            },
+            code,
+        ))
+    }
+
+    pub fn list_invites(&self) -> Result<Vec<InviteRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, label, quota_chars, created_at, expires_at, used_at, used_by \
+                 FROM gw_invites ORDER BY created_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(InviteRow {
+                    id: r.get(0)?,
+                    label: r.get(1)?,
+                    quota_chars: r.get(2)?,
+                    created_at: r.get(3)?,
+                    expires_at: r.get(4)?,
+                    used_at: r.get(5)?,
+                    used_by: r.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn delete_invite(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let hit = conn
+            .execute("DELETE FROM gw_invites WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(hit > 0)
+    }
+
+    /// 核验并当场占用一枚邀请码。占用走条件 UPDATE（used_at 仍为空才写），
+    /// 并发重放同码时只有一路能成，其余回 Used。
+    pub fn consume_invite(&self, code: &str) -> Result<InviteOutcome, String> {
+        let hash = hex(&sha256(code));
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let row = conn
+            .query_row(
+                "SELECT id, label, quota_chars, created_at, expires_at, used_at, used_by \
+                 FROM gw_invites WHERE code_hash = ?1",
+                [hash],
+                |r| {
+                    Ok(InviteRow {
+                        id: r.get(0)?,
+                        label: r.get(1)?,
+                        quota_chars: r.get(2)?,
+                        created_at: r.get(3)?,
+                        expires_at: r.get(4)?,
+                        used_at: r.get(5)?,
+                        used_by: r.get(6)?,
+                    })
+                },
+            )
+            .ok();
+        let Some(mut invite) = row else {
+            return Ok(InviteOutcome::Invalid);
+        };
+        if invite.used_at.is_some() {
+            return Ok(InviteOutcome::Used);
+        }
+        if invite.expires_at <= now_secs() {
+            return Ok(InviteOutcome::Expired);
+        }
+        let hit = conn
+            .execute(
+                "UPDATE gw_invites SET used_at = ?2 WHERE id = ?1 AND used_at IS NULL",
+                rusqlite::params![invite.id, now_secs()],
+            )
+            .map_err(|e| e.to_string())?;
+        if hit == 0 {
+            return Ok(InviteOutcome::Used);
+        }
+        invite.used_at = Some(now_secs());
+        Ok(InviteOutcome::Consumed(invite))
+    }
+
+    /// 激活成功后补记使用者；失败路径用 `undo_invite_consume` 把码放回，
+    /// 不让占用状态吃掉用户换用户名重试的机会。
+    pub fn note_invite_used_by(&self, id: &str, username: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE gw_invites SET used_by = ?2 WHERE id = ?1",
+            rusqlite::params![id, username],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn undo_invite_consume(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE gw_invites SET used_at = NULL, used_by = NULL WHERE id = ?1",
+            [id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn meta_set(&self, key: &str, value: &str) -> Result<(), String> {
@@ -987,22 +1159,13 @@ impl GatewayConfig {
                     AdminCred::from_token(None)
                 }
                 None => {
-                    // 首次启动：落带盐摘要（新格式从第一天就用上），WARN 不再念明文。
-                    let mut salt = [0u8; 16];
-                    rand::thread_rng().fill_bytes(&mut salt);
-                    store
-                        .meta_set(
-                            META_ADMIN_PASSWORD,
-                            &encode_salted(&salt, &salted_digest(&salt, DEFAULT_ADMIN_PASSWORD)),
-                        )
-                        .map_err(GatewayConfigError::Store)?;
-                    tracing::warn!(
-                        "已用默认管理员密码初始化（用户名 {ADMIN_USERNAME}，密码见 README/OPERATIONS.md）：请尽快改密，或 POST /auth/password"
+                    // 首次启动不再播种公开默认密码（文档里有这个值，等于没有口令）：
+                    // 口令由首屏「初始化」自助设置（POST /auth/admin/init，超管密钥激活），
+                    // 或设 LANGFIXER_ADMIN_PASSWORD 显式配置——两条路都是显式动作。
+                    tracing::info!(
+                        "管理员口令未初始化：首次打开界面时设置 admin 账号密码（或设 LANGFIXER_ADMIN_PASSWORD 后重启）"
                     );
-                    AdminCred::from_salted(
-                        salt.to_vec(),
-                        salted_digest(&salt, DEFAULT_ADMIN_PASSWORD),
-                    )
+                    AdminCred::from_token(None)
                 }
             },
         };
@@ -1027,6 +1190,31 @@ impl GatewayConfig {
     /// 密码登录核验：用户名必须为内建的 admin，密码比内存摘要。
     pub fn verify_password(&self, username: &str, password: &str) -> bool {
         username == ADMIN_USERNAME && self.password.matches(password)
+    }
+
+    /// 管理员账号是否已初始化：env / 库里有口令，或首屏 init 落过标记。
+    /// 旧装机库里那次默认密码播种的摘要也算已初始化——存量部署登录方式不变，
+    /// 只有新装机才走 init。
+    pub fn admin_initialized(&self) -> bool {
+        self.password.is_set()
+            || self
+                .store
+                .meta_get(META_ADMIN_INITIALIZED)
+                .unwrap_or(None)
+                .is_some()
+    }
+
+    /// 首屏初始化：自设 admin 口令并当场认领。调用方（路由）负责先过
+    /// 「超管密钥激活 + 未初始化」两道门；这里只负责与改密同序的落库
+    /// （先库后内存）、两个标记与超管会话重发。
+    pub fn init_admin_password(&self, password: &str) -> Result<String, String> {
+        self.rotate_password(password)?;
+        self.store.meta_set(META_ADMIN_INITIALIZED, "1")?;
+        self.store.meta_set(META_OWNER_CLAIMED, "1")?;
+        tracing::warn!(
+            "管理员账号已初始化（用户名 {ADMIN_USERNAME}）：此后改设置用账号密码登录；忘记口令用 env 重置"
+        );
+        self.store.create_session(ADMIN_TOKEN_ID)
     }
 
     /// 改管理员密码：**先落库再换内存摘要**（与密钥轮换同序，避免分裂）。
@@ -1382,6 +1570,79 @@ mod tests {
         );
         assert!(!map.contains_key("LANGFIXER_TEST_C"));
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// 邀请码生命周期：创建→占用→重放 Used→放回可再用；无效/过期各回各的。
+    #[test]
+    fn invite_lifecycle_in_memory() {
+        let store = TokenStore::in_memory().unwrap();
+        let (row, code) = store.create_invite("给鲍勃", 12345, 3600).unwrap();
+        assert!(code.starts_with("lfi_") && code.len() == 44, "码形 {code}");
+        assert!(row.used_at.is_none() && row.used_by.is_none());
+        match store.consume_invite(&code).unwrap() {
+            InviteOutcome::Consumed(r) => {
+                assert_eq!(r.quota_chars, 12345);
+                assert_eq!(r.id, row.id);
+                assert!(r.used_at.is_some());
+            }
+            other => panic!("应占用成功，实际变体不同"),
+        }
+        // 重放：Used
+        assert!(matches!(
+            store.consume_invite(&code).unwrap(),
+            InviteOutcome::Used
+        ));
+        // 失败路径放回后可再用
+        store.undo_invite_consume(&row.id).unwrap();
+        assert!(matches!(
+            store.consume_invite(&code).unwrap(),
+            InviteOutcome::Consumed(_)
+        ));
+        // 不存在的码 / 过期的码
+        assert!(matches!(
+            store.consume_invite("lfi_deadbeef").unwrap(),
+            InviteOutcome::Invalid
+        ));
+        let (_row, ttl) = store.create_invite("过期码", 0, -10).unwrap();
+        assert!(matches!(
+            store.consume_invite(&ttl).unwrap(),
+            InviteOutcome::Expired
+        ));
+        // 补记使用者 + 撤销
+        store.note_invite_used_by(&row.id, "bob").unwrap();
+        assert!(
+            store
+                .list_invites()
+                .unwrap()
+                .iter()
+                .any(|r| r.used_by.as_deref() == Some("bob"))
+        );
+        assert!(store.delete_invite(&row.id).unwrap());
+        assert!(!store.delete_invite(&row.id).unwrap());
+        assert!(matches!(
+            store.consume_invite(&code).unwrap(),
+            InviteOutcome::Invalid
+        ));
+    }
+
+    /// 首屏初始化：未初始化→无口令；init 后标记落库、当场发会话，重启仍认。
+    #[test]
+    fn init_admin_password_marks_and_persists() {
+        let db = temp_db("init-pw");
+        let cfg = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        assert!(!cfg.admin_initialized(), "新装机不应预置口令");
+        let sid = cfg.init_admin_password("FreshInit#123").unwrap();
+        assert!(cfg.verify_password(ADMIN_USERNAME, "FreshInit#123"));
+        assert!(!cfg.verify_password(ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD));
+        assert!(
+            cfg.store.resolve_session(&sid).unwrap().is_some(),
+            "init 当场发的会话可用"
+        );
+        assert!(cfg.admin_initialized());
+        let cfg2 = GatewayConfig::build(&dotenv(&[]), &db).unwrap();
+        assert!(cfg2.admin_initialized(), "标记随库持久");
+        assert!(cfg2.verify_password(ADMIN_USERNAME, "FreshInit#123"));
+        let _ = std::fs::remove_file(&db);
     }
 
     /// 改密落库必须是带盐新格式，且连带清掉超管在途会话（旧 cookie 不能幸存）。

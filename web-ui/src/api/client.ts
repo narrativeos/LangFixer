@@ -300,6 +300,9 @@ export interface Whoami {
   username?: string | null
   /** 口令是管理面临时口令，登录后应立即修改 */
   must_change?: boolean
+  /** 管理员账号是否已初始化：false = 从未设置过管理员密码（首启走初始化表单）；
+   *  老服务端不带此字段 = undefined，维持旧登录 UI */
+  admin_initialized?: boolean
 }
 
 export const api = {
@@ -331,6 +334,29 @@ export const api = {
   ): Promise<{ token_id: string | null; label: string; admin: boolean; must_change?: boolean }> {
     if (inTauri) return Promise.reject(new Error('桌面端无需登录'))
     return http.post('/auth/session', { username, password }).then((r) => r.data)
+  },
+
+  /** POST /auth/admin/init — 首次启动初始化管理员账号：用超管激活密钥认领本机并设置 admin 密码，
+   *  成功即拿到 admin 会话（Set-Cookie）。401 激活密钥无效 / 400 口令不合要求 /
+   *  409 {error:"already_initialized"} / 429 频率限制 */
+  initAdmin(b: {
+    token: string
+    password: string
+    username?: string
+  }): Promise<{ ok: boolean; username: string }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无此体系'))
+    return http.post('/auth/admin/init', b).then((r) => r.data)
+  },
+
+  /** POST /auth/invite/activate — 公开端点：一次性邀请码激活新账号并建立会话；
+   *  409 error: invite_invalid | invite_expired | invite_used | username_taken */
+  activateInvite(
+    code: string,
+    username: string,
+    password: string,
+  ): Promise<{ ok: boolean; username: string; token_id: string | null }> {
+    if (inTauri) return Promise.reject(new Error('桌面端无此体系'))
+    return http.post('/auth/invite/activate', { code, username, password }).then((r) => r.data)
   },
 
   /** POST /auth/credentials — 当前密钥身份自服务：首次设口令（给 username）或改口令（给 oldPassword） */
@@ -482,6 +508,60 @@ export const api = {
     return http
       .post(`/admin/tokens/${encodeURIComponent(id)}/revoke`)
       .then(() => undefined)
+  },
+
+  /** POST /admin/invites — 生成一次性邀请码（仅超管）；code 明文只在这一次响应里出现。
+   *  ttl_hours 缺省 72；quota_chars 缺省不限 */
+  adminCreateInvite(
+    label?: string,
+    quotaChars?: number,
+    ttlHours?: number,
+  ): Promise<{ id: string; code: string; label: string; quota_chars: number; expires_at: number }> {
+    return http
+      .post<{
+        id: string
+        code: string
+        label: string
+        quota_chars: number
+        expires_at: number
+      }>('/admin/invites', {
+        label,
+        quota_chars: quotaChars,
+        ttl_hours: ttlHours,
+      })
+      .then((r) => r.data)
+  },
+
+  /** GET /admin/invites — 邀请码清单（仅超管；code 不回）。expires_at/created_at 为 unix 秒 */
+  adminListInvites(): Promise<
+    {
+      id: string
+      label: string
+      quota_chars: number
+      created_at: number
+      expires_at: number
+      used_at: number | null
+      used_by: string | null
+    }[]
+  > {
+    return http
+      .get<{
+        invites: {
+          id: string
+          label: string
+          quota_chars: number
+          created_at: number
+          expires_at: number
+          used_at: number | null
+          used_by: string | null
+        }[]
+      }>('/admin/invites')
+      .then((r) => r.data.invites)
+  },
+
+  /** DELETE /admin/invites/:id — 撤销未用邀请码 */
+  adminDeleteInvite(id: string): Promise<void> {
+    return http.delete(`/admin/invites/${encodeURIComponent(id)}`).then(() => undefined)
   },
 
 

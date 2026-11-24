@@ -63,4 +63,20 @@ describe('mergeIdentity', () => {
     expect(next.gateway).toBe(false)
     expect(next.authenticated).toBe(false)
   })
+
+  it('admin_initialized 透传：带 true / 带 false / 不带则 undefined（老服务端维持旧 UI）', () => {
+    expect(mergeIdentity(anonymous, { ...anonymous, admin_initialized: true }).admin_initialized).toBe(
+      true,
+    )
+    expect(
+      mergeIdentity(anonymous, { ...anonymous, admin_initialized: false }).admin_initialized,
+    ).toBe(false)
+    expect(mergeIdentity(anonymous, { ...anonymous }).admin_initialized).toBeUndefined()
+    // 上一份快照带着 false，本次 whoami 不带：不得残留旧值（同指纹口径）
+    const prev: Whoami = { ...anonymous, admin_initialized: false }
+    expect(mergeIdentity(prev, { ...anonymous, admin_initialized: true }).admin_initialized).toBe(
+      true,
+    )
+    expect(mergeIdentity(prev, { ...anonymous }).admin_initialized).toBeUndefined()
+  })
 })

@@ -68,6 +68,38 @@ const userByToken = computed(() => {
   return m
 })
 
+/**
+ * 邀请码：一枚一次有效的注册邀请。对方用 `?invite=…` 链接打开，设用户名与密码
+ * 即完成注册并登录；code 明文只在生成那一次响应里出现（同密钥明文的口径）。
+ */
+interface InviteRow {
+  id: string
+  label: string
+  quota_chars: number
+  created_at: number
+  expires_at: number
+  used_at: number | null
+  used_by: string | null
+}
+const invites = ref<InviteRow[]>([])
+const inviteLabel = ref('')
+const inviteQuota = ref('')
+const inviteHours = ref('72')
+const inviting = ref(false)
+/** 刚生成的邀请码：{code} 只存在于这里，关掉就取不回 */
+const freshInvite = ref<{ label: string; code: string } | null>(null)
+const inviteConfirmId = ref<string | null>(null)
+
+const inviteColumns: LColumn<InviteRow>[] = [
+  { key: 'label', label: '用途' },
+  { key: 'state', label: '状态', width: '84px' },
+  { key: 'quota', label: '配额' },
+  { key: 'created', label: '创建' },
+  { key: 'expires', label: '到期' },
+  { key: 'used_by', label: '使用者' },
+  { key: 'ops', label: '操作', width: '150px', align: 'right' },
+]
+
 /** 行内两步吊销确认：处于确认态的行 id（不落弹窗，按 ui 契约用行内确认） */
 const confirmId = ref<string | null>(null)
 
@@ -127,7 +159,72 @@ async function load() {
   } catch {
     users.value = []
   }
+  await loadInvites()
 }
+
+async function loadInvites() {
+  // 邀请码面同样对老服务端宽容（没有这个端点就当没生成过）
+  try {
+    invites.value = await api.adminListInvites()
+  } catch {
+    invites.value = []
+  }
+}
+
+async function createInvite() {
+  const l = inviteLabel.value.trim()
+  const q = inviteQuota.value.trim() === '' ? undefined : Math.round(Number(inviteQuota.value))
+  const h = inviteHours.value.trim() === '' ? undefined : Math.round(Number(inviteHours.value))
+  inviting.value = true
+  try {
+    const r = await api.adminCreateInvite(
+      l || undefined,
+      q !== undefined && Number.isFinite(q) && q > 0 ? q : undefined,
+      h !== undefined && Number.isFinite(h) && h > 0 ? h : undefined,
+    )
+    freshInvite.value = { label: l || '未命名邀请', code: r.code }
+    inviteLabel.value = ''
+    inviteQuota.value = ''
+    inviteHours.value = '72'
+    await loadInvites()
+  } catch (e) {
+    toast(`生成邀请码失败：${errMsg(e)}`, 'danger')
+  } finally {
+    inviting.value = false
+  }
+}
+
+async function doInviteDelete(row: InviteRow) {
+  inviteConfirmId.value = null
+  try {
+    await api.adminDeleteInvite(row.id)
+    toast(`已撤销邀请「${row.label}」：此码不能再激活`, 'ok')
+    await loadInvites()
+  } catch (e) {
+    toast(`撤销失败：${errMsg(e)}`, 'danger')
+  }
+}
+
+/** 状态chip：用过=已用；过期未用=已过期；否则待用 */
+function inviteState(inv: InviteRow): { label: string; tone: 'ok' | 'warn' | 'neutral' } {
+  if (inv.used_at) return { label: '已用', tone: 'neutral' }
+  if (inv.expires_at * 1000 <= Date.now()) return { label: '已过期', tone: 'warn' }
+  return { label: '待用', tone: 'ok' }
+}
+function invitePending(inv: InviteRow): boolean {
+  return inviteState(inv).label === '待用'
+}
+function inviteQuotaText(n: number): string {
+  return n > 0 ? `${n} 字` : '不限'
+}
+/** unix 秒 → 日期文本（与密钥表的日账读法同粒度） */
+function tsText(t: number | null): string {
+  return t ? new Date(t * 1000).toISOString().slice(0, 10) : '—'
+}
+function inviteUrl(code: string): string {
+  return `${window.location.origin}/?invite=${code}`
+}
+
 onMounted(load)
 
 async function issue() {
@@ -441,6 +538,85 @@ const keyOrigin = computed(() => {
         </LButton>
       </template>
     </LTable>
+
+    <!-- 邀请码：一次性注册邀请（激活入口 = 链接 ?invite=…） -->
+    <section class="keys-invites">
+      <h3>邀请码</h3>
+      <p class="keys-tip">
+        对方打开邀请链接（<code>…/?invite=…</code>）设置用户名与密码即完成注册并登录；
+        一枚只用一次，到期自动作废，未用的可随时撤销。配额为总量字数（可选），有效期默认 72 小时。<br />
+        邀请码明文<strong>只在生成那一次响应里出现</strong>，忘了只能作废重发。
+      </p>
+      <div class="keys-issue">
+        <LInput v-model="inviteLabel" placeholder="用途（可不填），例如：评审-李老师" class="keys-label" />
+        <input
+          v-model="inviteQuota"
+          class="l-input keys-quota"
+          type="number"
+          min="0"
+          placeholder="配额字数"
+          aria-label="配额字数（可选）"
+        />
+        <input
+          v-model="inviteHours"
+          class="l-input keys-quota"
+          type="number"
+          min="1"
+          aria-label="有效小时数"
+        />
+        <span class="keys-unit">小时后失效</span>
+        <LButton variant="primary" :loading="inviting" @click="createInvite">生成邀请码</LButton>
+      </div>
+
+      <div v-if="freshInvite" class="keys-fresh">
+        <div class="keys-fresh-head">
+          <span>邀请码 · {{ freshInvite.label }}</span>
+          <code>{{ freshInvite.code }}</code>
+          <LButton size="sm" @click="copy(inviteUrl(freshInvite.code), '邀请链接')">复制链接</LButton>
+          <LButton size="sm" variant="ghost" @click="freshInvite = null">知道了</LButton>
+        </div>
+        <div class="keys-fresh-warn">邀请码只显示这一次，请复制发给对方；激活一次后即作废。</div>
+      </div>
+
+      <LEmpty
+        v-if="!loading && invites.length === 0"
+        text="还没有生成过邀请码"
+        hint="在上方填用途（可不填）点「生成邀请码」，把带 ?invite= 的链接发给对方。"
+      />
+      <LTable
+        v-else
+        :columns="inviteColumns"
+        :rows="invites"
+        row-key="id"
+        compact
+        class="keys-table"
+      >
+        <template #col-state="{ row }">
+          <LTag :tone="inviteState(row).tone">{{ inviteState(row).label }}</LTag>
+        </template>
+        <template #col-quota="{ row }">{{ inviteQuotaText(row.quota_chars) }}</template>
+        <template #col-created="{ row }">{{ tsText(row.created_at) }}</template>
+        <template #col-expires="{ row }">{{ tsText(row.expires_at) }}</template>
+        <template #col-used_by="{ row }">{{ row.used_by ?? '—' }}</template>
+        <template #col-ops="{ row }">
+          <!-- 撤销同样走行内两步确认 -->
+          <template v-if="inviteConfirmId === row.id">
+            <span class="keys-confirm">此码立即失效</span>
+            <LButton variant="danger" size="sm" @click="doInviteDelete(row)">确认撤销</LButton>
+            <LButton size="sm" @click="inviteConfirmId = null">取消</LButton>
+          </template>
+          <LButton
+            v-else-if="invitePending(row)"
+            variant="ghost"
+            size="sm"
+            @click="inviteConfirmId = row.id"
+          >
+            撤销
+          </LButton>
+          <span v-else class="keys-usage-sub">—</span>
+        </template>
+      </LTable>
+    </section>
   </LSection>
 </template>
 
@@ -557,6 +733,19 @@ const keyOrigin = computed(() => {
 .keys-usage-sub {
   font-size: var(--fs-sm);
   color: var(--muted);
+}
+.keys-invites {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.keys-invites h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--text);
 }
 .keys-confirm {
   font-size: var(--fs-xs);

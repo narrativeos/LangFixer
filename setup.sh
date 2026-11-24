@@ -80,7 +80,8 @@ GEC_DB_FILE=$DEV_DIR/core.db
 EOF
     chmod 600 "$DEV_ENV"
     # 首次生成本机密钥必须让人拿到这一次，否则没人登得进去
-    printf '  已生成本机超管密钥（只打印这一次）：%s\n' "$TOKEN"
+    printf '  已生成本机超管密钥（控制台只打印这一次）：%s\n' "$TOKEN"
+    say "已写入 .dev/gateway.env——忘了直接 cat 这个文件就能再查到"
   else
     say "复用 .dev/gateway.env（重启不换钥匙）"
   fi
@@ -124,7 +125,8 @@ server)
     ssh_root "umask 077; sed 's/^LANGFIXER_ADMIN_TOKEN=.*/LANGFIXER_ADMIN_TOKEN=$TOKEN/' >$LF_DIR/langfixer.env" \
       <"$REPO_ROOT/deploy/gateway/langfixer.env.example"
     ssh_root "chmod 600 $LF_DIR/langfixer.env && grep -c . $LF_DIR/langfixer.env >/dev/null"
-    printf '  超管密钥（只打印这一次，立刻存进密码管理器）：%s\n' "$TOKEN"
+    printf '  超管密钥（控制台只打印这一次，立刻存进密码管理器）：%s\n' "$TOKEN"
+    say "已写入 $LF_DIR/langfixer.env（600）——忘了在服务器上 grep LANGFIXER_ADMIN_TOKEN 就能再查到"
     say "别忘了填 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL（env 或界面上的设置，设置优先于 env）"
   else
     say "$LF_DIR/langfixer.env 已存在，未改动"
@@ -180,6 +182,7 @@ server)
   deploy_web
   step "健康与身份"
   server_report
+  say "首次打开 $LF_URL 会要求初始化 admin 账号（激活密钥在 $LF_DIR/langfixer.env）"
   ssh_root "printf '  保留期 timer: %s\n' \"\$(systemctl is-active langfixer-retention.timer)\""
   ssh_root "printf '%s %s\n' '$HEAD_SHA' \"\$(date -Is)\" >$LF_DIR/.deployed"
 

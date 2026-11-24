@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { LButton, LCheckbox, LInput, LSection } from '../ui'
 import { toast } from '../ui/toast'
 import AdminTokensPanel from './AdminTokensPanel.vue'
+import AdminInitForm from './AdminInitForm.vue'
 import { errMsg } from '../lib/err'
 import {
   accessKey,
@@ -40,6 +41,12 @@ const headerSub = computed(() => {
     : '本机尚未认领'
   return `${who} · MCP 端点 ${mcpEndpoint()}`
 })
+
+/** 管理员初始化：409 already_initialized 时回退到认领/登录 UI 并提示一次 */
+const initHint = ref(false)
+function initDone() {
+  toast('管理员账号已初始化：本窗口已用 admin 登录，此后改设置用 admin + 密码登录', 'ok')
+}
 
 /** 认领 / 登录：换到会话后重新取密钥（超管密钥可直接粘进 MCP 用） */
 async function claim() {
@@ -186,22 +193,38 @@ async function saveMyAccount() {
         </LButton>
       </template>
 
-      <!-- 单机形态装完即开：界面不锁，这里是唯一的「认领本机」入口（网关形态走门禁页） -->
+      <!-- 单机形态装完即开：界面不锁，这里是唯一的「认领本机」入口（网关形态走门禁页）；
+           管理员账号从未初始化时，换成初始化表单取代密钥认领 -->
       <template v-if="!identity.authenticated">
-        <div class="banner">
-          这台机器还没有人认领：检测功能照常可用，设置也照常可改。想让「设置」只由本机管理员修改，
-          粘贴<strong>首次启动日志</strong>里那行 <code>lf_…</code> 超管密钥验证一次即可认领；
-          认领之后改设置就要带着这把密钥登录，忘记只能改环境变量重置。
-        </div>
-        <div class="access-row">
-          <LInput
-            v-model="keyInput"
-            placeholder="超管密钥 lf_…（首次启动日志）"
-            :disabled="busy"
-            @keyup.enter="claim"
-          />
-          <LButton variant="primary" :loading="busy" @click="claim">认领并锁定设置</LButton>
-        </div>
+        <template v-if="identity.admin_initialized === false">
+          <div class="banner">
+            这台机器还没有管理员账号：先设置 <code>admin</code> 账号密码，用 env 里那把
+            <code>lf_…</code> 超管密钥激活一次；此后改设置用 admin + 密码登录。
+          </div>
+          <AdminInitForm @done="initDone" @already="initHint = true" />
+          <div v-if="initHint" class="banner banner-warn">
+            管理员账号已初始化，请用超管密钥或 admin 密码登录。
+          </div>
+        </template>
+        <template v-else>
+          <div class="banner">
+            这台机器还没有人认领：检测功能照常可用，设置也照常可改。想让「设置」只由本机管理员修改，
+            粘贴<strong>首次启动日志</strong>里那行 <code>lf_…</code> 超管密钥验证一次即可认领；
+            认领之后改设置就要带着这把密钥登录，忘记只能改环境变量重置。
+          </div>
+          <div class="access-row">
+            <LInput
+              v-model="keyInput"
+              placeholder="超管密钥 lf_…（首次启动日志）"
+              :disabled="busy"
+              @keyup.enter="claim"
+            />
+            <LButton variant="primary" :loading="busy" @click="claim">认领并锁定设置</LButton>
+          </div>
+          <div v-if="initHint" class="banner banner-warn">
+            管理员账号已初始化，请用 admin + 密码登录或重新粘贴密钥认领。
+          </div>
+        </template>
       </template>
 
       <div v-else-if="!key" class="banner">
@@ -316,7 +339,8 @@ async function saveMyAccount() {
       </section>
     </LSection>
 
-    <AdminTokensPanel v-if="identity.gateway && identity.admin" />
+    <!-- 用户管理不限网关形态：单机形态用 admin + 密码登录后同样要能管账号 -->
+    <AdminTokensPanel v-if="identity.authenticated && identity.admin" />
   </div>
 </template>
 

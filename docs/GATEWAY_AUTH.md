@@ -9,7 +9,7 @@
 
 | 形态 | 触发 | 行为 |
 |---|---|---|
-| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 默认开启登录门：内建 `admin` 账号密码登录（默认密码 `LangFixer@2026`，首次启动落库并 WARN），未登录的业务请求一律 401 + `login_required`；`LANGFIXER_LOGIN=0` 回到「零变化」直通（与接入前完全一致，仅「设置写入」在 owner 认领后要求登录态，见下节）；已验证超管可在「接入」页（或 `POST /auth/password`）改密，旧密码即时作废 |
+| 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 默认开启登录门：新装机**不预置口令**，首次打开界面用超管密钥初始化 admin 账号（`POST /auth/admin/init`），或设 `LANGFIXER_ADMIN_PASSWORD` 显式配置；此后内建 `admin` 账号密码登录，未登录的业务请求一律 401 + `login_required`；`LANGFIXER_LOGIN=0` 回到「零变化」直通（与接入前完全一致，仅「设置写入」在 owner 认领后要求登录态，见下节）；已验证超管可在「接入」页（或 `POST /auth/password`）改密，旧密码即时作废 |
 | 网关 | `LANGFIXER_GATEWAY=1` | 全部业务端点要求评审令牌；`/admin/*` 只认超管令牌 |
 
 配置见 `.env.example`。进程环境优先于 `.env`；`.env` 不入库（已在 `.gitignore`）。

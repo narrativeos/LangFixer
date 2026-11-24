@@ -1,6 +1,6 @@
 # 评测通道部署（网关形态）
 
-公网评测入口的落地件：systemd 单元 + 数据保留清理 + Caddy 站点片段。
+公网访问入口的落地件：systemd 单元 + 数据保留清理 + Caddy 站点片段。
 设计红线与身份模型见 [`docs/GATEWAY_AUTH.md`](../../docs/GATEWAY_AUTH.md)。
 
 ## 日常就用两条命令
@@ -77,15 +77,18 @@ LF_SERVICE / LF_PORT` 传入。
 5. **入口**：把 `Caddyfile.snippet` 追加进 `/dnmp/services/caddy/config/caddyfile`，
    `docker exec caddy caddy reload --config /config/caddyfile`。
 
-6. **签发评审令牌**（超管面，只在服务器本机经 4801 端口执行）：
+6. **分发访问密钥 / 邀请码**（超管面；界面「用户管理」最直接，命令行则只在服务器本机经 4801 端口执行）：
 
    ```sh
    curl -s -X POST -H "Authorization: Bearer $LANGFIXER_ADMIN_TOKEN" \
-     -H 'content-type: application/json' -d '{"label":"评审-甲","quota_chars":200000}' \
+     -H 'content-type: application/json' -d '{"label":"成员-甲","quota_chars":200000}' \
      http://172.18.0.1:4801/admin/tokens
    ```
 
-   明文只在响应里出现一次，填入参赛材料「测试账号」栏；吊销即连踢会话。
+   明文只在响应里出现一次，原样交给使用者（门禁页换会话，或 `?token=` 直链）；吊销即连踢会话。
+   更常见的玩法是邀请码：`POST /admin/invites` 生成一次性链接，用户自定用户名口令，用过即废。
+   新装机首次打开界面会要求**初始化 admin 账号**（激活密钥＝安装时那把超管密钥，
+   落在 `/srv/langfixer/langfixer.env`）；初始化之前不存在任何口令。
 
 ## 中文 NLP sidecar（narrative-operator-nlp）
 
@@ -112,16 +115,16 @@ docker run -d --name narrative-operator-nlp --network dnmp_default \
 ## 冒烟清单（公网）
 
 - `GET https://<host>/` → 200，web-ui 可打开；
-- 无凭证 `POST /gec/detect` → 401；`POST /mcp initialize` 带评审 Bearer → 200；
-- 评审 cookie 免注册：`POST /auth/session`（body `{"token":"lf_..."}`）→ Set-Cookie → 后续免头可用；
+- 无凭证 `POST /gec/detect` → 401；`POST /mcp initialize` 带用户 Bearer → 200；
+- 用户 cookie 免注册：`POST /auth/session`（body `{"token":"lf_..."}`）→ Set-Cookie → 后续免头可用；
   logout 带 cookie 调用即失效（whoami 401）；
 - A 令牌的会话看不到 B 令牌历史（跨账号 403/404）；
-- 超管 `GET /admin/stats` 正常，评审令牌访问 `/admin/*` → 403；
+- 超管 `GET /admin/stats` 正常，普通用户密钥访问 `/admin/*` → 403；
 - 配额：同令牌 web+MCP 合计越线 → 429。
 
 ## 数据红线
 
-- 网关形态下清空/批删/全局视图类端点一律 403；评审侧只有「写档返回提案」；
+- 网关形态下清空/批删/全局视图类端点一律 403；普通用户侧只有「写档返回提案」；
 - 检测文本保留 `LANGFIXER_RETENTION_DAYS`（默认 7）天，由 retention timer 每日清理；
 - 服务器联调必须显式 `GEC_DB_FILE` 指向隔离库——仓库根默认 `langfixer.db`
   是真实产品库，`DELETE /gec/history` 是真实破坏性操作（见 GATEWAY_AUTH.md 事故记录）。

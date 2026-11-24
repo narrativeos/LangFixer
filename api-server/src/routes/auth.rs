@@ -12,8 +12,9 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::auth::{
-    ADMIN_TOKEN_ID, AuthContext, DEFAULT_ADMIN_PASSWORD, GatewayConfig, META_OWNER_CLAIMED,
-    RequestScope, SESSION_TTL_SECS, hash_password, normalize_username, verify_password_hash,
+    ADMIN_TOKEN_ID, ADMIN_USERNAME, AuthContext, DEFAULT_ADMIN_PASSWORD, GatewayConfig,
+    InviteOutcome, META_OWNER_CLAIMED, RequestScope, SESSION_TTL_SECS, hash_password,
+    normalize_username, verify_password_hash,
 };
 use crate::routes::ApiError;
 
@@ -24,6 +25,8 @@ pub fn router(cfg: Arc<GatewayConfig>) -> Router {
         .route("/auth/whoami", axum::routing::get(whoami))
         .route("/auth/password", post(change_password))
         .route("/auth/credentials", post(set_credentials))
+        .route("/auth/admin/init", post(init_admin))
+        .route("/auth/invite/activate", post(invite_activate))
         .with_state(cfg)
 }
 
@@ -152,6 +155,184 @@ async fn create_session(
         .into_response())
 }
 
+#[derive(Deserialize)]
+struct InitReq {
+    /// 安装时打印的激活密钥（超管密钥）；只用于验证安装者身份，不落库
+    token: String,
+    password: String,
+    #[serde(default)]
+    username: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ActivateReq {
+    code: String,
+    username: String,
+    password: String,
+}
+
+/// 带机器可读错误码的 409：前端按 `error` 字段分支（already_initialized /
+/// invite_used / username_taken …），`message` 仅供展示。
+fn conflict(code: &str, msg: &str) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": code, "message": msg })),
+    )
+        .into_response()
+}
+
+/// 首屏初始化：把内置 admin 从「无口令」提升到自建口令。
+/// 安装者凭安装时打印的超管密钥证明身份；已初始化则 409，
+/// 旧库（历史上种过默认口令的）在 `admin_initialized()` 里也算已初始化。
+async fn init_admin(
+    State(cfg): State<Arc<GatewayConfig>>,
+    peer: Option<ConnectInfo<std::net::SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<InitReq>,
+) -> Result<axum::response::Response, ApiError> {
+    let ip = client_ip(&headers, peer.as_ref().map(|c| &c.0));
+    if login_locked(&cfg, &ip) {
+        return Err(ApiError::TooManyRequests(
+            "初始化尝试过于频繁，请 60 秒后重试".into(),
+        ));
+    }
+    if cfg.admin_initialized() {
+        return Ok(conflict(
+            "already_initialized",
+            "管理员账号已初始化，请直接登录；忘记口令用服务器上的 env 密钥重置",
+        ));
+    }
+    if let Some(u) = body.username.as_deref().map(str::trim) {
+        if !u.is_empty() && u != ADMIN_USERNAME {
+            return Err(ApiError::BadRequest(
+                "首个管理员账号的用户名须为 admin".into(),
+            ));
+        }
+    }
+    if body.password.chars().count() < 8 {
+        return Err(ApiError::BadRequest("密码至少 8 位".into()));
+    }
+    if body.password == DEFAULT_ADMIN_PASSWORD {
+        return Err(ApiError::BadRequest(
+            "请设置自己的密码，不要用默认口令".into(),
+        ));
+    }
+    if !cfg.admin.matches(&body.token) {
+        note_login_failure(&cfg, &ip);
+        return Err(ApiError::Unauthorized("激活密钥无效".into()));
+    }
+    let sid = cfg
+        .init_admin_password(&body.password)
+        .map_err(ApiError::Internal)?;
+    note_login_success(&cfg, &ip);
+    let secure = if cfg.cookie_secure { "; Secure" } else { "" };
+    Ok((
+        StatusCode::OK,
+        [(
+            SET_COOKIE,
+            format!(
+                "lf_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}{secure}"
+            ),
+        )],
+        Json(serde_json::json!({ "ok": true, "username": ADMIN_USERNAME })),
+    )
+        .into_response())
+}
+
+/// 邀请码激活（匿名可达）：一次性邀请码 + 自定用户名口令 → 新账号会话。
+/// 失败路径把已占用的码放回（除码本身无效/过期/已用），不让用户
+/// 因用户名冲突丢掉重试机会。
+async fn invite_activate(
+    State(cfg): State<Arc<GatewayConfig>>,
+    peer: Option<ConnectInfo<std::net::SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<ActivateReq>,
+) -> Result<axum::response::Response, ApiError> {
+    let ip = client_ip(&headers, peer.as_ref().map(|c| &c.0));
+    if login_locked(&cfg, &ip) {
+        return Err(ApiError::TooManyRequests(
+            "激活尝试过于频繁，请 60 秒后重试".into(),
+        ));
+    }
+    let uname = normalize_username(&body.username).ok_or_else(|| {
+        ApiError::BadRequest("用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into())
+    })?;
+    if body.password.chars().count() < 8 {
+        return Err(ApiError::BadRequest("密码至少 8 位".into()));
+    }
+    if body.password == DEFAULT_ADMIN_PASSWORD {
+        return Err(ApiError::BadRequest(
+            "请设置自己的密码，不要用默认口令".into(),
+        ));
+    }
+    if cfg
+        .store
+        .get_user(&uname)
+        .map_err(ApiError::Internal)?
+        .is_some()
+    {
+        return Ok(conflict("username_taken", "该用户名已被占用，换一个再试"));
+    }
+    let invite = match cfg
+        .store
+        .consume_invite(&body.code)
+        .map_err(ApiError::Internal)?
+    {
+        InviteOutcome::Consumed(inv) => inv,
+        InviteOutcome::Invalid => {
+            // 乱猜码同样计入限流，挡住脚本扫码
+            note_login_failure(&cfg, &ip);
+            return Ok(conflict("invite_invalid", "邀请码无效或已被撤销"));
+        }
+        InviteOutcome::Expired => {
+            return Ok(conflict(
+                "invite_expired",
+                "邀请码已过期，请向管理员索取新的",
+            ));
+        }
+        InviteOutcome::Used => {
+            return Ok(conflict(
+                "invite_used",
+                "邀请码已被使用，一枚码只能注册一个账号",
+            ));
+        }
+    };
+    let issued = cfg
+        .store
+        .issue(&format!("邀请注册 · {uname}"), invite.quota_chars)
+        .map_err(ApiError::Internal)?;
+    if let Err(e) = cfg
+        .store
+        .create_user(&issued.id, &uname, &hash_password(&body.password), false)
+    {
+        // 并发用户名冲突（预检后被抢先）：销毁刚发的密钥、把码放回，可换名重试
+        let _ = cfg.store.remove(&issued.id);
+        let _ = cfg.store.undo_invite_consume(&invite.id);
+        return Ok(conflict(
+            "username_taken",
+            &format!("{e}；邀请码已放回，可换用户名重试"),
+        ));
+    }
+    let _ = cfg.store.note_invite_used_by(&invite.id, &uname);
+    let sid = cfg
+        .store
+        .create_session(&issued.id)
+        .map_err(ApiError::Internal)?;
+    note_login_success(&cfg, &ip);
+    let secure = if cfg.cookie_secure { "; Secure" } else { "" };
+    Ok((
+        StatusCode::OK,
+        [(
+            SET_COOKIE,
+            format!(
+                "lf_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}{secure}"
+            ),
+        )],
+        Json(serde_json::json!({ "ok": true, "username": uname, "token_id": issued.id })),
+    )
+        .into_response())
+}
+
 /// 登录限流参数：连续 5 次失败封 60s（内存态，重启即清可接受）。
 const LOGIN_FAIL_LIMIT: u32 = 5;
 const LOGIN_LOCKOUT_SECS: u64 = 60;
@@ -255,6 +436,9 @@ async fn whoami(
         "authenticated": ctx.authed,
         "locked": locked,
         "password_login": cfg.password.is_set(),
+        // 门禁页据此分支「初始化 admin 账号」还是「登录」；匿名请求也要回，
+        // 首屏没有登录态也要能探测到这一步是否需要做。
+        "admin_initialized": cfg.admin_initialized(),
     });
     // 评审身份带出用户名账号状态（是否已设口令 / 是否临时口令待改），
     // 门禁页与「我的账号」面板据此提示；超管不查（用 /auth/password 体系）。

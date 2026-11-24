@@ -66,7 +66,7 @@ require_repo() { # $1 = local|server（两种形态对「未提交改动」的�
 probe_json() { curl -sf -m 10 "$1/auth/whoami" 2>/dev/null || return 1; }
 local_healthy() { probe_json "$LF_LOCAL_URL" >/dev/null 2>&1; }
 
-# 网关隔离必须**可见**：无凭证 detect 应回 401。回 200 意味着评审隔离等于没开——比挂了更糟。
+# 网关隔离必须**可见**：无凭证 detect 应回 401。回 200 意味着访问隔离等于没开——比挂了更糟。
 # $1 给了走本机 URL，留空走服务器侧 curl。
 probe_gate() {
   local code
@@ -78,7 +78,7 @@ probe_gate() {
   fi
   case "$code" in
     401) say "鉴权门在位：无凭证 detect → 401" ;;
-    200) die "无凭证 detect 竟回 200：网关形态疑似未生效（LANGFIXER_GATEWAY=1？），评审隔离等于没开" ;;
+    200) die "无凭证 detect 竟回 200：网关形态疑似未生效（LANGFIXER_GATEWAY=1？），访问隔离等于没开" ;;
     *) warn "鉴权探针回 ${code}（预期 401；单机形态本来就是开放的，可忽略本条）" ;;
   esac
 }
@@ -100,7 +100,7 @@ printf "%s" "$W" | python3 -c "import json,sys;d=json.load(sys.stdin);print(\"  
 G=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "$U/admin/users")
 case "$G" in
   401) printf "  鉴权门在位：无凭证 admin/users → 401\n" ;;
-  200) printf "  ✗ 无凭证 admin/users 竟回 200：网关形态未生效，评审隔离等于没开\n" >&2; exit 1 ;;
+  200) printf "  ✗ 无凭证 admin/users 竟回 200：网关形态未生效，访问隔离等于没开\n" >&2; exit 1 ;;
   *) printf "  ! 鉴权探针回 %s（预期 401）\n" "$G" ;;
 esac
 N=$(curl -s -o /dev/null -m 40 -w "%{http_code}" -X POST -H "content-type: application/json" -H "Authorization: Bearer $A" -d "{\"lang\":\"zh\",\"text\":\"他做事很任信。\"}" "$U/gec/detect")
@@ -332,6 +332,7 @@ local_report() {
   printf '%s' "$who" |
     python3 -c 'import json,sys;d=json.load(sys.stdin);print("  whoami: gateway=%s locked=%s" % (d["gateway"], d["locked"]))'
   say "登录：$LF_LOCAL_URL/?token=<.dev/gateway.env 里的 LANGFIXER_ADMIN_TOKEN>"
+  say "首次打开界面会要求初始化 admin 账号（激活密钥＝上面那把 LANGFIXER_ADMIN_TOKEN）"
 }
 
 # 用法提示里两份共用文本

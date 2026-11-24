@@ -54,6 +54,10 @@ function goEvolution() {
   store.requestNav('evolution')
   finish()
 }
+function goUserAdmin() {
+  store.requestNav('access')
+  finish()
+}
 </script>
 
 <template>
@@ -102,6 +106,7 @@ function goEvolution() {
     </div>
     <template #footer>
       <LButton variant="primary" @click="finish">开始使用</LButton>
+      <LButton variant="ghost" @click="goUserAdmin">用户管理</LButton>
     </template>
   </LDialog>
 </template>

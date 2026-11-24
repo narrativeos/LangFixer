@@ -28,6 +28,8 @@ pub fn router(cfg: Arc<GatewayConfig>) -> Router {
         .route("/admin/users/:username", delete(delete_user))
         .route("/admin/stats", get(stats))
         .route("/admin/admin-token/rotate", post(rotate_admin_token))
+        .route("/admin/invites", get(list_invites).post(create_invite))
+        .route("/admin/invites/:id", delete(revoke_invite))
         .with_state(cfg)
 }
 
@@ -340,4 +342,89 @@ async fn rotate_admin_token(
         "source": cfg.admin_source,
         "note": "旧超级管理员密钥及其会话已即刻失效；评审密钥与其会话不受影响。新值不再回显，请立即妥善保存。",
     })))
+}
+
+// ── 邀请码：一次性激活链接的凭据。激活页（/auth/invite/activate）匿名可达，
+// 新用户自定用户名口令；配额随邀请码进新账号密钥（0 = 不限，与密钥同口径）。──
+
+/// 邀请码默认有效期 72 小时；上限 30 天，防「永久码」在鱼龙混杂的渠道里漂流。
+const INVITE_DEFAULT_TTL_HOURS: i64 = 72;
+const INVITE_MAX_TTL_HOURS: i64 = 720;
+
+#[derive(Deserialize)]
+struct CreateInviteReq {
+    #[serde(default)]
+    label: Option<String>,
+    /// 新账号密钥的字符配额；0 = 不限（与 /admin/tokens 同口径）
+    #[serde(default)]
+    quota_chars: i64,
+    #[serde(default)]
+    ttl_hours: Option<i64>,
+}
+
+async fn create_invite(
+    State(cfg): State<Arc<GatewayConfig>>,
+    Json(body): Json<CreateInviteReq>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let ttl_hours = body
+        .ttl_hours
+        .unwrap_or(INVITE_DEFAULT_TTL_HOURS)
+        .clamp(1, INVITE_MAX_TTL_HOURS);
+    let label = body
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("邀请码")
+        .to_string();
+    let (row, code) = cfg
+        .store
+        .create_invite(&label, body.quota_chars.max(0), ttl_hours * 3600)
+        .map_err(ApiError::Internal)?;
+    Ok((
+        StatusCode::CREATED,
+        // 明文 code 只在这一次响应里出现；库里只有 SHA-256 摘要
+        Json(serde_json::json!({
+            "id": row.id,
+            "code": code,
+            "label": row.label,
+            "quota_chars": row.quota_chars,
+            "expires_at": row.expires_at,
+        })),
+    ))
+}
+
+async fn list_invites(
+    State(cfg): State<Arc<GatewayConfig>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let invites = cfg.store.list_invites().map_err(ApiError::Internal)?;
+    Ok(Json(serde_json::json!({
+        "invites": invites
+            .iter()
+            .map(|r| serde_json::json!({
+                "id": r.id,
+                "label": r.label,
+                "quota_chars": r.quota_chars,
+                "created_at": r.created_at,
+                "expires_at": r.expires_at,
+                "used_at": r.used_at,
+                "used_by": r.used_by,
+            }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// 撤销邀请码（删除行）。已用掉的码撤销不回收新账号，只是不允许再被引用。
+async fn revoke_invite(
+    State(cfg): State<Arc<GatewayConfig>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !cfg
+        .store
+        .delete_invite(id.trim())
+        .map_err(ApiError::Internal)?
+    {
+        return Err(ApiError::NotFound(format!("邀请码不存在: {}", id.trim())));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

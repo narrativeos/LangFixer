@@ -148,8 +148,12 @@ async fn decide(
     }
 
     // 无有效凭证：免注册登录入口与门禁页探测匿名放行（whoami 回 authenticated=false），
-    // 其余端点一律 401。
-    if path == "/auth/session" || path == "/auth/whoami" {
+    // 首屏初始化与邀请码激活也是匿名入口（内部分别有密钥/邀请码把关），其余端点一律 401。
+    if path == "/auth/session"
+        || path == "/auth/whoami"
+        || path == "/auth/admin/init"
+        || path == "/auth/invite/activate"
+    {
         admit(
             &mut req,
             cfg,

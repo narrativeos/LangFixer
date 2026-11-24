@@ -3,7 +3,8 @@
 //! 要守住的语义：
 //! 1. 默认（不设 LANGFIXER_LOGIN）单机形态业务端点要求登录：匿名 401 + `login_required`；
 //!    `/auth/*` 探测与 `/gec/deps` 体检保持公开；
-//! 2. 内建 admin 账号密码登录（默认密码 LangFixer@2026）换会话 cookie，此后业务端点放行；
+//! 2. 新装机**预置口令已取消**：首屏用超管密钥 `POST /auth/admin/init` 初始化
+//!    admin 账号，此后 admin + 自设口令换会话 cookie，业务端点放行；
 //! 3. `POST /auth/password` 改密需已验证超管：先落库再换内存，旧密码即废；
 //! 4. 超管 Bearer 与密码登录等价（同为 admin 域会话）；
 //! 5. `LANGFIXER_LOGIN=0` 回到「零变化」直通：匿名照旧全开放。
@@ -160,6 +161,27 @@ async fn login(
     (status, cookie)
 }
 
+/// 测试用超管密钥：单机形态下经 dotenv 固定，用例因此拿得到 init 要的激活密钥。
+fn test_admin_token() -> String {
+    "k".repeat(40)
+}
+
+/// 新装机首屏初始化：装配带已知超管密钥的单机 app 并设好 admin 口令，
+/// 返回 (app, 初始化当场发放的会话 cookie)。口令由用例指定。
+async fn app_initialized(password: &str) -> (Router, String) {
+    let token = test_admin_token();
+    let app = app(&[("LANGFIXER_ADMIN_TOKEN", &token)]).await;
+    let (status, _json, cookie) = post_json(
+        &app,
+        "/auth/admin/init",
+        json!({ "token": token, "password": password }),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "首屏初始化应成功");
+    (app, cookie.expect("初始化应当场发会话 cookie"))
+}
+
 #[tokio::test]
 async fn deps_health_get_public_but_process_spawn_posts_require_login() {
     let _g = env_guard();
@@ -178,7 +200,8 @@ async fn deps_health_get_public_but_process_spawn_posts_require_login() {
 #[tokio::test]
 async fn login_bruteforce_locks_after_five_failures() {
     let _g = env_guard();
-    let app = app(&[]).await;
+    const PW: &str = "BrutePass#1234";
+    let (app, _cookie) = app_initialized(PW).await;
     for i in 0..5 {
         let (status, _) = login(&app, "admin", &format!("wrong-{i}")).await;
         assert_eq!(
@@ -188,21 +211,20 @@ async fn login_bruteforce_locks_after_five_failures() {
         );
     }
     // 封锁窗口内：正确密码也拒（否则限流形同虚设）
-    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    let (status, _) = login(&app, "admin", PW).await;
     assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
 async fn change_password_rotates_caller_session() {
     let _g = env_guard();
-    let app = app(&[]).await;
-    let (_, old_cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
-    let old_cookie = old_cookie.expect("登录必须下发 lf_session cookie");
+    const OLD: &str = "RotOldPass#123";
+    let (app, old_cookie) = app_initialized(OLD).await;
     // 改密当场重发新会话（旧会话被 rotate 连坐作废）
     let (status, _body, new_cookie) = post_json(
         &app,
         "/auth/password",
-        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "FreshPass@12345" }),
+        json!({ "old_password": OLD, "new_password": "FreshPass@12345" }),
         Some(&old_cookie),
     )
     .await;
@@ -219,14 +241,13 @@ async fn change_password_rotates_caller_session() {
 #[tokio::test]
 async fn change_password_rejects_default_and_short() {
     let _g = env_guard();
-    let app = app(&[]).await;
-    let (_, cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
-    let cookie = cookie.expect("登录必须下发 lf_session cookie");
-    // 默认密码本身拒用（它写在文档里，等于没有口令）
+    const OLD: &str = "SetupPass#12345";
+    let (app, cookie) = app_initialized(OLD).await;
+    // 新口令不得落回默认密码（它写在文档里，等于没有口令）
     let (status, _, _) = post_json(
         &app,
         "/auth/password",
-        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": DEFAULT_ADMIN_PASSWORD }),
+        json!({ "old_password": OLD, "new_password": DEFAULT_ADMIN_PASSWORD }),
         Some(&cookie),
     )
     .await;
@@ -235,46 +256,73 @@ async fn change_password_rejects_default_and_short() {
     let (status, _, _) = post_json(
         &app,
         "/auth/password",
-        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "密码口" }),
+        json!({ "old_password": OLD, "new_password": "密码口" }),
         Some(&cookie),
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     // 拒绝性改密后旧密码仍可用（没改成就什么都没变）
-    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    let (status, _) = login(&app, "admin", OLD).await;
     assert_eq!(status, axum::http::StatusCode::OK);
 }
 
 #[tokio::test]
 async fn default_login_gate_blocks_business_but_keeps_probe_public() {
     let _g = env_guard();
-    let app = app(&[]).await;
+    let token = test_admin_token();
+    let app = app(&[("LANGFIXER_ADMIN_TOKEN", &token)]).await;
     // 匿名业务端点：401 + login_required（前端据此回门禁页）
     let (status, body) = get_json(&app, "/gec/tables", None).await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
     assert_eq!(body["login_required"], true);
-    // whoami 永远可达，且如实报告「要锁 + 可密码登录」
+    // whoami 永远可达，且如实报告「要锁；新装机尚未初始化，无口令可登」
     let (status, who) = get_json(&app, "/auth/whoami", None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(who["locked"], true);
-    assert_eq!(who["password_login"], true);
+    assert_eq!(who["password_login"], false);
+    assert_eq!(who["admin_initialized"], false);
     assert_eq!(who["authenticated"], false);
     // 依赖体检面不得被登录拦住（重启保活的探查看它）
     let (status, _) = get_json(&app, "/gec/deps", None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
+    // 首屏初始化之后：才出现「可密码登录」，门禁页据此改分支
+    let (status, _, _) = post_json(
+        &app,
+        "/auth/admin/init",
+        json!({ "token": token, "password": "GatePass#12345" }),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let (_, who) = get_json(&app, "/auth/whoami", None).await;
+    assert_eq!(who["password_login"], true);
+    assert_eq!(who["admin_initialized"], true);
+    assert_eq!(who["locked"], true);
 }
 
 #[tokio::test]
 async fn password_login_round_trip() {
     let _g = env_guard();
-    let app = app(&[]).await;
-    // 错密码 / 错用户名都拒
+    const PW: &str = "RoundTrip#12345";
+    let token = test_admin_token();
+    let app = app(&[("LANGFIXER_ADMIN_TOKEN", &token)]).await;
+    // 未初始化：任何口令登录都拒（预置口令已取消，默认密码不再是后门）
     let (status, _) = login(&app, "admin", "wrong-password").await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
-    let (status, _) = login(&app, "root", DEFAULT_ADMIN_PASSWORD).await;
+    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
-    // 默认账号密码登录：admin / LangFixer@2026 → 会话 cookie，业务端点放行
-    let (status, cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    // 首屏初始化设好口令后：错用户名拒，对口令换 cookie，业务端点放行
+    let (status, _, _) = post_json(
+        &app,
+        "/auth/admin/init",
+        json!({ "token": token, "password": PW }),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let (status, _) = login(&app, "root", PW).await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    let (status, cookie) = login(&app, "admin", PW).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let cookie = cookie.expect("登录必须下发 lf_session cookie");
     assert!(cookie.starts_with("lf_session="));
@@ -289,14 +337,13 @@ async fn password_login_round_trip() {
 #[tokio::test]
 async fn change_password_invalidates_old() {
     let _g = env_guard();
-    let app = app(&[]).await;
-    let (_, cookie) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
-    let cookie = cookie.expect("登录必须下发 lf_session cookie");
+    const OLD: &str = "InvalOld#12345";
+    let (app, cookie) = app_initialized(OLD).await;
     // 未登录不得改密
     let (status, _, _) = post_json(
         &app,
         "/auth/password",
-        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "FreshPass@12345" }),
+        json!({ "old_password": OLD, "new_password": "FreshPass@12345" }),
         None,
     )
     .await;
@@ -305,13 +352,13 @@ async fn change_password_invalidates_old() {
     let (status, body, _) = post_json(
         &app,
         "/auth/password",
-        json!({ "old_password": DEFAULT_ADMIN_PASSWORD, "new_password": "FreshPass@12345" }),
+        json!({ "old_password": OLD, "new_password": "FreshPass@12345" }),
         Some(&cookie),
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     // 旧密码即废，新密码可用
-    let (status, _) = login(&app, "admin", DEFAULT_ADMIN_PASSWORD).await;
+    let (status, _) = login(&app, "admin", OLD).await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
     let (status, _) = login(&app, "admin", "FreshPass@12345").await;
     assert_eq!(status, axum::http::StatusCode::OK);

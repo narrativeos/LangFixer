@@ -18,11 +18,12 @@ import LearningPanel from './components/LearningPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import AccessPanel from './components/AccessPanel.vue'
 import TokenGate from './components/TokenGate.vue'
+import InviteGate from './components/InviteGate.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import { viewAllowed, hasOpsUserChoice, type AppView } from './lib/caps'
 import { ALL_VIEWS, CONSOLE_ORDER, VIEW_DEFS, shellOf } from './lib/views'
 import { api, isTauri, tauriListen } from './api/client'
-import { gateReady, identity, initGate } from './lib/auth'
+import { gateReady, identity, initGate, inviteCode } from './lib/auth'
 import { LButton, LPopover, LSection, LSegmented, LSidebar, LSelect, toast, LToaster } from './ui'
 import { modeLabel } from './lib/labels'
 import type { LSidebarSection } from './ui/types'
@@ -41,9 +42,20 @@ const store = useGecStore()
 
 /** 配置面可见性:单机形态本机即用户;网关形态仅超管(服务端同口径) */
 const canConfigure = computed(() => !identity.value.gateway || identity.value.admin)
-/** 门禁页 / 产品界面二选一(探测期间留白,避免闪屏) */
+/** 邀请激活优先：地址栏 ?invite= 带来的邀请码在激活/返回前取代普通界面 */
+const showInvite = computed(() => gateReady.value && !!inviteCode.value)
+/** 门禁页 / 产品界面二选一（探测期间留白，避免闪屏） */
 const showGate = computed(() => gateReady.value && identity.value.locked && !identity.value.authenticated)
-const showApp = computed(() => gateReady.value && (!identity.value.locked || identity.value.authenticated))
+const showApp = computed(
+  () =>
+    gateReady.value &&
+    !inviteCode.value &&
+    (!identity.value.locked || identity.value.authenticated),
+)
+/** 邀请卡关闭后：轮到产品界面才补 boot（带邀请码进来时数据一直没拉） */
+function onInviteEnd() {
+  if (showApp.value) boot()
+}
 const inConsole = computed(() => shellOf(activeView.value) === 'console')
 
 /** 运营台侧栏条目与可达性的单一判定(壳/侧栏/深链/菜单共用) */
@@ -370,7 +382,8 @@ if (isTauri) api.setWindowTheme(isDark.value)
 </script>
 
 <template>
-  <TokenGate v-if="showGate" @entered="boot" />
+  <InviteGate v-if="showInvite" @activated="onInviteEnd" @dismissed="onInviteEnd" />
+  <TokenGate v-else-if="showGate" @entered="boot" />
   <div v-else-if="showApp" class="l-shell">
     <header class="l-toolbar">
       <span class="l-brand"><span class="l-brand-mark">✓</span><span class="l-brand-name">LangFixer</span></span>

@@ -25,6 +25,14 @@ export const identity = ref<Whoami>({
 export const gateReady = ref(false)
 /** 当前身份的人类可读标签（登录响应里的 label；超管为「管理员」） */
 export const identityLabel = ref('')
+/**
+ * `?invite=` 带来的一次性邀请码：initGate 读入并立即从地址栏剥掉（同 `?token=` 手法），
+ * 有值时 App 优先展示邀请激活卡；激活成功或用户返回后清空。
+ */
+export const inviteCode = ref<string | null>(null)
+export function clearInvite(): void {
+  inviteCode.value = null
+}
 
 /**
  * 把一次 `whoami` 快照（和可选的登录响应）合成身份视图。
@@ -54,6 +62,9 @@ export function mergeIdentity(
     // 用户名账号状态：老服务端不带字段时保留已知值（登录后都会补一次 whoami）
     username: me?.username !== undefined ? me.username : (prev.username ?? null),
     must_change: me?.must_change ?? prev.must_change,
+    // 管理员初始化状态：whoami 带则透传（false 触发初始化表单）；
+    // 不带 = undefined，老服务端维持旧登录 UI
+    admin_initialized: me?.admin_initialized,
   }
 }
 
@@ -97,6 +108,28 @@ export async function loginWithPassword(username: string, password: string): Pro
     admin: r.admin,
     token_id: r.token_id,
   })
+}
+
+/**
+ * 首次启动初始化管理员账号：超管激活密钥换 admin 会话（Set-Cookie）。
+ * 成功后补一次 whoami 取权威快照（同登录路径手法）；409 already_initialized
+ * 由调用方（初始化表单）接住并回退到普通登录 UI。
+ */
+export async function initAdminAccount(
+  username: string,
+  password: string,
+  token: string,
+): Promise<void> {
+  const r = await api.initAdmin({ token, password, username: username || undefined })
+  armLockedListener()
+  identityLabel.value = r.username || 'admin'
+  let me: Whoami | null = null
+  try {
+    me = await api.whoami()
+  } catch {
+    /* 老服务端：按已登录保守处理 */
+  }
+  identity.value = mergeIdentity(identity.value, me, { admin: true, token_id: null })
 }
 
 export function accessKey(): string | null {
@@ -185,9 +218,14 @@ export async function initGate(): Promise<void> {
   let urlKey: string | null = null
   try {
     const p = new URLSearchParams(window.location.search)
+    const inv = p.get('invite')
+    if (inv) {
+      inviteCode.value = inv
+      p.delete('invite')
+    }
     urlKey = p.get('token')
-    if (urlKey) {
-      p.delete('token')
+    if (urlKey) p.delete('token')
+    if (inv || urlKey) {
       const url = new URL(window.location.href)
       url.search = p.toString()
       window.history.replaceState(null, '', url.toString())

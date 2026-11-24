@@ -6,6 +6,7 @@
  */
 import { computed, ref } from 'vue'
 import { LButton, LInput } from '../ui'
+import AdminInitForm from './AdminInitForm.vue'
 import { errMsg } from '../lib/err'
 import {
   accessKey,
@@ -19,6 +20,8 @@ import {
 const keyInput = ref('')
 const busy = ref(false)
 const error = ref('')
+/** 初始化表单撞上 409 already_initialized：回退普通登录并提示一次 */
+const initHint = ref(false)
 
 /** 单机登录门默认走账号密码；网关形态维持令牌主路。两种凭证都能进，留切换入口 */
 const mode = ref<'password' | 'token'>(
@@ -111,7 +114,17 @@ function reset() {
       </div>
 
       <template v-if="!identity.authenticated">
-        <template v-if="showPasswordForm">
+        <!-- 管理员账号尚未初始化（admin_initialized === false）：初始化表单取代普通登录 -->
+        <template v-if="identity.admin_initialized === false">
+          <p class="gate-note">这台机器还没有管理员账号：先设置 admin 账号密码，用 env 里那把超管密钥激活一次；此后改设置用 admin + 密码登录。</p>
+          <AdminInitForm
+            layout="stack"
+            @done="emit('entered')"
+            @already="initHint = true"
+          />
+        </template>
+        <p v-else-if="initHint" class="gate-note">管理员账号已初始化，请用下方登录入口进入。</p>
+        <template v-if="identity.admin_initialized !== false && showPasswordForm">
           <label class="gate-label" for="gate-user">用户名</label>
           <LInput
             id="gate-user"
@@ -141,7 +154,7 @@ function reset() {
             <li>收到的是 <code>?token=…</code> 链接？打开就会自动进入，不用手输。</li>
           </ul>
         </template>
-        <template v-else>
+        <template v-else-if="identity.admin_initialized !== false">
           <label class="gate-label" for="gate-key">访问密钥</label>
           <LInput
             id="gate-key"
@@ -247,6 +260,16 @@ function reset() {
   border: 1px solid var(--border);
   border-radius: var(--radius-ctl);
   padding: 0 var(--space-1);
+}
+.gate-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 .gate-hint {
   margin: var(--space-1) 0 0;
