@@ -198,7 +198,24 @@ async function load() {
   }
 }
 
-onMounted(load)
+/** 服务状态 chips 的同步口径提示：chips 读 store 实时 flags，拉取失败时不能默默拿占位值冒充实时 */
+const svcSyncNote = computed(() =>
+  !store.engineStatusKnown
+    ? '状态未同步：以下为占位值，可能与服务端不一致'
+    : store.engineStatusOutdated
+      ? '上次同步失败：以下为上次已知值'
+      : '实时全局设置，与检测页一致；该报告当时各层表现见「消融」与层级数据',
+)
+
+function retrySync() {
+  void store.refreshEngineStatus()
+}
+
+onMounted(() => {
+  void load()
+  // 直接进报告页不经过检测页的刷新钩子：打开时对齐一次实时服务状态
+  void store.refreshEngineStatus()
+})
 </script>
 
 <template>
@@ -282,7 +299,10 @@ onMounted(load)
           <LTag v-for="c in svcChips" :key="c.k">
             {{ c.k }} {{ c.on ? '开' : '关' }}<template v-if="c.extra"> · {{ c.extra }}</template>
           </LTag>
-          <span class="cfg-note">实时全局设置，与检测页一致；该报告当时各层表现见「消融」与层级数据</span>
+          <span class="cfg-note">{{ svcSyncNote }}</span>
+          <LButton v-if="!store.engineStatusKnown || store.engineStatusOutdated" size="sm" @click="retrySync">
+            重试同步
+          </LButton>
         </div>
       </LSection>
 

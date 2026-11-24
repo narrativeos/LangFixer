@@ -12,6 +12,7 @@ import { defineStore } from 'pinia'
 import { api, isTauri } from '../api/client'
 import type {
   AnalyzedError,
+  AppSettings,
   DecisionTableMeta,
   DepStatus,
   DetectTimings,
@@ -148,6 +149,10 @@ export const useGecStore = defineStore('gec', {
     /** L3 特征模型层已启用（来自 GET /gec/settings 的 l3.enabled；三期：level 3 先跑特征模型，LLM 收缩到纯长尾；
      *  服务端默认开启，旧设置文件缺失该字段时按开启处理） */
     l3Enabled: true,
+    /** 各层启用状态是否至少成功同步过一次（false = 仍是占位默认值，状态条须显示「状态未知」而非误导性的未启用/未配置） */
+    engineStatusKnown: false,
+    /** 成功同步过、但最近一次刷新失败（当前展示的是上次已知值，非实时） */
+    engineStatusOutdated: false,
     /** 预览高亮联动：待定位的错误下标（-1 = 无） */
     focusErrorIndex: -1,
     /** 预览高亮联动：递增序号（重复点击同一片段也能重新触发滚动定位） */
@@ -278,42 +283,41 @@ export const useGecStore = defineStore('gec', {
         this.depsPollTries = 0
       }
     },
+    /** 把一份服务端设置快照同步进各层启用状态（loadSettings / refreshEngineStatus 共用；
+     *  成功即视为状态已知，并清除「上次同步失败」标记） */
+    syncEngineStatus(s: AppSettings) {
+      this.decisionEnabled = !!s.decision?.enabled
+      this.llmEnabled = !!s.llm?.enabled
+      this.embeddingConfigured = !!s.embedding?.endpoint
+      this.knowledgeLlmGate = !!s.knowledge_status?.llm_gate
+      this.knowledgeCounts = {
+        zh: s.knowledge_status?.zh ?? 0,
+        en: s.knowledge_status?.en ?? 0,
+        ja: s.knowledge_status?.ja ?? 0,
+      }
+      // 旧服务端 / 旧设置文件缺失 l3 字段时按默认开启处理
+      this.l3Enabled = s.l3?.enabled ?? true
+      this.engineStatusKnown = true
+      this.engineStatusOutdated = false
+    },
     /** 拉取设置并同步检测管线各层启用状态（「检查模式」状态标签 + 检测管线提示用） */
     async loadSettings() {
       try {
-        const s = await api.getSettings()
-        this.decisionEnabled = !!s.decision?.enabled
-        this.llmEnabled = !!s.llm?.enabled
-        this.embeddingConfigured = !!s.embedding?.endpoint
-        this.knowledgeLlmGate = !!s.knowledge_status?.llm_gate
-        this.knowledgeCounts = {
-          zh: s.knowledge_status?.zh ?? 0,
-          en: s.knowledge_status?.en ?? 0,
-          ja: s.knowledge_status?.ja ?? 0,
-        }
-        // 旧服务端 / 旧设置文件缺失 l3 字段时按默认开启处理
-        this.l3Enabled = s.l3?.enabled ?? true
+        this.syncEngineStatus(await api.getSettings())
       } catch {
-        // 拉取失败时保持默认（未启用），L2 会显示「决策模型未启用」
+        // 拉取失败：占位默认值不能冒充真实状态，状态条按「状态未知」展示
+        this.engineStatusOutdated = true
       }
     },
-    /** 从服务端重新校验检测管线各层启用状态（切回检测页 / 设置变更后调用，
-     *  保证 L2 状态标签与管线提示和服务端真实状态一致；返回刷新后的决策模型状态，拉取失败返回 null） */
+    /** 从服务端重新校验检测管线各层启用状态（切回检测页 / 发起检测前 / 标签页回到前台 /
+     *  设置变更后调用，保证状态标签与服务端真实状态一致；
+     *  返回刷新后的决策模型状态，拉取失败返回 null 并标记「上次同步失败」） */
     async refreshEngineStatus(): Promise<boolean | null> {
       try {
-        const s = await api.getSettings()
-        this.decisionEnabled = !!s.decision?.enabled
-        this.llmEnabled = !!s.llm?.enabled
-        this.embeddingConfigured = !!s.embedding?.endpoint
-        this.knowledgeLlmGate = !!s.knowledge_status?.llm_gate
-        this.knowledgeCounts = {
-          zh: s.knowledge_status?.zh ?? 0,
-          en: s.knowledge_status?.en ?? 0,
-          ja: s.knowledge_status?.ja ?? 0,
-        }
-        this.l3Enabled = s.l3?.enabled ?? true
+        this.syncEngineStatus(await api.getSettings())
         return this.decisionEnabled
       } catch {
+        this.engineStatusOutdated = true
         return null
       }
     },
@@ -438,6 +442,9 @@ export const useGecStore = defineStore('gec', {
         level: this.level,
       }
       this.startProgressTracking()
+      // 发起检测前同步一次各层启用状态：状态条不能一直停在进页时的快照；
+      // 不阻塞检测本身，失败由 outdated 标记显式呈现
+      void this.refreshEngineStatus()
     },
     finishDetect() {
       this.stopProgressTracking()

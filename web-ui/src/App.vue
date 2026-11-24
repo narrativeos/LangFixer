@@ -166,13 +166,17 @@ const psOk = computed(
     (store.llmEnabled ? 1 : 0),
 )
 
-// 与弹层点同口径：未配置（LLM / 向量缺失）=橙；仅未启用（开关关）=灰；全绿=绿
+// 与弹层点同口径：未配置（LLM / 向量缺失）=橙；仅未启用（开关关）=灰；全绿=绿；
+// 状态从未同步成功也归橙并显「—」：占位默认值不能冒充「N/6 项可用」的假绿
+const psCountText = computed(() => (store.engineStatusKnown ? `${psOk.value}/${psTotal}` : '—'))
 const psTone = computed<'ok' | 'off' | 'missing'>(() =>
-  !store.llmEnabled || !store.embeddingConfigured
+  !store.engineStatusKnown
     ? 'missing'
-    : psOk.value < psTotal
-      ? 'off'
-      : 'ok',
+    : !store.llmEnabled || !store.embeddingConfigured
+      ? 'missing'
+      : psOk.value < psTotal
+        ? 'off'
+        : 'ok',
 )
 
 /** 验证通过后才拉数据:网关形态未登录打业务端点会 401 */
@@ -354,9 +358,24 @@ function onDragDrop(payload: unknown) {
   window.dispatchEvent(new CustomEvent('langfixer:media-drop', { detail: files }))
 }
 
-onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+/** 标签页回到前台时补同步一次各层启用状态：切窗/切标签都会触发事件，2s 节流防重复拉取 */
+let lastReturnSync = 0
+function onReturnSync() {
+  if (document.visibilityState !== 'visible') return
+  if (Date.now() - lastReturnSync < 2000) return
+  lastReturnSync = Date.now()
+  void store.refreshEngineStatus()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown)
+  document.addEventListener('visibilitychange', onReturnSync)
+  window.addEventListener('focus', onReturnSync)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
+  document.removeEventListener('visibilitychange', onReturnSync)
+  window.removeEventListener('focus', onReturnSync)
   unlistenTauri.forEach((f) => f())
   unlistenTauri = []
 })
@@ -404,12 +423,12 @@ if (isTauri) api.setWindowTheme(isDark.value)
               class="ps-chip"
               :class="psTone === 'ok' ? 'ps-chip-ok' : psTone === 'missing' ? 'ps-chip-warn' : 'ps-chip-off'"
               :aria-expanded="open ? 'true' : 'false'"
-              :title="`检测服务:${psOk}/${psTotal} 项可用(点击查看明细)`"
+              :title="`检测服务:${psCountText} 项可用(点击查看明细)`"
               aria-label="检测服务:查看可用情况"
               @click="toggle"
             >
               <i class="ps-chip-dot"></i>
-              检测服务 {{ psOk }}/{{ psTotal }}
+              检测服务 {{ psCountText }}
             </button>
           </template>
           <PipelineStatus flat />

@@ -37,8 +37,9 @@ const canTest = computed(() => !identity.value.gateway || identity.value.admin)
 interface StatusItem {
   key: string
   label: string
-  /** ok = 可用 / off = 未启用（功能存在但开关关闭）/ missing = 未配置（缺地址 / Key） */
-  state: 'ok' | 'off' | 'missing'
+  /** ok = 可用 / off = 未启用（功能存在但开关关闭）/ missing = 未配置（缺地址 / Key）
+   *  / unknown = 设置拉取从未成功，无法判断（不能拿占位默认值冒充真实状态） */
+  state: 'ok' | 'off' | 'missing' | 'unknown'
   hint: string
   /** 点击跳设置页后滚动定位的卡片锚点（null = 仅跳设置页） */
   anchor: string | null
@@ -118,13 +119,37 @@ const items = computed<StatusItem[]>(() => {
       })
     }
   }
+  // 设置从未拉取成功：依赖设置的五项不能声称「可用 / 未启用 / 未配置」，
+  // 统一显示「状态未知」（rule 随应用分发恒可用、deps 项由 /gec/deps 快照驱动，不并入）
+  if (!store.engineStatusKnown) {
+    for (const it of base) {
+      if (it.key === 'rule' || it.key === 'deps') continue
+      it.state = 'unknown'
+      it.hint = '未能拉取设置，无法判断该层状态（可能与服务端不一致）；点「重新同步」或进设置页重试'
+    }
+  }
   return base
 })
 
 const okCount = computed(() => items.value.filter((i) => i.state === 'ok').length)
 
 const dotTone = (s: StatusItem['state']) => (s === 'ok' ? 'ok' : s === 'off' ? 'muted' : 'warn')
-const stateText = (s: StatusItem['state']) => (s === 'ok' ? '可用' : s === 'off' ? '未启用' : '未配置')
+const stateText = (s: StatusItem['state']) =>
+  s === 'ok' ? '可用' : s === 'off' ? '未启用' : s === 'unknown' ? '状态未知' : '未配置'
+
+/** 同步健康度提示：状态未知 / 上次同步失败时在状态条尾部点名，不再静默拿旧值 */
+const syncNote = computed(() =>
+  !store.engineStatusKnown
+    ? '状态未同步：以下可能与服务端不一致'
+    : store.engineStatusOutdated
+      ? '上次设置同步失败：以下为上次已知值'
+      : null,
+)
+
+async function retrySync() {
+  if ((await store.refreshEngineStatus()) == null)
+    toast('状态同步失败：设置端点不可达', 'warn')
+}
 
 function goSettings(anchor: string | null) {
   store.requestNav('settings', anchor ?? undefined)
@@ -173,6 +198,10 @@ const hasSkipped = computed(() => !!testResult.value?.results?.some((r) => r.ski
       <span class="ps-state">{{ stateText(it.state) }}</span>
     </div>
     <span class="ps-summary">{{ okCount }}/{{ items.length }} 项可用</span>
+    <template v-if="syncNote">
+      <span class="ps-sync">{{ syncNote }}</span>
+      <LButton size="sm" @click="retrySync">重新同步</LButton>
+    </template>
     <LButton v-if="canTest" size="sm" :loading="testing" @click="testAll">测试全部</LButton>
     <span
       v-if="testResult"
@@ -220,6 +249,14 @@ const hasSkipped = computed(() => !!testResult.value?.results?.some((r) => r.ski
 }
 .ps-off {
   color: var(--text-2);
+}
+.ps-unknown {
+  color: var(--text-2);
+}
+.ps-sync {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  white-space: nowrap;
 }
 .ps-state {
   font-size: var(--fs-xs);
