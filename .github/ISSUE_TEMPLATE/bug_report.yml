@@ -1,0 +1,31 @@
+name: 问题反馈
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发生了什么、期望是什么
+      placeholder: 输入一句文本，检测结果是……，期望是……
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 尽量给出最小复现（输入文本 + 命令 / 界面路径）
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 版本号（见「关于」页或 git describe）与运行形态（桌面端 / Web / 服务器）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与截图
+      description: 如有，请粘贴相关日志或截图（注意去除个人信息）

@@ -1,0 +1,4 @@
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/narrativeos/LangFixer/security/advisories/new
+    about: 请勿公开提 issue，按 SECURITY.md 的报告渠道私密披露

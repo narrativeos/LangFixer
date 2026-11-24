@@ -724,5 +724,7 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
 - 数据格式（决策表 / 知识库 / 资源包）可能随版本演进，暂不提供迁移工具
 - 中文/日文（gec-zh / gec-ja）能力为早期阶段
 
-[unreleased]: https://github.com/narrativeos/LangFixer/compare/v0.1.0-preview...HEAD
+[unreleased]: https://github.com/narrativeos/LangFixer/compare/v1.1.0...HEAD
+[v1.1.0]: https://github.com/narrativeos/LangFixer/releases/tag/v1.1.0
+[v1.0.0]: https://github.com/narrativeos/LangFixer/releases/tag/v1.0.0
 [v0.1.0-preview]: https://github.com/narrativeos/LangFixer/releases/tag/v0.1.0-preview

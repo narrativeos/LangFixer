@@ -466,6 +466,26 @@ cd web-ui && npm run typecheck && npm run build
    mock 检测级联 + mock 视觉网关）· `api-server/tests/media_api.rs` ·
    `api-server/tests/media_vision_api.rs` · `api-server/tests/media_report_api.rs`。
 
+## 文档地图
+
+| 文档 | 内容 |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更历史（Keep a Changelog） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、代码约定、提交与发布流程 |
+| [SECURITY.md](SECURITY.md) | 漏洞报告渠道与支持版本 |
+| [LICENSES-THIRD-PARTY.md](LICENSES-THIRD-PARTY.md) | 第三方依赖许可清单 |
+| [docs/DETECT_PIPELINE.md](docs/DETECT_PIPELINE.md) | 检测处理流程设计（级联各层） |
+| [docs/GATEWAY_AUTH.md](docs/GATEWAY_AUTH.md) | 评测通道（网关形态）鉴权设计 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 运维配置（环境变量矩阵） |
+| [docs/RELEASING.md](docs/RELEASING.md) | 版本发布流程与产物 |
+| [docs/UI_REDESIGN.md](docs/UI_REDESIGN.md) | 界面改造方案 |
+| [docs/UX_REVIEW.md](docs/UX_REVIEW.md) | 产品交互设计评审 |
+| [docs/desktop-hig.md](docs/desktop-hig.md) | 桌面端设计规范对照（macOS HIG） |
+| [EVOLUTION.md](EVOLUTION.md) | 进化中心设计 |
+| [MULTIMODAL.md](MULTIMODAL.md) | 多模态审校（图片 / PDF / Word 载体） |
+| [CEC_ADOPTION.md](CEC_ADOPTION.md) | ChineseErrorCorrector 吸收方案 |
+| [deploy/gateway/README.md](deploy/gateway/README.md) | 评测通道部署（网关形态） |
+
 ## 许可
 
 - **代码与内置资产**（`decision-tables/`、`lexicons/`、`prompts/` 等产品自带内容）：

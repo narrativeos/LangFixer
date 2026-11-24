@@ -1,6 +1,6 @@
 # 参与贡献
 
-LangFixer 处于 **v0.1.0-preview 预览阶段**：核心链路可用，但接口与数据格式仍可能演进。欢迎提交 issue 与 PR。
+LangFixer 已发布 **v1.x 正式版**（版本号见 Cargo.toml 与 CHANGELOG）：核心链路稳定，接口按 semver 演进。欢迎提交 issue 与 PR。
 
 ## 开发环境
 
@@ -35,8 +35,15 @@ npm run build       # vite 构建
 ## 提交与 PR
 
 - 提交信息：Conventional Commits（`feat:` / `fix:` / `refactor:` / `chore:` …），描述可用中文
-- PR 请先开 issue 讨论方向（预览阶段接口变动较大）
+- 涉及公开 API 或数据格式变动的 PR，请先开 issue 讨论方向
 - CI 必须通过：`cargo fmt --check`、`cargo test --workspace`、web-ui typecheck/test/build
+
+## 版本与发布
+
+- 版本遵循 [semver](https://semver.org/lang/zh-CN/)，变更记录写入 [CHANGELOG.md](CHANGELOG.md)（Keep a Changelog 格式）
+- 版本号唯一定义在根目录 `Cargo.toml` 的 `[workspace.package].version`；发布前必须与 `desktop-app/tauri.conf.json` 一致（`scripts/release.sh` 会校验）
+- 发布流程：CHANGELOG 归段 → 提交并打 `vX.Y.Z` 标签 → `./scripts/release.sh`（多源构建安装包与 `latest.json`）→ `./scripts/publish.sh`（推送分支与标签到各源）→ 上传 dist 资产
+- 完整流程与产物说明见 [docs/RELEASING.md](docs/RELEASING.md)
 
 ## 许可
 
