@@ -499,6 +499,9 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
   ≤ 64 位，小写化入库；local 取经典字符集 ≤ 32 位，域名须含点）；登录、邀请激活、管理面建
   号与自助设名共用同一规则，保留名 `admin` 仅限裸名（`admin@x.co` 可用）；规则提示文案
   收敛成单常量 `USERNAME_RULE_HINT`，前端预校验与四处入口文案同步。
+- **README 新增「部署到服务器：硬件要求」**：部件级需求表（api-server / HANLP sidecar /
+  L3 worker / Caddy / 磁盘）附生产实测数字；明确核心能力纯 CPU 无 GPU、GPU 仅自持
+  LLM 臂可选；目录新增锚点。
 
 ### 修复
 

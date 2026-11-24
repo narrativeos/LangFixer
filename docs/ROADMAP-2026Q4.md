@@ -12,8 +12,8 @@
 
 | # | 任务 | 现状 → 待做 |
 |---|---|---|
-| A1 | 灰度切流 | v7 四面全过（dev FP 1.1% / gov 0.1% / 过度纠正 1.0% / fp15 15/15），arm3 预设已在注册表（commit 47cdbe7/e871cfb，LiteLLM 统一端点）。待做：设置页开「自动双判」小流量试点（commit e11a0bd），主臂仍走现 API，影子臂 arm3 |
-| A2 | 双判裁决出账 | `dual_judge_log` 已可查（`GET /gec/dual-judge`）。观察 ≥1 周：`shadow_only` 占比 = 自持臂净增益，`both` = 一致率；`shadow_error` 连续非零则查端点 |
+| A1 | 灰度切流 | **已上线（2026-11-24 实况）**：主臂 Qwen3.8（:4000 代理）+ 影子臂 arm3-l2kto-v7（llm.jiulu.ltd），双判开关已开，dual_judge_log 已记 3078 条 |
+| A2 | 双判裁决出账 | **首轮账已出**：both 773 / none 596 / primary_only 1908 / shadow_only 23（全 en 拼写，抽样看均为真实错字——自持臂 en 侧意外增益，待逐条复核确认真阳）/ shadow_parse_failed 34 / primary_parse_failed 21。zh 侧 shadow_only=0，与 gray380 判决一致（unique recall 等 ②.5/L3，不在双判账里等）。**取证缺口**：parse_failed 落盘的是规范化 `[]`，违规原文未存（gec-core/src/llm.rs 写路径），待补 raw 落盘 |
 | A3 | 净收益 + 延迟终审 | gray380 带内 F 不低于现 API；3090 vLLM P95 满足 ③ 钩子预算。两闸过 → 主臂切 arm3，外部 API 降级为备援 |
 | A4 | Qwen 改错模型微调执行 | §11.16 状态「起草，待执行」→ 执行。四道闸照单：契约门 / 主门 mucgec F0.5≥0.805（cec3 基线）/ 泛化门 capability 全集 / 接线 models.json。§11.15 定案不变：只换执行体（手），不碰触发权（闸） |
 
@@ -46,8 +46,9 @@
 
 ## 轨道 D：网关生产放量喂数据（多条线的共同水源）
 
-- **D1** 生产反馈进 `feedback_log` → Cycle 2「生产收益矩阵」出账（机件已就位，
-  账等喂——这是 EVOLUTION 判决线的最后一块）。
+- **D1** 生产反馈进 `feedback_log` → Cycle 2「生产收益矩阵」出账。**实况**：
+  双判已在跑但 feedback_log 仅 2 行——用户采纳/放弃反馈几乎没有，机件在等
+  真实用户放量（邀请多发、反馈入口曝光），这是判决线最后一块账的真瓶颈。
 - **D2** 数据闭环时序实跑：白天 T1 灰区 → 夜间 T2 判官（32B@3090 常驻 :8090，与
   训练互斥需排班）→ pref 行双写 jev-llm-data/jev-data → 周度 KTO 重训。T2 跑批已能
   自动出 pref，缺的是把它排成夜间例行。
