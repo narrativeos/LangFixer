@@ -6,10 +6,33 @@
 //! `invalid args ... missing required key body`（真实事故：P2/P3 查询
 //! 命令曾全部因此失败，UI 显示「作业列表加载失败」）。
 //!
-//! 本测试解析 `src/commands.rs` 的命令签名参数名，断言与 web-ui
+//! 本测试解析 `src/commands/` 各域模块的命令签名参数名，断言与 web-ui
 //! `api/client.ts` 的调用风格一致（查询类平铺 / 复杂写操作 body）。
 
-const SRC: &str = include_str!("../src/commands/mod.rs");
+const SRC: &str = concat!(
+    include_str!("../src/commands/mod.rs"),
+    include_str!("../src/commands/agent.rs"),
+    include_str!("../src/commands/anomaly.rs"),
+    include_str!("../src/commands/core.rs"),
+    include_str!("../src/commands/custom_words.rs"),
+    include_str!("../src/commands/dataset.rs"),
+    include_str!("../src/commands/detect.rs"),
+    include_str!("../src/commands/eval.rs"),
+    include_str!("../src/commands/feedback.rs"),
+    include_str!("../src/commands/history.rs"),
+    include_str!("../src/commands/knowledge.rs"),
+    include_str!("../src/commands/l3.rs"),
+    include_str!("../src/commands/optimization.rs"),
+    include_str!("../src/commands/recall.rs"),
+    include_str!("../src/commands/reflect.rs"),
+    include_str!("../src/commands/rules.rs"),
+    include_str!("../src/commands/session.rs"),
+    include_str!("../src/commands/settings.rs"),
+    include_str!("../src/commands/tables.rs"),
+    include_str!("../src/commands/training.rs"),
+    include_str!("../src/commands/util.rs"),
+    include_str!("../src/commands/window.rs"),
+);
 
 /// 提取命令签名的参数名列表（跳过 `core`；兼容单行 / 多行签名）
 fn param_names(cmd: &str) -> Vec<String> {
