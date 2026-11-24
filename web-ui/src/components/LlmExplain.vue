@@ -3,8 +3,24 @@ import { onMounted, watch } from 'vue'
 import { errorTypeLabel } from '../lib/labels'
 import { useGecStore } from '../stores/gec'
 import { LButton, LEmpty, LSelect } from '../ui'
+import { toast } from '../ui/toast'
 
 const store = useGecStore()
+
+/** 讲解页签的「忽略」（R02→R03）：讲解是阅读面，出口只有换一句与忽略；
+ *  忽略作用于当前讲解对象（analyzed 下标），不发反馈、回错误归因页签看折叠 chip */
+function ignoreExplain() {
+  const idx = store.explainIndex
+  if (!store.analyzed[idx] || store.ignored[idx]) return
+  store.ignoreError(idx)
+  store.requestShowAttribution()
+  toast(
+    '已忽略 1 条：不计入待处理，也不会作为负样本进训练飞轮',
+    'info',
+    { label: '撤销', onClick: () => store.restoreError(idx) },
+    6000,
+  )
+}
 
 const langChoices = [
   { value: '', label: '跟随检测语言' },
@@ -71,6 +87,14 @@ onMounted(maybeExplain)
         >
           {{ store.llm.loading ? '生成中…' : '生成个性化讲解' }}
         </LButton>
+        <!-- 忽略当前讲解对象；已反馈（采纳/放弃落定）的条目不出忽略钮 -->
+        <LButton
+          v-if="store.analyzed[store.explainIndex] && !store.feedbackDoneByIndex[store.explainIndex]"
+          variant="ghost"
+          size="sm"
+          @click="ignoreExplain"
+          >忽略</LButton
+        >
         <span v-if="store.llm.meta" class="trace">
           模型 {{ store.llm.meta.model }} · 模板 {{ store.llm.meta.template }}
           (v{{ store.llm.meta.template_version }})

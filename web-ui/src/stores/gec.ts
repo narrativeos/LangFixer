@@ -209,6 +209,14 @@ export const useGecStore = defineStore('gec', {
     /** 逐错误 LLM 讲解：目标下标 + 请求序号（Attribution 卡片「讲解」按钮 → ResultsPanel 切 tab → LlmExplain 触发） */
     explainIndex: 0,
     explainNonce: 0,
+    /** 忽略态（本轮中性处置）：key = analyzed / errors 下标（两者 1:1 对齐）。
+     *  忽略 = 不发反馈、不触发反思、不作负样本，仅本轮折叠卡片并退出待处理计数；
+     *  clearResults（新检测 / 换文本）即清空（11-24 设计批准：results-actions R03/R04） */
+    ignored: {} as Record<number, true>,
+    /** 已落定反馈（采纳 / 放弃成功）下标镜像：归因 / 讲解页签据此隐藏「忽略」钮 */
+    feedbackDoneByIndex: {} as Record<number, true>,
+    /** 请求切到「错误归因」页签（AI 讲解页签「忽略」后回看折叠态；nonce 递增触发） */
+    showAttributionNonce: 0,
     /** 设置页锚点（PipelineStatus 点击 → 设置页滚动定位并高亮对应卡片） */
     settingsAnchor: '',
     /** 「替换为修正文本」应用前的文本快照（撤销用；null = 无可撤销动作） */
@@ -322,6 +330,8 @@ export const useGecStore = defineStore('gec', {
       this.decisionAbstained = false
       this.llmConfirmedClean = false
       this.focusErrorIndex = -1
+      this.ignored = {}
+      this.feedbackDoneByIndex = {}
       this.resultText = null
       this.resultLang = ''
       this.verdictRecheck = {}
@@ -646,6 +656,21 @@ export const useGecStore = defineStore('gec', {
     },
     resetLlm() {
       this.llm = { loading: false, explanation: '', exercises: '', meta: null, fallback: false }
+    },
+    /** 忽略某条（归因 / 讲解页签）：仅翻转本地标记，不调任何反馈端点；
+     *  撤销与「恢复全部」共用同一标记（design-flow results-actions R03） */
+    ignoreError(index: number) {
+      this.ignored[index] = true
+    },
+    restoreError(index: number) {
+      delete this.ignored[index]
+    },
+    restoreAllIgnored() {
+      this.ignored = {}
+    },
+    /** AI 讲解页签「忽略」→ ResultsPanel 切到错误归因（R02→R03：回看折叠 chip） */
+    requestShowAttribution() {
+      this.showAttributionNonce += 1
     },
     /** 预览高亮联动：请求右侧结果面板滚动定位到指定错误（nonce 递增触发） */
     focusError(index: number) {

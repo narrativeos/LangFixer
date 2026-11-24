@@ -76,9 +76,10 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
     total: 0,
     done: 0,
   })
-  // 分类级「批量采纳」作用域 = 当前 visible（全部实例）；pending = 尚未落定反馈的条数
-  const pendingCount = computed(() =>
-    visible.value.filter(({ i }) => !feedbackDone[i]).length,
+  // 分类级「批量采纳」作用域 = 当前 visible（全部实例）；pending = 尚未落定反馈且未被忽略的条数
+  // （忽略 = 本轮中性处置，与「已反馈跳过」并列退出批量作用域；design-flow results-actions）
+  const pendingCount = computed(
+    () => visible.value.filter(({ i }) => !feedbackDone[i] && !store.ignored[i]).length,
   )
 
   function ruleOf(i: number) {
@@ -118,6 +119,8 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       )
       // 成功返回 → 该错误的反馈动作已落定，采纳/放弃按钮均禁用
       feedbackDone[index] = true
+      // 镜像到 store：归因 / 讲解页签据此隐藏该条的「忽略」钮（已反馈过的条目不出忽略钮）
+      store.feedbackDoneByIndex[index] = true
       // 采纳沉淀：本条计入累积修正集（corrected_text 下次采纳时包含本条）
       adoptedIdx.add(index)
       // L3 飞轮：确认采纳的 LLM 检测结果汇入特征模型训练集（正样本，非阻断；服务端亦会采集，去重）
@@ -196,6 +199,8 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
       const res = await api.errorFeedback(store.lang, e, 'reject', reason)
       // 成功返回 → 该错误的反馈动作已落定，采纳/放弃按钮均禁用
       feedbackDone[index] = true
+      // 镜像到 store：归因 / 讲解页签据此隐藏该条的「忽略」钮（已反馈过的条目不出忽略钮）
+      store.feedbackDoneByIndex[index] = true
       feedbackMsg[index] = res.message
       if (res.reflection) {
         reflection[index] = res.reflection
@@ -217,7 +222,8 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
   /** 批量放弃：合并组「确认放弃」作用于组内全部实例（共享同一放弃原因；
    *  相同 original → 白名单词相同，服务端按词去重；反思报告逐条留痕） */
   async function batchReject(items: MergedItem[], reason?: string) {
-    const pending = items.filter(({ i }) => !feedbackDone[i])
+    // 忽略的条目同样退出作用域：忽略 = 本轮不发反馈，不能被批量放弃补发负样本
+    const pending = items.filter(({ i }) => !feedbackDone[i] && !store.ignored[i])
     if (pending.length === 0) return
     let ok = 0
     let fail = 0
@@ -380,7 +386,7 @@ export function useErrorFeedback(visible: ComputedRef<MergedItem[]>) {
    *  确认用 toast 行动位（弹窗配额外）；顺序执行（避免并发打规则蒸馏），单条失败不中断；结束 toast 汇总 */
   function batchAdopt(items: MergedItem[], scope: string) {
     if (batch.scope) return
-    const pending = items.filter(({ i }) => !feedbackDone[i])
+    const pending = items.filter(({ i }) => !feedbackDone[i] && !store.ignored[i])
     if (pending.length === 0) {
       toast('作用域内没有待采纳的错误', 'info')
       return

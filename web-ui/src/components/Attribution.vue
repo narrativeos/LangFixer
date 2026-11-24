@@ -13,10 +13,33 @@ const store = useGecStore()
 
 /** 句级怀疑（待复查）不进归因面：它没有具体错误点，归因只能落兑底桶，
  *  展示出来是误导；它的处置入口在「检测结果」（待复查标注 + 采纳/放弃）。
- *  LLM 复查合流入的条目无归因（attribution=null），卡片会错显「暂无决策表」，同样排除 */
-const attributable = computed(() =>
-  store.analyzed.filter((a) => a.attribution && !isVerdictOnly(a.error)),
+ *  LLM 复查合流入的条目无归因（attribution=null），卡片会错显「暂无决策表」，同样排除。
+ *  条目携带 analyzed 原始下标 idx：忽略态与已反馈镜像都以它为键（过滤只改展示，不改身份；
+ *  旧实现用过滤列表下标当讲解键，过滤后错位，本轮一并修正） */
+const entries = computed(() => {
+  const out: { item: (typeof store.analyzed)[number]; idx: number }[] = []
+  store.analyzed.forEach((item, idx) => {
+    if (item.attribution && !isVerdictOnly(item.error)) out.push({ item, idx })
+  })
+  return out
+})
+
+/** 整页签已忽略（R04 空态出口）：有条目但全部被本轮忽略 */
+const allIgnored = computed(
+  () => entries.value.length > 0 && entries.value.every(({ idx }) => !!store.ignored[idx]),
 )
+
+/** 忽略 = 本轮中性处置：不发反馈、不触发反思、不作负样本；6s 撤销与「恢复」同一标记 */
+function ignoreItem(idx: number) {
+  if (store.ignored[idx]) return
+  store.ignoreError(idx)
+  toast(
+    '已忽略 1 条：不计入待处理，也不会作为负样本进训练飞轮',
+    'info',
+    { label: '撤销', onClick: () => store.restoreError(idx) },
+    6000,
+  )
+}
 
 function label(key: string, table: Record<string, string>): string {
   return table[key] ?? key
@@ -71,7 +94,7 @@ function proposeKnowledge() {
 
 <template>
   <LEmpty
-    v-if="attributable.length === 0"
+    v-if="entries.length === 0"
     :text="store.detectCompleted ? '检测完成，未发现需要归因的错误' : '暂无归因结果'"
     :hint="
       store.detectCompleted
@@ -79,82 +102,134 @@ function proposeKnowledge() {
         : '点击「检测 + 归因」生成韦纳三维度归因与补救措施。'
     "
   />
-  <div v-else class="attr-list">
-    <div v-for="(item, i) in attributable" :key="i" class="attr-card" :class="{ novice: isNoviceBucket(item) }">
-      <div class="attr-head">
-        <LTag>{{ errorTypeLabel(item.error.error_type) }}</LTag>
-        <div class="fix">
-          <span class="original">{{ item.error.original }}</span>
-          <template v-if="item.error.correction">
-            <span class="arrow">→</span>
-            <span class="correction">{{ item.error.correction }}</span>
-          </template>
-        </div>
-        <span class="l-spacer"></span>
-        <!-- 逐错误讲解：请求对第 i 条生成 LLM 个性化讲解（ResultsPanel 切到 AI 讲解并触发生成） -->
-        <LButton variant="ghost" size="sm" @click="store.requestExplain(i)">讲解</LButton>
-      </div>
-      <div v-if="item.attribution" class="attribution-box">
-        <div class="attr-main">
-          <LTag>{{ label(item.attribution.attribution, ATTRIBUTION_LABELS) }}</LTag>
-          <LTag v-if="item.attribution.cefr && item.attribution.cefr !== 'unknown'">
-            CEFR {{ item.attribution.cefr }}
-          </LTag>
-          <!-- 知识源引用（知识库富化；同一规则/点可被多个源背书）；旧历史数据回退 source 字符串 -->
-          <template v-if="item.attribution.sources && item.attribution.sources.length > 0">
-            <LTag v-for="(s, j) in item.attribution.sources" :key="j" :title="s.source_id">
-              {{ (s.title || s.source_id) + (s.location ? ' · ' + s.location : '') }}
-            </LTag>
-          </template>
-          <LTag v-else-if="item.attribution.source">{{ item.attribution.source }}</LTag>
-        </div>
-        <dl class="dims">
-          <div class="dim">
-            <dt>归因方向</dt>
-            <dd><LTag>{{ label(item.attribution.weiner.locus, WEINER_LABELS) }}</LTag></dd>
-          </div>
-          <div class="dim">
-            <dt>稳定性</dt>
-            <dd><LTag>{{ label(item.attribution.weiner.stability, WEINER_LABELS) }}</LTag></dd>
-          </div>
-          <div class="dim">
-            <dt>可控性</dt>
-            <dd><LTag>{{ label(item.attribution.weiner.controllability, WEINER_LABELS) }}</LTag></dd>
-          </div>
-        </dl>
-        <div v-if="isNoviceBucket(item)" class="novice-note" role="note">
-          命中新手兜底桶（grammar_novice）：只能判定为新手知识缺口，未命中具体规则点；
-          补救措施与教材示例为占位引导，已隐藏，等待规则覆盖细化
-          <div class="novice-actions">
-            <LButton
-              size="sm"
-              variant="primary"
-              :loading="noviceBusy[store.analyzed.indexOf(item)]"
-              @click="sendToPractice(item)"
-              >送进练习队列</LButton
-            >
-            <LButton size="sm" @click="proposeKnowledge">加入知识提案</LButton>
-          </div>
-        </div>
-        <div v-else-if="item.attribution.remedial.length > 0" class="remedial">
-          <div class="remedial-title">补救措施</div>
-          <ul>
-            <li v-for="(r, j) in item.attribution.remedial" :key="j">{{ r }}</li>
-          </ul>
-        </div>
-        <div
-          v-if="!isNoviceBucket(item) && item.attribution.examples && item.attribution.examples.length > 0"
-          class="remedial"
+  <!-- R04：整页签忽略到底不是死角——恢复全部 / 重新检测两条活路 -->
+  <LEmpty
+    v-else-if="allIgnored"
+    text="错误归因已全部忽略"
+    hint="忽略只作用于本轮；重新检测或修改文本后自动清空"
+  >
+    <template #action>
+      <div class="empty-actions">
+        <LButton size="sm" @click="store.restoreAllIgnored()">恢复全部</LButton>
+        <LButton
+          size="sm"
+          variant="primary"
+          :disabled="store.loading"
+          @click="store.analyze(store.sessionId || undefined)"
+          >重新检测</LButton
         >
-          <div class="remedial-title">教材示例</div>
-          <div v-for="(ex, j) in item.attribution.examples" :key="j" class="example">{{ ex }}</div>
-        </div>
-        <div class="trace">
-          命中规则：{{ item.attribution.trace.matched_rule }} · 决策表：{{ item.attribution.trace.decision_table }}
-        </div>
       </div>
-      <p v-else class="no-table">该语言暂无决策表，无法归因</p>
-    </div>
+    </template>
+  </LEmpty>
+  <div v-else class="attr-list">
+    <template v-for="entry in entries" :key="entry.idx">
+      <!-- R03：已忽略 = 折叠 chip（不删数据），带恢复出口 -->
+      <div v-if="store.ignored[entry.idx]" class="ignored-chip">
+        <span>
+          已忽略 · {{ entry.item.error.original }}<template v-if="entry.item.error.correction">
+            → {{ entry.item.error.correction }}</template
+          >（不发反馈 · 不触发反思）
+        </span>
+        <LButton variant="ghost" size="sm" @click="store.restoreError(entry.idx)">恢复</LButton>
+      </div>
+      <div v-else class="attr-card" :class="{ novice: isNoviceBucket(entry.item) }">
+        <div class="attr-head">
+          <LTag>{{ errorTypeLabel(entry.item.error.error_type) }}</LTag>
+          <div class="fix">
+            <span class="original">{{ entry.item.error.original }}</span>
+            <template v-if="entry.item.error.correction">
+              <span class="arrow">→</span>
+              <span class="correction">{{ entry.item.error.correction }}</span>
+            </template>
+          </div>
+          <span class="l-spacer"></span>
+          <!-- 逐错误讲解：请求对该条（analyzed 下标）生成 LLM 个性化讲解（ResultsPanel 切到 AI 讲解并触发生成） -->
+          <LButton variant="ghost" size="sm" @click="store.requestExplain(entry.idx)">讲解</LButton>
+          <!-- 忽略与讲解并排；已反馈（采纳/放弃落定）的条目不出忽略钮 -->
+          <LButton
+            v-if="!store.feedbackDoneByIndex[entry.idx]"
+            variant="ghost"
+            size="sm"
+            @click="ignoreItem(entry.idx)"
+            >忽略</LButton
+          >
+        </div>
+        <div v-if="entry.item.attribution" class="attribution-box">
+          <div class="attr-main">
+            <LTag>{{ label(entry.item.attribution.attribution, ATTRIBUTION_LABELS) }}</LTag>
+            <LTag
+              v-if="entry.item.attribution.cefr && entry.item.attribution.cefr !== 'unknown'"
+            >
+              CEFR {{ entry.item.attribution.cefr }}
+            </LTag>
+            <!-- 知识源引用（知识库富化；同一规则/点可被多个源背书）；旧历史数据回退 source 字符串 -->
+            <template v-if="entry.item.attribution.sources && entry.item.attribution.sources.length > 0">
+              <LTag v-for="(s, j) in entry.item.attribution.sources" :key="j" :title="s.source_id">
+                {{ (s.title || s.source_id) + (s.location ? ' · ' + s.location : '') }}
+              </LTag>
+            </template>
+            <LTag v-else-if="entry.item.attribution.source">{{ entry.item.attribution.source }}</LTag>
+          </div>
+          <dl class="dims">
+            <div class="dim">
+              <dt>归因方向</dt>
+              <dd><LTag>{{ label(entry.item.attribution.weiner.locus, WEINER_LABELS) }}</LTag></dd>
+            </div>
+            <div class="dim">
+              <dt>稳定性</dt>
+              <dd><LTag>{{ label(entry.item.attribution.weiner.stability, WEINER_LABELS) }}</LTag></dd>
+            </div>
+            <div class="dim">
+              <dt>可控性</dt>
+              <dd>
+                <LTag>{{ label(entry.item.attribution.weiner.controllability, WEINER_LABELS) }}</LTag>
+              </dd>
+            </div>
+          </dl>
+          <div v-if="isNoviceBucket(entry.item)" class="novice-note" role="note">
+            命中新手兜底桶（grammar_novice）：只能判定为新手知识缺口，未命中具体规则点；
+            补救措施与教材示例为占位引导，已隐藏，等待规则覆盖细化
+            <div class="novice-actions">
+              <LButton
+                size="sm"
+                variant="primary"
+                :loading="noviceBusy[entry.idx]"
+                @click="sendToPractice(entry.item)"
+                >送进练习队列</LButton
+              >
+              <LButton size="sm" @click="proposeKnowledge">加入知识提案</LButton>
+            </div>
+          </div>
+          <div
+            v-else-if="entry.item.attribution.remedial.length > 0"
+            class="remedial"
+          >
+            <div class="remedial-title">补救措施</div>
+            <ul>
+              <li v-for="(r, j) in entry.item.attribution.remedial" :key="j">{{ r }}</li>
+            </ul>
+          </div>
+          <div
+            v-if="
+              !isNoviceBucket(entry.item) &&
+              entry.item.attribution.examples &&
+              entry.item.attribution.examples.length > 0
+            "
+            class="remedial"
+          >
+            <div class="remedial-title">教材示例</div>
+            <div v-for="(ex, j) in entry.item.attribution.examples" :key="j" class="example">
+              {{ ex }}
+            </div>
+          </div>
+          <div class="trace">
+            命中规则：{{ entry.item.attribution.trace.matched_rule }} ·
+            决策表：{{ entry.item.attribution.trace.decision_table }}
+          </div>
+        </div>
+        <p v-else class="no-table">该语言暂无决策表，无法归因</p>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -163,6 +238,24 @@ function proposeKnowledge() {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+/* 已忽略折叠条（R03）：中性处置，不删数据 */
+.ignored-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.empty-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
 }
 .attr-card {
   display: flex;

@@ -14,17 +14,31 @@ const store = useGecStore()
 type PanelView = 'errors' | 'attribution' | 'llm'
 const view = ref<PanelView>('errors')
 
-/** 三个页签:标签带计数,数量即工作台的注意力信号 */
+/** 三个页签:标签带计数,数量即工作台的注意力信号；
+ *  错误归因计数 = 未处置数（可归因且未被本轮忽略；全部忽略后显式显 0，R04） */
 const viewOptions = computed(() => [
   { value: 'errors' as const, label: store.errors.length ? `检测结果 ${store.errors.length}` : '检测结果' },
-  { value: 'attribution' as const, label: attributableCount.value ? `错误归因 ${attributableCount.value}` : '错误归因' },
+  {
+    value: 'attribution' as const,
+    label:
+      attributableTotal.value > 0
+        ? `错误归因 ${attributableOpen.value}`
+        : '错误归因',
+  },
   { value: 'llm' as const, label: 'AI 讲解' },
 ])
 
 /** 句级怀疑（决策模型待复查项）不进归因面（服务端已 skip，此处兜底旧服务端数据），
  *  页签计数与自动切换都按可归因数计 */
-const attributableCount = computed(
+const attributableTotal = computed(
   () => store.analyzed.filter((a) => a.attribution && !isVerdictOnly(a.error)).length,
+)
+/** 未处置可归因数（剔除本轮已忽略；analyzed 下标 = ignored 键） */
+const attributableOpen = computed(
+  () =>
+    store.analyzed.filter(
+      (a, i) => a.attribution && !isVerdictOnly(a.error) && !store.ignored[i],
+    ).length,
 )
 
 /** 「本次管线」摘要（T1-3）：检测完成后展示各层实际执行情况（跑了什么 / 各层耗时）。
@@ -100,6 +114,13 @@ watch(
   () => store.explainNonce,
   (n) => {
     if (n > 0) view.value = 'llm'
+  },
+)
+// AI 讲解页签「忽略」→ 回看错误归因页签的折叠 chip（design-flow results-actions R02→R03）
+watch(
+  () => store.showAttributionNonce,
+  (n) => {
+    if (n > 0) view.value = 'attribution'
   },
 )
 
