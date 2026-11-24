@@ -75,9 +75,9 @@ function verdictHintText(i: number): string {
   const st = recheckOf(i)
   if (st?.state === 'loading') return 'AI 正在复查该句，稍候…'
   if (st?.state === 'clean')
-    return '复查未发现错误，可能是决策模型误报；复查结论已收录运行日志（recheck_clean 样本），现在放弃会另行记录反馈，均用于模型迭代'
+    return 'AI 复查没有在这句里找到错误，可能是决策模型误报。点「按误报处理」会记为误报反馈；确信有错可点「仍判有错」，作为你的裁决入错题本'
   if (st?.state === 'error') return `复查失败：${st.msg ?? '未知错误'}（可重试）`
-  return '决策模型判断该句有错但未定位错误点；送 AI 复查可定位并给出具体修改。直接采纳/放弃会作为反馈数据记录，用于模型迭代'
+  return '决策模型认为这句有错，但没找到错在哪。送 AI 复查可定位并给出修改；也可直接「确认有错」或「按误报放弃」，两者都会作为反馈记录'
 }
 
 // 反思建议按钮形态：导航/重训练=主操作；停用规则=普通；删除类=破坏性（红）
@@ -407,14 +407,17 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
           :tone="recheckOf(g.first.i)?.state === 'clean' ? 'ok' : 'warn'"
           :title="
             recheckOf(g.first.i)?.state === 'clean'
-              ? 'AI 复查未发现具体错误，可能是决策模型误报'
+              ? 'AI 复查未发现具体错误，可能是决策模型误报；复查结论已收录运行日志（recheck_clean 样本）'
               : '决策模型判断该句有错，但未定位具体错误点；待 AI 复查细化'
           "
         >
           {{ recheckOf(g.first.i)?.state === 'clean' ? '已复查·无错' : '待复查' }}
         </LTag>
       </div>
-      <div class="fix">
+      <div
+        class="fix"
+        :class="{ 'fix-clean': isVerdictOnly(g.first.e) && recheckOf(g.first.i)?.state === 'clean' }"
+      >
         <span class="original">{{ g.first.e.original }}</span>
         <template v-if="g.first.e.correction">
           <span class="arrow">→</span>
@@ -422,7 +425,15 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
         </template>
       </div>
       <div class="message">{{ g.first.e.message }}</div>
-      <div v-if="isVerdictOnly(g.first.e)" class="verdict-hint">
+      <!-- verdict 复查入口：单条 pending/loading 的主按钮在反馈行（不重复），
+           此处只保留「重送复查」（clean 可重送）与合并组；运行日志的说法收进 tooltip -->
+      <div
+        v-if="
+          isVerdictOnly(g.first.e) &&
+          (g.items.length > 1 || recheckOf(g.first.i)?.state === 'clean')
+        "
+        class="verdict-hint"
+      >
         <span>{{ verdictHintText(g.first.i) }}</span>
         <LButton
           size="sm"
@@ -433,20 +444,35 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
             store.recheckAll.running
               ? '批量复查进行中，逐句轮到即送，无需重复点'
               : store.llmEnabled
-                ? '送 AI 复查定位并给出修改'
+                ? '送 AI 复查定位并给出修改；复查结论会收录运行日志'
                 : 'AI 复查未配置（见设置）'
           "
           @click="store.recheckVerdict(g.first.i)"
         >
-          {{ recheckOf(g.first.i)?.state === 'error' ? '重试复查' : 'LLM 复查' }}
+          {{
+            recheckOf(g.first.i)?.state === 'loading'
+              ? '复查中…'
+              : recheckOf(g.first.i)?.state === 'error'
+                ? '重试复查'
+                : recheckOf(g.first.i)?.state === 'clean'
+                  ? '重送复查'
+                  : 'LLM 复查'
+          }}
         </LButton>
+      </div>
+      <div v-else-if="isVerdictOnly(g.first.e)" class="verdict-hint">
+        <span>{{ verdictHintText(g.first.i) }}</span>
       </div>
       <div class="llm-feedback">
         <!-- 同类合并组（N>1）：卡级「采纳 ×N」批量按钮 + 放弃（两段式，作用于组内全部实例）+ 展开的实例清单 -->
         <template v-if="g.items.length > 1">
           <LButton
             size="sm"
-            variant="primary"
+            :variant="
+              isVerdictOnly(g.first.e) && recheckOf(g.first.i)?.state === 'clean'
+                ? 'ghost'
+                : 'primary'
+            "
             :loading="batch.scope === g.key && batch.done < batch.total"
             :disabled="
               g.items.every((it) => feedbackDone[it.i]) ||
@@ -455,19 +481,40 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
           >
             {{
               batch.scope === g.key && batch.done < batch.total
-                ? `采纳中 ${batch.done}/${g.items.length}…`
-                : `采纳 ×${g.items.length}`
+                ? isVerdictOnly(g.first.e)
+                  ? `确认中 ${batch.done}/${g.items.length}…`
+                  : `采纳中 ${batch.done}/${g.items.length}…`
+                : isVerdictOnly(g.first.e)
+                  ? `确认有错 ×${g.items.length}`
+                  : `采纳 ×${g.items.length}`
             }}
           </LButton>
           <LButton
             size="sm"
+            :variant="
+              isVerdictOnly(g.first.e) && recheckOf(g.first.i)?.state === 'clean'
+                ? 'primary'
+                : undefined
+            "
             :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
             :disabled="
               feedbackDone[g.first.i] ||
               (feedbackLoading === g.first.i && feedbackAction === 'adopt')"
             @click="rejectOne(g.first.i)"
           >
-            {{ showReason[g.first.i] ? '✗ 待确认放弃…' : '✗ 放弃' }}
+            {{
+              isVerdictOnly(g.first.e) && recheckOf(g.first.i)?.state === 'clean'
+                ? showReason[g.first.i]
+                  ? '✓ 待确认…'
+                  : '✓ 按误报处理'
+                : isVerdictOnly(g.first.e)
+                  ? showReason[g.first.i]
+                    ? '✗ 待确认放弃…'
+                    : '✗ 按误报放弃'
+                  : showReason[g.first.i]
+                    ? '✗ 待确认放弃…'
+                    : '✗ 放弃'
+            }}
           </LButton>
           <div v-if="showReason[g.first.i]" class="reason-row">
             <LInput
@@ -481,7 +528,7 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
               :loading="g.items.some((it) => feedbackLoading === it.i && feedbackAction === 'reject')"
               @click="batchReject(g.items, reasonInput[g.first.i] || undefined)"
             >
-              确认放弃
+              {{ isVerdictOnly(g.first.e) ? '确认' : '确认放弃' }}
             </LButton>
             <LButton size="sm" variant="ghost" @click="showReason[g.first.i] = false">取消</LButton>
           </div>
@@ -503,27 +550,109 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
         </template>
         <!-- 单条错误：原有逐条反馈结构（全部来源层） -->
         <template v-else>
-          <LButton
-            size="sm"
-            variant="primary"
-            :loading="feedbackLoading === g.first.i && feedbackAction === 'adopt'"
-            :disabled="
-              feedbackDone[g.first.i] ||
-              (feedbackLoading === g.first.i && feedbackAction === 'reject')"
-            @click="adoptOne(g.first.i)"
-          >
-            ✓ {{ g.first.e.error_type === 'anomaly' ? '确认污染' : '采纳' }}
-          </LButton>
-          <LButton
-            size="sm"
-            :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
-            :disabled="
-              feedbackDone[g.first.i] ||
-              (feedbackLoading === g.first.i && feedbackAction === 'adopt')"
-            @click="rejectOne(g.first.i)"
-          >
-            {{ showReason[g.first.i] ? '✗ 待确认放弃…' : '✗ 放弃' }}
-          </LButton>
+          <!-- 句级 verdict 卡片：采纳/放弃不应用任何修正，只是对「句级判断」的裁决 →
+               用效词呈现，复查才是主路径。已复查·无错时主按钮与复查结论一致
+               （按误报处理），推翻复查（仍判有错）降为 ghost，消除「无错徽章 ×
+               蓝色采纳」的矛盾信号 -->
+          <template v-if="isVerdictOnly(g.first.e)">
+            <template v-if="recheckOf(g.first.i)?.state === 'clean'">
+              <LButton
+                size="sm"
+                variant="primary"
+                :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
+                :disabled="
+                  feedbackDone[g.first.i] ||
+                  (feedbackLoading === g.first.i && feedbackAction === 'adopt')"
+                title="与复查结论一致：按误报记录反馈（两段式，可附原因）"
+                @click="rejectOne(g.first.i)"
+              >
+                {{ showReason[g.first.i] ? '✓ 待确认…' : '✓ 按误报处理' }}
+              </LButton>
+              <LButton
+                size="sm"
+                variant="ghost"
+                :loading="feedbackLoading === g.first.i && feedbackAction === 'adopt'"
+                :disabled="
+                  feedbackDone[g.first.i] ||
+                  (feedbackLoading === g.first.i && feedbackAction === 'reject')"
+                title="以你的判断推翻复查结论：确认为真实错误并记入错题本（该条无改正，不改文本）"
+                @click="adoptOne(g.first.i)"
+              >
+                仍判有错
+              </LButton>
+            </template>
+            <template v-else>
+              <LButton
+                size="sm"
+                variant="primary"
+                :loading="recheckOf(g.first.i)?.state === 'loading'"
+                :disabled="!store.llmEnabled || store.recheckAll.running"
+                :title="
+                  store.recheckAll.running
+                    ? '批量复查进行中，逐句轮到即送，无需重复点'
+                    : store.llmEnabled
+                      ? '送 AI 复查定位并给出修改；复查结论会收录运行日志'
+                      : 'AI 复查未配置（见设置）'
+                "
+                @click="store.recheckVerdict(g.first.i)"
+              >
+                {{
+                  recheckOf(g.first.i)?.state === 'error'
+                    ? '重试复查'
+                    : recheckOf(g.first.i)?.state === 'loading'
+                      ? '复查中…'
+                      : '送 AI 复查'
+                }}
+              </LButton>
+              <LButton
+                size="sm"
+                variant="ghost"
+                :loading="feedbackLoading === g.first.i && feedbackAction === 'adopt'"
+                :disabled="
+                  feedbackDone[g.first.i] ||
+                  (feedbackLoading === g.first.i && feedbackAction === 'reject')"
+                title="不经复查直接确认该句为真实错误：记反馈并入错题本（该条无改正，不改文本）"
+                @click="adoptOne(g.first.i)"
+              >
+                确认有错
+              </LButton>
+              <LButton
+                size="sm"
+                variant="ghost"
+                :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
+                :disabled="
+                  feedbackDone[g.first.i] ||
+                  (feedbackLoading === g.first.i && feedbackAction === 'adopt')"
+                title="不经复查直接按误报处理：记反馈并触发反思"
+                @click="rejectOne(g.first.i)"
+              >
+                {{ showReason[g.first.i] ? '✗ 待确认放弃…' : '✗ 按误报放弃' }}
+              </LButton>
+            </template>
+          </template>
+          <template v-else>
+            <LButton
+              size="sm"
+              variant="primary"
+              :loading="feedbackLoading === g.first.i && feedbackAction === 'adopt'"
+              :disabled="
+                feedbackDone[g.first.i] ||
+                (feedbackLoading === g.first.i && feedbackAction === 'reject')"
+              @click="adoptOne(g.first.i)"
+            >
+              ✓ {{ g.first.e.error_type === 'anomaly' ? '确认污染' : '采纳' }}
+            </LButton>
+            <LButton
+              size="sm"
+              :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
+              :disabled="
+                feedbackDone[g.first.i] ||
+                (feedbackLoading === g.first.i && feedbackAction === 'adopt')"
+              @click="rejectOne(g.first.i)"
+            >
+              {{ showReason[g.first.i] ? '✗ 待确认放弃…' : '✗ 放弃' }}
+            </LButton>
+          </template>
           <!-- 放弃（两段式）：首次点击展开原因输入框，「确认放弃」才执行 -->
           <div v-if="showReason[g.first.i]" class="reason-row">
             <LInput
@@ -537,7 +666,7 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
               :loading="feedbackLoading === g.first.i && feedbackAction === 'reject'"
               @click="onFeedback(g.first.i, 'reject')"
             >
-              确认放弃
+              {{ isVerdictOnly(g.first.e) ? '确认' : '确认放弃' }}
             </LButton>
             <LButton size="sm" variant="ghost" @click="showReason[g.first.i] = false">取消</LButton>
           </div>
@@ -755,6 +884,12 @@ function onCardKeydown(g: MergedGroup, ev: KeyboardEvent) {
   margin-top: 2px;
   font-size: var(--fs-sm);
   color: var(--muted);
+}
+
+/* 复查·无错：该句大概率无误，撤销全局 .original 的「划线待替换」视觉暗示 */
+.fix-clean .original {
+  color: var(--muted);
+  text-decoration: none;
 }
 .adopt-knowledge-kept {
   display: flex;
