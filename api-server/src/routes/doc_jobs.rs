@@ -8,13 +8,13 @@
 //! - `POST /gec/doc-jobs/:id/cancel`：取消（未开跑块保持 pending）；
 //! - `POST /gec/doc-jobs/:id/retry`：failed/parse_failed 块重置重跑（续跑）。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use axum::Json;
 use axum::extract::Path as AxPath;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::Json;
 
 use crate::routes::ApiError;
 use crate::state::AppState;
@@ -97,9 +97,9 @@ pub async fn create(
     if req.text.is_empty() {
         return Err(ApiError::BadRequest("text 不能为空".into()));
     }
-    let llm = state
-        .llm_detect_engine(&req.lang)
-        .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
+    let llm = state.llm_detect_engine(&req.lang).ok_or_else(|| {
+        ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into())
+    })?;
     let settings = state.settings.read().unwrap().clone();
     let target = req
         .chunk_target
@@ -125,7 +125,6 @@ pub async fn create(
     })))
 }
 
-
 #[derive(serde::Deserialize)]
 pub struct ListReq {
     #[serde(default = "default_limit")]
@@ -140,7 +139,10 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ListReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let rows = state.doc_jobs.list_jobs(q.limit.min(200)).map_err(internal)?;
+    let rows = state
+        .doc_jobs
+        .list_jobs(q.limit.min(200))
+        .map_err(internal)?;
     let jobs: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|(m, p)| {
@@ -237,7 +239,10 @@ pub fn resume_interrupted_jobs(state: &AppState) {
             continue; // 本进程已在跑（防御性去重）
         }
         let Some(llm) = state.llm_detect_engine(&job.lang) else {
-            tracing::info!(job_id = job.id, "LLM 未配置，文档作业保持待跑（可在设置后 retry）");
+            tracing::info!(
+                job_id = job.id,
+                "LLM 未配置，文档作业保持待跑（可在设置后 retry）"
+            );
             continue;
         };
         tracing::info!(job_id = job.id, lang = job.lang, "续跑重启打断的文档作业");
@@ -285,9 +290,9 @@ pub async fn retry(
     if state.doc_job_cancel.lock().unwrap().contains_key(&id) {
         return Err(ApiError::BadRequest("作业正在运行".into()));
     }
-    let llm = state
-        .llm_detect_engine(&job.lang)
-        .ok_or_else(|| ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into()))?;
+    let llm = state.llm_detect_engine(&job.lang).ok_or_else(|| {
+        ApiError::ServiceUnavailable("文档级审校需要 LLM，请先在设置中配置".into())
+    })?;
     let reset = state.doc_jobs.reset_failed_chunks(&id).map_err(internal)?;
     let settings = state.settings.read().unwrap().clone();
     spawn_run(
@@ -298,7 +303,9 @@ pub async fn retry(
         settings.doc_jobs.cache,
         gec_core::DocBudget::All,
     )?;
-    Ok(Json(serde_json::json!({ "ok": true, "reset_chunks": reset })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "reset_chunks": reset }),
+    ))
 }
 
 /// SSE 进度流：每 300ms 一个 `progress` 事件（状态 + 进度 + 覆盖率），
@@ -311,28 +318,29 @@ pub async fn events(
         return Err(ApiError::NotFound(format!("作业不存在: {id}")));
     }
     let store = state.doc_jobs.clone();
-    let stream = futures_util::stream::unfold((store, id, false), |(store, job_id, done)| async move {
-        if done {
-            return None;
-        }
-        let job = store.job(&job_id).ok().flatten()?;
-        let progress = store.progress(&job_id).ok()?;
-        let terminal = matches!(job.status.as_str(), "done" | "cancelled" | "failed");
-        let data = serde_json::json!({
-            "status": job.status,
-            "progress": progress,
-            "coverage": progress.coverage(),
+    let stream =
+        futures_util::stream::unfold((store, id, false), |(store, job_id, done)| async move {
+            if done {
+                return None;
+            }
+            let job = store.job(&job_id).ok().flatten()?;
+            let progress = store.progress(&job_id).ok()?;
+            let terminal = matches!(job.status.as_str(), "done" | "cancelled" | "failed");
+            let data = serde_json::json!({
+                "status": job.status,
+                "progress": progress,
+                "coverage": progress.coverage(),
+            });
+            let event = axum::response::sse::Event::default()
+                .event(if terminal { "end" } else { "progress" })
+                .json_data(data)
+                .ok()?;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (store, job_id, terminal),
+            ))
         });
-        let event = axum::response::sse::Event::default()
-            .event(if terminal { "end" } else { "progress" })
-            .json_data(data)
-            .ok()?;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        Some((
-            Ok::<_, std::convert::Infallible>(event),
-            (store, job_id, terminal),
-        ))
-    });
     Ok(axum::response::sse::Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response())

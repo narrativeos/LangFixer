@@ -36,7 +36,11 @@ pub fn build<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     // panic（Windows 实测闪退），不可使用。
     let export = item("menu:export", "导出正误表…", Some("CmdOrCtrl+Shift+E"))?;
 
-    let undo_apply = item("menu:undo-apply", "撤销应用全部修正", Some("CmdOrCtrl+Alt+Z"))?;
+    let undo_apply = item(
+        "menu:undo-apply",
+        "撤销应用全部修正",
+        Some("CmdOrCtrl+Alt+Z"),
+    )?;
 
     let v_workspace = item("menu:view:workspace", "进入检测", Some("CmdOrCtrl+1"))?;
     let v_learning = item("menu:view:learning", "练习与复习", Some("CmdOrCtrl+2"))?;

@@ -59,7 +59,9 @@ async fn mock_server(respond: fn(&str) -> Option<String>) -> String {
 }
 
 /// 词典信号（与 api-server 启动注入同款公式）：detect_local 命中密度
-fn lexicon_signal(lex: gec_zh::rules::Lexicon) -> impl Fn(&str) -> ChunkRisk + Send + Sync + 'static {
+fn lexicon_signal(
+    lex: gec_zh::rules::Lexicon,
+) -> impl Fn(&str) -> ChunkRisk + Send + Sync + 'static {
     move |t: &str| {
         let hits = gec_zh::rules::detect_local(t, &lex).len();
         if hits == 0 {
@@ -104,12 +106,10 @@ fn load_sents() -> (Vec<String>, Vec<String>) {
     (gold, clean)
 }
 
-
 #[tokio::test]
 async fn doc_eval_with_lexicon_signal() {
-    let lex = gec_zh::rules::Lexicon::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons"),
-    );
+    let lex =
+        gec_zh::rules::Lexicon::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../lexicons"));
     let _ = triage::set_extra_signal(Arc::new(lexicon_signal(lex)));
 
     let (gold, clean) = load_sents();
@@ -156,7 +156,10 @@ async fn doc_eval_with_lexicon_signal() {
             }
         }
         for e in errs {
-            if !gold_ranges.iter().any(|r| e.span[0] < r[1] && r[0] < e.span[1]) {
+            if !gold_ranges
+                .iter()
+                .any(|r| e.span[0] < r[1] && r[0] < e.span[1])
+            {
                 fp += 1;
             }
         }
@@ -227,7 +230,9 @@ async fn doc_eval_with_lexicon_signal() {
     // 臂 C：修订文档（复制一句 → 受影响块重跑，其余命中缓存）
     let dup = clean[7].clone();
     let revised = format!("{doc}{dup}\n");
-    store_a.create_job("rev", "zh", &revised, None, 400).unwrap();
+    store_a
+        .create_job("rev", "zh", &revised, None, 400)
+        .unwrap();
     let (pc, ec) = run_doc_job(
         store_a.clone(),
         llm.clone(),

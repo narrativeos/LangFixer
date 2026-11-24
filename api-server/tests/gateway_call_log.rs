@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use api_server::{auth::GatewayConfig, middleware, routes};
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
 use axum::Router;
-use serde_json::{json, Value};
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const ADMIN: &str = "lf-admin-token-for-call-log-test-0123456789";
@@ -70,7 +70,10 @@ async fn call(
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap_or_default();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// 日志行的 (token_id, endpoint, status)，按写入序。

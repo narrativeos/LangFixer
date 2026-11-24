@@ -117,11 +117,23 @@ fn statistical_risk(text: &str) -> ChunkRisk {
         }
     }
     if punct_repeat + punct_mix > 0 {
-        add(&mut r.score, &mut r.signals, "punct_anomaly", (0.3 + 0.1 * (punct_repeat + punct_mix) as f64).min(0.5));
+        add(
+            &mut r.score,
+            &mut r.signals,
+            "punct_anomaly",
+            (0.3 + 0.1 * (punct_repeat + punct_mix) as f64).min(0.5),
+        );
     }
 
     // ② 括号/引号不配对（中英文分别计数，净差非零即异常）
-    let pairs = [('（', '）'), ('(', ')'), ('「', '」'), ('“', '”'), ('【', '】'), ('《', '》')];
+    let pairs = [
+        ('（', '）'),
+        ('(', ')'),
+        ('「', '」'),
+        ('“', '”'),
+        ('【', '】'),
+        ('《', '》'),
+    ];
     let unbalanced = pairs.iter().any(|(l, r)| {
         text.chars().filter(|c| c == l).count() != text.chars().filter(|c| c == r).count()
     });
@@ -156,7 +168,10 @@ fn statistical_risk(text: &str) -> ChunkRisk {
     }
 
     // ⑤ 字符异常：控制字符（非 \n\t）或 3+ 连续空格（格式/编码残留）
-    let ctrl = text.chars().filter(|c| c.is_control() && *c != '\n' && *c != '\t').count();
+    let ctrl = text
+        .chars()
+        .filter(|c| c.is_control() && *c != '\n' && *c != '\t')
+        .count();
     let space_runs = text.match_indices("   ").count();
     if ctrl > 0 || space_runs > 0 {
         add(&mut r.score, &mut r.signals, "char_anomaly", 0.2);
@@ -188,10 +203,16 @@ mod tests {
     #[test]
     fn unbalanced_pair_and_repetition_detected() {
         let r1 = chunk_risk("这段文字的（括号没有闭合，属于配对异常。");
-        assert!(r1.signals.contains(&"unbalanced_pair".to_string()), "{r1:?}");
+        assert!(
+            r1.signals.contains(&"unbalanced_pair".to_string()),
+            "{r1:?}"
+        );
         let dup = "这是一个足够长的句子用来触发重复检测的信号阈值。";
         let r2 = chunk_risk(&format!("{dup}。{dup}。\n"));
-        assert!(r2.signals.contains(&"repeated_sentence".to_string()), "{r2:?}");
+        assert!(
+            r2.signals.contains(&"repeated_sentence".to_string()),
+            "{r2:?}"
+        );
         assert!(r2.score >= FAST_THRESHOLD);
     }
 
@@ -221,20 +242,26 @@ mod tests {
         let base = chunk_risk_with(clean, None);
         assert!(base.score < FAST_THRESHOLD);
         // 词典命中类信号：干净统计画像 + 命中 → 抬出 fast 区
-        let r = chunk_risk_with(clean, Some(&|_t| ChunkRisk {
-            score: 0.5,
-            signals: vec!["lexicon_hit:2".into()],
-        }));
+        let r = chunk_risk_with(
+            clean,
+            Some(&|_t| ChunkRisk {
+                score: 0.5,
+                signals: vec!["lexicon_hit:2".into()],
+            }),
+        );
         assert!(r.score >= FAST_THRESHOLD, "{r:?}");
         assert!(r.signals.contains(&"lexicon_hit:2".to_string()), "{r:?}");
     }
 
     #[test]
     fn extra_signal_score_caps_at_one() {
-        let r = chunk_risk_with("标点异常。。测试。", Some(&|_t| ChunkRisk {
-            score: 0.9,
-            signals: vec!["x".into()],
-        }));
+        let r = chunk_risk_with(
+            "标点异常。。测试。",
+            Some(&|_t| ChunkRisk {
+                score: 0.9,
+                signals: vec!["x".into()],
+            }),
+        );
         assert!(r.score <= 1.0, "{r:?}");
     }
 }

@@ -857,7 +857,9 @@ mod tests {
         assert!(deposit_granularity_ok(
             "他Yesterday在图书馆借了三本书,但是他还忘记带借书证."
         ));
-        assert!(deposit_granularity_ok("I saw a apple in the park yesterday."));
+        assert!(deposit_granularity_ok(
+            "I saw a apple in the park yesterday."
+        ));
     }
 
     #[test]
@@ -867,9 +869,13 @@ mod tests {
         assert!(!deposit_granularity_ok("Yesterday"));
         assert!(!deposit_granularity_ok("你好，根据你的描述，"));
         // 多句整段：句级召回永远不命中
-        assert!(!deposit_granularity_ok("第一句话在这里。第二句话也在这里。第三句话仍然存在。"));
+        assert!(!deposit_granularity_ok(
+            "第一句话在这里。第二句话也在这里。第三句话仍然存在。"
+        ));
         // 重复整段（生产见过的病理输入）
-        assert!(!deposit_granularity_ok(&"他每天早晨六点半就起床跑步，坚持了三年。".repeat(16)));
+        assert!(!deposit_granularity_ok(
+            &"他每天早晨六点半就起床跑步，坚持了三年。".repeat(16)
+        ));
         // 超长单句：超出沉淀粒度上限
         assert!(!deposit_granularity_ok(&format!("{}。", "词".repeat(151))));
     }
