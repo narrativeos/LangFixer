@@ -386,6 +386,7 @@ impl LlmGecEngine {
     ///   message 已带「未能定位」标注）；
     /// - 单块失败**不中断整体**：计入 `failed_chunks` / `parse_failed_chunks`；
     ///   全部块失败才返回 [`Err`]。
+    ///
     /// `progress` 为可选段级事件接收器：多块路径下每块复查前后各推
     /// 一条 [`crate::progress::StageEvent::ChunkBegin`] / ChunkEnd（短文本单块路径不推，
     /// 整层 Stage 事件已足够）；未注入时零开销。
@@ -2424,15 +2425,10 @@ mod tests {
         let c = conns.clone();
         tokio::spawn(async move {
             let mut held = Vec::new();
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        c.fetch_add(1, Ordering::SeqCst);
-                        // 持有连接不回话（drop 会掐连接 → 变成 Canceled 而不是超时）
-                        held.push(stream);
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((stream, _)) = listener.accept().await {
+                c.fetch_add(1, Ordering::SeqCst);
+                // 持有连接不回话（drop 会掐连接 → 变成 Canceled 而不是超时）
+                held.push(stream);
             }
             drop(held);
         });
@@ -2468,8 +2464,8 @@ mod tests {
             r#"[{"error_type":"grammar","confidence":0.8,"original":"了","correction":"过"},{"error_type":"grammar","confidence":0.8,"original":"饭","correction":"餐"}]"#,
         )
         .await;
-        let events: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, usize, usize)>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        type SinkEvents = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, usize, usize)>>>;
+        let events: SinkEvents = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_events = events.clone();
         let sink: super::DualJudgeSink = std::sync::Arc::new(move |ev| {
             let pj: Vec<serde_json::Value> = serde_json::from_str(&ev.primary_json).unwrap();

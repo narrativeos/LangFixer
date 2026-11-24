@@ -122,9 +122,9 @@ mod tests {
         let m = mask_pii(text);
         // 等长 → span 空间与原文一致
         assert_eq!(m.text.len(), text.len());
-        assert!(m.text.contains("13800138000") == false);
-        assert!(m.text.contains("110101199003077777") == false);
-        assert!(m.text.contains("010-12345678") == false);
+        assert!(!m.text.contains("13800138000"));
+        assert!(!m.text.contains("110101199003077777"));
+        assert!(!m.text.contains("010-12345678"));
         assert!(!m.ranges.is_empty());
     }
 

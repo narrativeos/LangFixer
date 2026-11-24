@@ -222,10 +222,10 @@ impl AppSettings {
     /// 与 [`AppSettings::load`] 的优先级一致：设置文件可解析时决策层全部字段取自
     /// 文件（缺失字段取 serde 默认，环境变量不参与）；文件不存在/解析失败才看 env。
     pub fn decision_config_source(path: &Path) -> &'static str {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if serde_json::from_str::<Self>(&content).is_ok() {
-                return "settings_file";
-            }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && serde_json::from_str::<Self>(&content).is_ok()
+        {
+            return "settings_file";
         }
         const DEC_ENVS: [&str; 5] = [
             "GEC_DEC_ENDPOINT",

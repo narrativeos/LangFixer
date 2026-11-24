@@ -512,6 +512,7 @@ fn detect_time_mixed(text: &str) -> Vec<Error> {
 /// - B 带单位词窗口：前缀+数字+单位+后缀（「至少4500种以上」→「至少4500种」）；
 /// - C 双前缀：两约数前缀隔 ≤6 非标点字且第二前缀直接带数字
 ///   （「大约来自近70个国家」→ 删其一）。
+///
 /// 守卫（取证支持的宁缺勿错项）：「近两年」「约两年」「近3年多（年头）」「N多万」
 /// 与前缀字符属于更大约数词（「大约」的「约」）时不触发；「高/低至」类前缀
 /// 语料有命中但 gold 零证据，故意不入表。
@@ -675,7 +676,7 @@ fn detect_quant_dup(text: &str) -> Vec<Error> {
         let mut c2 = m.end() - pre2.len();
         let mut pre2_full = pre2.to_string();
         let completing = if pre2 == "近" { '接' } else { '大' };
-        if matches!(pre2, "近" | "约") && text[..c2].chars().next_back() == Some(completing) {
+        if matches!(pre2, "近" | "约") && text[..c2].ends_with(completing) {
             pre2_full = format!("{completing}{pre2}");
             c2 -= completing.len_utf8();
         }
@@ -824,6 +825,7 @@ fn detect_neg_dup(text: &str) -> Vec<Error> {
 ///   → 改「地」；
 /// - B 补语标记：的 + 程度词（很/非常/比较/有点/越来越…）→ 改「得」；
 ///   左侧「有的/目的/真的/是的」类成词守卫。
+///
 /// 左侧为比较级的「更好/很好」类 gold 有判例（「能够更好的V」）但语料
 /// 「更好的发展」类名词化高频合法，宁缺勿错不入表。
 fn detect_de_confuse(text: &str) -> Vec<Error> {
@@ -931,10 +933,10 @@ fn detect_de_confuse(text: &str) -> Vec<Error> {
                 continue;
             }
             let deg_hit = DEG.iter().find(|d| text[byte_at[i + 1]..].starts_with(**d));
-            if let Some(d) = deg_hit {
-                if text[byte_at[i + 1] + d.len()..].starts_with('多') {
-                    continue;
-                }
+            if let Some(d) = deg_hit
+                && text[byte_at[i + 1] + d.len()..].starts_with('多')
+            {
+                continue;
             }
             let prev_is_verb = prev.is_some_and(|p| {
                 COMPL_LEFT.contains(&p) || VERB.iter().any(|v| p.to_string() == *v)
@@ -1042,8 +1044,7 @@ fn detect_subj_drowned(text: &str) -> Vec<Error> {
             let shi_lead = LEAD_SHI.iter().any(|w| {
                 p.starts_with(w)
                     && !(*w == "经过" && p.chars().nth(2) == Some('了'))
-                    && !(*w == "在"
-                        && !p.ends_with(['下', '中', '后', '前', '上', '内', '里', '时']))
+                    && (*w != "在" || p.ends_with(['下', '中', '后', '前', '上', '内', '里', '时']))
             });
             let lead = shi_lead || p.contains("由于");
             let shi_ok = chars.get(s + 1) != Some(&'用'); // 「使用」是动词非使令词
@@ -1171,6 +1172,7 @@ fn parse_cn_int(s: &str) -> Option<u32> {
 /// v1 最小集（精度优先；误报进 excludes，规则 id `ZH_NUMERAL` 可整停）：
 /// - 「万万」并置（「3万万 / 一万万」→ 亿）；
 /// - 阿拉伯-汉字数字混写（「3千五」→ 3500、「三十5」→ 35）。
+///
 /// 后随字属「十百千万点年月日时」时跳过——「3千五百万」「3千九年」这类
 /// 合法组合宁可不触发也不给错建议（与 media-core「不编造位置 / 不静默改
 /// 内容」同一立场）。
@@ -1312,10 +1314,10 @@ fn detect_quantity_unit(text: &str) -> Vec<Error> {
         for caps in re.captures_iter(text) {
             let whole = caps.get(0).expect("group 0 必然存在");
             // 单位紧邻后续字母/数字（如 max / mm3）时跳过，避免把普通英文词拆成单位
-            if let Some(next) = text[whole.end()..].chars().next() {
-                if next.is_ascii_alphanumeric() {
-                    continue;
-                }
+            if let Some(next) = text[whole.end()..].chars().next()
+                && next.is_ascii_alphanumeric()
+            {
+                continue;
             }
             let correction = format!(
                 "{}{}{}{}{}",

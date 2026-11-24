@@ -113,38 +113,38 @@ async fn decide(
             admit(&mut req, cfg, scope, true);
             return (tid, next.run(req).await);
         }
-    } else if let Some(s) = &sid {
-        if let Ok(Some(tid)) = cfg.store.resolve_session(s) {
-            if tid == ADMIN_TOKEN_ID {
-                // 超管会话 cookie：可进管理面与业务面（admin 不占配额不隔离）
-                admit(
-                    &mut req,
-                    cfg,
-                    RequestScope {
-                        token_id: None,
-                        is_admin: true,
-                    },
-                    true,
-                );
-                return (None, next.run(req).await);
-            }
-            if path.starts_with("/admin") {
-                return (Some(tid), axum::http::StatusCode::FORBIDDEN.into_response());
-            }
-            if let Some(deny) = review_denied(method, path) {
-                return (Some(tid.clone()), forbidden(deny));
-            }
+    } else if let Some(s) = &sid
+        && let Ok(Some(tid)) = cfg.store.resolve_session(s)
+    {
+        if tid == ADMIN_TOKEN_ID {
+            // 超管会话 cookie：可进管理面与业务面（admin 不占配额不隔离）
             admit(
                 &mut req,
                 cfg,
                 RequestScope {
-                    token_id: Some(tid.clone()),
-                    is_admin: false,
+                    token_id: None,
+                    is_admin: true,
                 },
                 true,
             );
-            return (Some(tid), next.run(req).await);
+            return (None, next.run(req).await);
         }
+        if path.starts_with("/admin") {
+            return (Some(tid), axum::http::StatusCode::FORBIDDEN.into_response());
+        }
+        if let Some(deny) = review_denied(method, path) {
+            return (Some(tid.clone()), forbidden(deny));
+        }
+        admit(
+            &mut req,
+            cfg,
+            RequestScope {
+                token_id: Some(tid.clone()),
+                is_admin: false,
+            },
+            true,
+        );
+        return (Some(tid), next.run(req).await);
     }
 
     // 无有效凭证：免注册登录入口与门禁页探测匿名放行（whoami 回 authenticated=false），

@@ -32,10 +32,10 @@ mod tests {
                     let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     let text = req["text"].as_str().unwrap_or("").to_string();
                     seen.lock().unwrap().push(text.clone());
-                    if let Some(m) = &fail {
-                        if text.contains(m) {
-                            return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                        }
+                    if let Some(m) = &fail
+                        && text.contains(m)
+                    {
+                        return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
                     }
                     let tok_text: String = text.chars().take(2).collect();
                     let n = tok_text.chars().count();

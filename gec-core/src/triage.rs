@@ -28,6 +28,7 @@ static EXTRA_SIGNAL: OnceLock<Arc<SignalFn>> = OnceLock::new();
 /// 典型用法：api-server 启动时注入 gec-zh `rules::detect_local` 的命中密度，
 /// 使词典可见的疑似错误块不被预算模式跳过。gec-core 独立使用时不注册，
 /// 行为与纯统计信号完全一致。
+#[allow(clippy::result_unit_err)] // 仅「重复注册」一种失败，无携带信息的错误类型可返回
 pub fn set_extra_signal(f: Arc<SignalFn>) -> Result<(), ()> {
     EXTRA_SIGNAL.set(f).map_err(|_| ())
 }

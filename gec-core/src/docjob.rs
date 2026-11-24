@@ -51,7 +51,7 @@ pub struct ChunkRow {
 }
 
 impl ChunkRow {
-    fn doc_chunk<'a>(&self, text: &'a str) -> Option<DocChunk> {
+    fn doc_chunk(&self, text: &str) -> Option<DocChunk> {
         let start = self.owner[0].checked_sub(self.context_prefix)?;
         if self.owner[1] > text.len() || start > self.owner[0] {
             return None;
@@ -369,10 +369,10 @@ impl DocJobStore {
         let rows = self.select_chunks(id, "status IN ('done', 'cached')", "idx ASC")?;
         let mut out = Vec::new();
         for r in rows {
-            if let Some(j) = r.result_json {
-                if let Ok(v) = serde_json::from_str::<Vec<Error>>(&j) {
-                    out.extend(v);
-                }
+            if let Some(j) = r.result_json
+                && let Ok(v) = serde_json::from_str::<Vec<Error>>(&j)
+            {
+                out.extend(v);
             }
         }
         out.sort_by_key(|e| e.span[0]);
@@ -480,6 +480,9 @@ pub const SAMPLE_EVERY: usize = 3;
 ///   供 eval 扫描 cost–recall 曲线；
 /// - 全部块处理完 → 作业 `done`；
 /// - 返回进度 + 聚合错误（覆盖率 = `progress.coverage()`）。
+// 8 个参数是文档作业执行的全部旋钮（存储/引擎/并发/预算/取消等），
+// 收进参数结构体反而割裂调用点，故保留平铺签名。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_doc_job(
     store: Arc<DocJobStore>,
     llm: Arc<LlmGecEngine>,

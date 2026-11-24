@@ -646,16 +646,16 @@ pub async fn recheck(state: &Arc<AppState>, id: &str) {
     let s = state.settings.read().unwrap().clone();
     let endpoint = find_endpoint(&s, id);
     // 统计臂未挂载时 off 短路（纯 env 判定，不探测）
-    if id == "stat" {
-        if let Some(reason) = stat_off_reason() {
-            update(state, id, |it| {
-                it.endpoint = endpoint;
-                it.state = "off";
-                it.reason = Some(reason);
-                it.hint = None;
-            });
-            return;
-        }
+    if id == "stat"
+        && let Some(reason) = stat_off_reason()
+    {
+        update(state, id, |it| {
+            it.endpoint = endpoint;
+            it.state = "off";
+            it.reason = Some(reason);
+            it.hint = None;
+        });
+        return;
     }
     // off 短路
     match id {

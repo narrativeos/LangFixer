@@ -211,10 +211,10 @@ fn auto_break(
             ',' => Some((1, BoundaryOrigin::Pause)),
             _ => None,
         };
-        if let Some((score, origin)) = after {
-            if i + 1 < total {
-                cands.push((i + 1, score, origin));
-            }
+        if let Some((score, origin)) = after
+            && i + 1 < total
+        {
+            cands.push((i + 1, score, origin));
         }
     }
     let mut out = Vec::new();

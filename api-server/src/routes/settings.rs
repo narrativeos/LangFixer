@@ -370,10 +370,10 @@ fn to_response(
         llm_model_id: s.llm_model_id.clone(),
         llm_dual_judge: s.llm_dual_judge,
         llm_dual_model_id: s.llm_dual_model_id.clone(),
-        llm_dual_base_url: resolve_dual_endpoint(&s, registry)
+        llm_dual_base_url: resolve_dual_endpoint(s, registry)
             .map(|d| d.0)
             .unwrap_or_default(),
-        llm_dual_model: resolve_dual_endpoint(&s, registry)
+        llm_dual_model: resolve_dual_endpoint(s, registry)
             .map(|d| d.1)
             .unwrap_or_default(),
         llm_dual_api_key: s.llm_dual_api_key.clone(),

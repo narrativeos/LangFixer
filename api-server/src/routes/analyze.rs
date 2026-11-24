@@ -229,7 +229,7 @@ pub async fn analyze(
         );
         let layers_json = (!outcome.layers.is_empty())
             .then(|| serde_json::to_string(&outcome.layers).unwrap_or_else(|_| "[]".to_string()));
-        if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+        if outcome.quality.as_ref().is_none_or(|q| q.cacheable()) {
             let session_id = session_id.clone();
             tokio::spawn(async move {
                 if let Err(e) = state.detect_history.insert(

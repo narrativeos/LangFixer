@@ -1391,14 +1391,15 @@ impl GecEngine for CascadeDetector {
             layers.push(LayerReport::new(sources::LLM, "skipped", 0));
         }
         // ③-T 在计划但未触发（全文 ③ 已覆盖灰区 / L3 无灰区残留）→ 记 skipped
-        if targeted_gate && !targeted_settled {
-            if let Some(sink) = &progress {
-                sink(crate::progress::StageEvent::Stage {
-                    stage: shared_model::sources::TARGETED,
-                    status: "skipped",
-                    ms: None,
-                });
-            }
+        if targeted_gate
+            && !targeted_settled
+            && let Some(sink) = &progress
+        {
+            sink(crate::progress::StageEvent::Stage {
+                stage: shared_model::sources::TARGETED,
+                status: "skipped",
+                ms: None,
+            });
         }
         // ④ 术语库（最后一步，作用于全部来源层合并后的错误）：
         // 受保护术语上的错误过滤 + 强制更正词注入
@@ -2090,22 +2091,17 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn gate_cascade(
-        recall: PerSentenceRecall,
-        gates: bool,
-    ) -> impl std::future::Future<Output = CascadeDetector> {
-        async move {
-            let endpoint = mock_decide_endpoint_abstain().await;
-            let decision = Arc::new(DecisionGecEngine::new("en", decision_cfg(endpoint, true)));
-            let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
-                lang: "en",
-                fail: false,
-            });
-            let mut det = CascadeDetector::new("en", rule, Some(decision));
-            det.knowledge_recall = Some(Arc::new(recall));
-            det.knowledge_gates_llm = gates;
-            det
-        }
+    async fn gate_cascade(recall: PerSentenceRecall, gates: bool) -> CascadeDetector {
+        let endpoint = mock_decide_endpoint_abstain().await;
+        let decision = Arc::new(DecisionGecEngine::new("en", decision_cfg(endpoint, true)));
+        let rule: Arc<dyn GecEngine> = Arc::new(FakeRule {
+            lang: "en",
+            fail: false,
+        });
+        let mut det = CascadeDetector::new("en", rule, Some(decision));
+        det.knowledge_recall = Some(Arc::new(recall));
+        det.knowledge_gates_llm = gates;
+        det
     }
 
     fn llm_unconfigured(outcome: &DetectOutcome) -> bool {

@@ -108,12 +108,12 @@ impl QualityReport {
             reasons.push(format!("unowned_chars:{unowned}"));
             status = "degraded";
         }
-        if let Some(c) = coverage {
-            if c < 1.0 {
-                reasons.push(format!("coverage:{c:.2}"));
-                if status == "full" {
-                    status = "partial";
-                }
+        if let Some(c) = coverage
+            && c < 1.0
+        {
+            reasons.push(format!("coverage:{c:.2}"));
+            if status == "full" {
+                status = "partial";
             }
         }
         Self {

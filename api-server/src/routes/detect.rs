@@ -172,6 +172,9 @@ pub(crate) async fn try_reuse_history(
 /// 跳过历史写入，并向前端返回相应标记）；两者均假 = 本次实际跑了检测。
 /// 后处理（anomaly 自动采纳 / L3 飞轮）全部在**后台任务**执行，
 /// 不阻塞检测响应（见各步骤注释）。
+// 参数是检测流水线全部开关（引擎路由/级别/历史/缓存/取消等），
+// 收进结构体反而遮蔽调用点，故保留平铺签名。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_detection(
     state: Arc<AppState>,
     lang: &str,
@@ -259,10 +262,10 @@ pub(crate) async fn run_detection(
                 .await?;
             // 缓存资格：仅 quality=full 的运行可写 LRU（partial/degraded 只回传
             // 不入缓存，杜绝降级结果被缓存放大）
-            if let Some(k) = cache_k {
-                if outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
-                    state.as_ref().cache.insert(k, outcome.errors.clone());
-                }
+            if let Some(k) = cache_k
+                && outcome.quality.as_ref().is_none_or(|q| q.cacheable())
+            {
+                state.as_ref().cache.insert(k, outcome.errors.clone());
             }
             (outcome, false, false)
         }
@@ -457,7 +460,7 @@ pub(crate) async fn run_pipeline(
         });
         if spec.persist_history
             && !from_cache_replay
-            && outcome.quality.as_ref().map_or(true, |q| q.cacheable())
+            && outcome.quality.as_ref().is_none_or(|q| q.cacheable())
         {
             let state = state.clone();
             let lang = spec.lang.to_string();
@@ -527,20 +530,20 @@ pub(crate) async fn run_pipeline(
         error_count: outcome.errors.len(),
         from_history,
         from_cache,
-        total_ms: (!outcome.timings.is_empty()).then(|| outcome.timings.total_ms),
+        total_ms: (!outcome.timings.is_empty()).then_some(outcome.timings.total_ms),
     };
     // 告警①即时面：所有权空洞 / 丢弃账本非零 = 数据静默丢失，当场最高级日志
-    if let Some(q) = outcome.quality.as_ref() {
-        if q.unowned_chars != 0 || !q.dropped.is_empty() {
-            tracing::error!(
-                unowned_chars = q.unowned_chars,
-                dropped_ownership = q.dropped.ownership,
-                dropped_pii_mask = q.dropped.pii_mask,
-                dropped_out_of_range = q.dropped.out_of_range,
-                dropped_out_of_scope = q.dropped.out_of_scope,
-                "§7 完整性告警：本次请求存在数据丢失（所有权空洞或检出丢弃）"
-            );
-        }
+    if let Some(q) = outcome.quality.as_ref()
+        && (q.unowned_chars != 0 || !q.dropped.is_empty())
+    {
+        tracing::error!(
+            unowned_chars = q.unowned_chars,
+            dropped_ownership = q.dropped.ownership,
+            dropped_pii_mask = q.dropped.pii_mask,
+            dropped_out_of_range = q.dropped.out_of_range,
+            dropped_out_of_scope = q.dropped.out_of_scope,
+            "§7 完整性告警：本次请求存在数据丢失（所有权空洞或检出丢弃）"
+        );
     }
     let summary_id = match state.request_summary.insert(&summary_row) {
         Ok(id) => Some(id),
@@ -617,6 +620,7 @@ const ANOMALY_AUTO_ADOPT_CONF: f64 = 0.9;
 ///   精确子串与模糊定位两级必然落空，沉淀即死重（且下次照样走 LLM）；
 /// - 超短通用片段（如「意见建议:」）：会以子串命中任意含该短语的正常文本，
 ///   自定案成无修正的污染标记，属生产误报源。
+///
 /// 与 desktop-app `commands.rs` 同名常量保持同步。
 const ANOMALY_DEPOSIT_MIN_CHARS: usize = 12;
 const ANOMALY_DEPOSIT_MAX_CHARS: usize = 150;

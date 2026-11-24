@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(p.total_errors, 5);
         assert_eq!(p.type_distribution.get("grammar"), Some(&4));
         assert_eq!(p.type_distribution.get("spelling"), Some(&1));
-        assert!(p.type_distribution.get("pos_error").is_none());
+        assert!(!p.type_distribution.contains_key("pos_error"));
     }
 
     fn mistake(id: i64, status: Option<&str>) -> Mistake {

@@ -202,12 +202,13 @@ async fn init_admin(
             "管理员账号已初始化，请直接登录；忘记口令用服务器上的 env 密钥重置",
         ));
     }
-    if let Some(u) = body.username.as_deref().map(str::trim) {
-        if !u.is_empty() && u != ADMIN_USERNAME {
-            return Err(ApiError::BadRequest(
-                "首个管理员账号的用户名须为 admin".into(),
-            ));
-        }
+    if let Some(u) = body.username.as_deref().map(str::trim)
+        && !u.is_empty()
+        && u != ADMIN_USERNAME
+    {
+        return Err(ApiError::BadRequest(
+            "首个管理员账号的用户名须为 admin".into(),
+        ));
     }
     if body.password.chars().count() < 8 {
         return Err(ApiError::BadRequest("密码至少 8 位".into()));
@@ -442,11 +443,11 @@ async fn whoami(
     });
     // 评审身份带出用户名账号状态（是否已设口令 / 是否临时口令待改），
     // 门禁页与「我的账号」面板据此提示；超管不查（用 /auth/password 体系）。
-    if let Some(tid) = scope.token_id.as_deref() {
-        if let Ok(Some((username, must_change))) = cfg.store.user_for_token(tid) {
-            body["username"] = serde_json::json!(username);
-            body["must_change"] = serde_json::json!(must_change);
-        }
+    if let Some(tid) = scope.token_id.as_deref()
+        && let Ok(Some((username, must_change))) = cfg.store.user_for_token(tid)
+    {
+        body["username"] = serde_json::json!(username);
+        body["must_change"] = serde_json::json!(must_change);
     }
     // 密钥来源与指纹**只给已验证的超管**：whoami 未登录也回 200（门禁页要探测），
     // 匿名请求一律不回，避免把「这台实例活的是哪把」的信息白送出去。

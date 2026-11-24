@@ -307,6 +307,11 @@ pub struct TokenStore {
     conn: Mutex<rusqlite::Connection>,
 }
 
+/// 用户列表行：(username, token_id, must_change, revoked, created_at)
+type UserRow = (String, String, bool, bool, i64);
+/// 密钥列表行：(id, label, quota_chars, revoked_at)
+type TokenRow = (String, String, i64, Option<i64>);
+
 impl TokenStore {
     pub fn open(path: &Path) -> Result<Self, String> {
         Self::from_conn(rusqlite::Connection::open(path).map_err(|e| e.to_string())?)
@@ -557,7 +562,7 @@ impl TokenStore {
         Ok(row)
     }
 
-    pub fn list_users(&self) -> Result<Vec<(String, String, bool, bool, i64)>, String> {
+    pub fn list_users(&self) -> Result<Vec<UserRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -981,7 +986,7 @@ impl TokenStore {
         })
     }
 
-    pub fn list(&self) -> Result<Vec<(String, String, i64, Option<i64>)>, String> {
+    pub fn list(&self) -> Result<Vec<TokenRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -1322,7 +1327,7 @@ fn decode_digest_hex(s: &str) -> Option<[u8; 32]> {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len() / 2)
@@ -1585,7 +1590,7 @@ mod tests {
                 assert_eq!(r.id, row.id);
                 assert!(r.used_at.is_some());
             }
-            other => panic!("应占用成功，实际变体不同"),
+            _other => panic!("应占用成功，实际变体不同"),
         }
         // 重放：Used
         assert!(matches!(
@@ -1653,7 +1658,7 @@ mod tests {
         let sid = cfg.store.create_session(ADMIN_TOKEN_ID).unwrap();
         cfg.rotate_password("FreshPass@12345").unwrap();
         // 旧会话即刻失效
-        assert_eq!(cfg.store.resolve_session(&sid).unwrap().is_none(), true);
+        assert!(cfg.store.resolve_session(&sid).unwrap().is_none());
         // 新密码可用；旧默认密码废弃
         assert!(cfg.verify_password(ADMIN_USERNAME, "FreshPass@12345"));
         assert!(!cfg.verify_password(ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD));

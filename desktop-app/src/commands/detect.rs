@@ -337,6 +337,8 @@ async fn run_pipeline(core: &Arc<Core>, spec: PipelineSpecLite<'_>) -> Result<Pi
 }
 
 #[tauri::command]
+// 参数名/个数为命令契约（web-ui invoke 按名绑定），不可收进参数结构体。
+#[allow(clippy::too_many_arguments)]
 pub async fn detect(
     app: tauri::AppHandle,
     core: tauri::State<'_, Arc<Core>>,
@@ -380,7 +382,7 @@ pub async fn detect(
     // 历史复用不写新记录（避免短时间反复检测刷出重复历史）；缓存资格：
     // 仅 quality=full 落库（partial/degraded 只回传不落库，杜绝降级结果被复用，
     // 语义与 Web 端 detect 路由一致）
-    if !from_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+    if !from_history && outcome.quality.as_ref().is_none_or(|q| q.cacheable()) {
         let core = (*core).clone();
         let lang = lang.clone();
         let text = text.clone();
@@ -426,6 +428,8 @@ pub async fn detect(
 
 /// 检测 + 归因一站式（支持三级响应级别 + 漏报强制兜底）
 #[tauri::command]
+// 参数名/个数为命令契约（web-ui invoke 按名绑定），不可收进参数结构体。
+#[allow(clippy::too_many_arguments)]
 pub async fn analyze(
     app: tauri::AppHandle,
     core: tauri::State<'_, Arc<Core>>,
@@ -534,7 +538,7 @@ pub async fn analyze(
     // 自动持久化（含归因结果 + 各阶段计时 + 参数快照 + 文本哈希；与 api-server analyze 路由对齐；
     // 后台写入，不阻塞检测响应）
     // 历史复用不写新记录；缓存资格：仅 quality=full 落库（同 detect 命令）
-    if !from_history && outcome.quality.as_ref().map_or(true, |q| q.cacheable()) {
+    if !from_history && outcome.quality.as_ref().is_none_or(|q| q.cacheable()) {
         let core = (*core).clone();
         let lang = lang.clone();
         let text = text.clone();

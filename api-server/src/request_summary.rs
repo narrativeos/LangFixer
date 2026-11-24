@@ -284,9 +284,7 @@ impl RequestSummaryStore {
                         .map(|s| s.to_string())
                 })
                 .unwrap_or_default();
-            let a = buckets
-                .entry((day, fingerprint))
-                .or_insert_with(DayAgg::default);
+            let a = buckets.entry((day, fingerprint)).or_default();
             a.requests += 1;
             if let Some(c) = coverage {
                 a.coverage_sum += c;
