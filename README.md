@@ -5,7 +5,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 **LangFixer：把「语法纠错」升级为「语法教学」。**
-检测中英文日文文本的语法错误之后，它回答教育上真正重要的问题——**这个错误为什么犯**（归因：知识缺口 / 习惯固化 / 规则缺失 / 规则遗忘 / 搭配薄弱 + 韦纳三维），**该用什么补救**（知识点讲解、CEFR 分级练习），并让系统随使用**越用越准**（特征模型训练飞轮）。
+检出中 / 英 / 日文本的错误之后，它回答教育上真正重要的问题：**这个错为什么犯、该怎么补救**——知识点讲解与 CEFR 分级练习直接给到。你确认的反馈会反哺模型，**越用越准**；规则层完全离线跑在自己的机器上，LLM 按需外接。
 
 **线上体验** [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) · **桌面版下载** [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)
 
