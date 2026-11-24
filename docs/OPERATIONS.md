@@ -74,3 +74,18 @@
 - **重启服务**：指纹在启动时重算，重启后必然全新运行（桌面端 `rebuild_router` 同样重算词表哈希）。
 
 注意：网关形态（多租户）本就跳过两层缓存，每账号实时跑；LLM 参与的结果（level 2/3 或 force_llm）非确定性，一律实时重跑、不入 LRU。
+
+## 端口约定
+
+本仓库自有服务统一使用 **4800+ 空闲段**（避免与常见服务端口冲突；各服务默认仅绑定本机）：
+
+| 端口 | 服务 | 配置来源 |
+|---|---|---|
+| `4801` | api-server（Axum API） | `PORT`（Docker `EXPOSE 4801`） |
+| `4802` | 日文 Sudachi 分词服务 | `SUDACHI_ENDPOINT` |
+| `4803` | 统计 GEC 服务（Harper / HF transformers server 类） | `GEC_STAT_ENDPOINT` |
+| `4804` | vegaml 决策模型服务（`POST /decide`；**实验层，默认不启动**——该层已退役出产品路径） | `GEC_DEC_ENDPOINT` / `decision-model` 的 `DEC_PORT` |
+| `4805` | Vite dev server（前端开发 + Tauri devUrl） | `web-ui/vite.config.ts` / `tauri.conf.json` |
+| `4806` | L3 特征模型服务（`POST /l3-detect`；飞轮：`POST /l3-retrain` / `GET /l3/status`） | `GEC_L3_ENDPOINT` / `feature-model` 的 `L3_PORT` |
+
+外部依赖（不在本仓库、端口不纳入本约定）：HanLP NLP 服务（NarrativeOS，`HANLP_ENDPOINT`，默认 `127.0.0.1:8000`）、LLM 服务（`LLM_BASE_URL`，远端 OpenAI 兼容端点）。

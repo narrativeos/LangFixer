@@ -8,6 +8,17 @@ LangFixer 已发布 **v1.x 正式版**（版本号见 Cargo.toml 与 CHANGELOG�
 - Node.js 22 + npm（web-ui，Vue 3 + Vite）
 - 无需任何 API Key 即可跑全部测试（外部服务均有本地 mock）
 
+### VS Code 调试
+
+`.vscode/launch.json` 内置三组配置（Rust 侧需安装 [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-codelldb) 扩展，首次打开会提示安装）：
+
+| 配置 | 说明 |
+|---|---|
+| `api-server (Rust)` | 构建并调试 API 服务（:4801），断点打在 Rust 源码 |
+| `web-ui (Vite dev server)` | 内置 node 调试器直接 launch Vite（:4805），断点打在 vite 配置 / 中间件 |
+| `desktop-app (Tauri)` | preLaunch 自动构建 + 确保 Vite 在跑（`scripts/ensure-vite.sh`），然后调试桌面端。前端在 Tauri 内 `invoke()` 直连 Rust 命令，**完全离线**、不依赖 api-server；Vite 仅提供页面与 HMR |
+| `LangFixer (API + 前端)` | compound：同时调试 API 服务 + Vite |
+
 ## 构建与测试
 
 ```bash
@@ -22,7 +33,7 @@ npm test            # vitest
 npm run build       # vite 构建
 ```
 
-运行开发实例：`api-server`（`cargo run -p api-server`，REST :27661）+ `web-ui`（`npm run dev`）；
+运行开发实例：`api-server`（`cargo run -p api-server`，REST :4801）+ `web-ui`（`npm run dev`）；
 桌面端 `cargo tauri dev`（desktop-app）。外部依赖（HanLP NLP 服务、LLM 端点）通过设置面板/环境变量配置，缺省时相应功能降级，不影响编译与测试。
 
 ## 代码约定
