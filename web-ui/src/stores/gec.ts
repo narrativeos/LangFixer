@@ -346,11 +346,12 @@ export const useGecStore = defineStore('gec', {
      *  定向 LLM 复查。有发现 → 替换该 verdict 项成具体可操作条目（共识 =
      *  决策模型 + AI 复查）；无发现 → 标「已复查·无错」（大概率是句级误报，
      *  放弃即反馈数据）；失败 → 展示原因可重试 */
-    async recheckVerdict(i: number) {
+    async recheckVerdict(i: number, fromBatch = false) {
       const e = this.errors[i]
       if (!e) return
-      // 批量「复查全部」在飞时拒绝单句复查：两路并发 splice/键平移会互相错位
-      if (this.recheckAll.running) return
+      // 批量「复查全部」在飞时拒绝用户点选的单句复查：两路并发 splice/键平移会
+      // 互相错位。fromBatch = 批量循环自己的内部调用，必须放行（否则整批空转）
+      if (this.recheckAll.running && !fromBatch) return
       // 检测后文本被编辑过：span 坐标已失效，拒绝而非错检
       if (this.resultsStale) {
         this.verdictRecheck[i] = {
@@ -412,7 +413,7 @@ export const useGecStore = defineStore('gec', {
             (e, idx) => isVerdictOnly(e) && !this.verdictRecheck[idx],
           )
           if (i < 0) break
-          await this.recheckVerdict(i)
+          await this.recheckVerdict(i, true)
           this.recheckAll.done += 1
           // 失败即停：多为 LLM 不可用/限流，连送只会刷一片同样的错
           if (this.verdictRecheck[i]?.state === 'error') break

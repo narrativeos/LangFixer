@@ -691,6 +691,15 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
 - **评测通道（网关形态）身份层**（`docs/GATEWAY_AUTH.md`）：`LANGFIXER_GATEWAY=1` 启用，单机形态行为零变化。评审令牌（明文一次、摘要入库、吊销连会话即断）+ 免注册会话 cookie + 管理面 `/admin/tokens|stats`；超级管理员令牌只来自 `.env`（`LANGFIXER_ADMIN_TOKEN`，≥32 字符，内存留摘要、不落库、不发 cookie、独占 admin 面）。为 web 与 MCP 共用一套 token 的接入形态打好同一身份底座
 - **评测通道部署件**（`deploy/gateway/`）：systemd 服务 + 每日数据保留清理 timer（默认 7 天删除检测文本与配额日账，收敛已吊销令牌会话归属）+ Caddy 站点片段与部署 runbook；服务器形态 api-server 绑 docker 网桥宿主侧地址（`LANGFIXER_BIND=172.18.0.1:4801`），公网入口只由 Caddy(443) 持有，源码/env/数据库放 web 根之外
 
+### 修复
+
+- **「复查全部」点击后空转**（`web-ui/src/stores/gec.ts`）：批量循环内部调用
+  `recheckVerdict`，而该函数的并发守卫「`recheckAll.running` 时直接返回」本意
+  只拦用户手点的单句复查，却把批量自己的调用一并弹回——每轮无记录落盘、
+  下轮 `findIndex` 命中同一下标，整批瞬间空转退出：按钮不显示「复查中」进度，
+  也一次复查都没发出。现加内部参数 `fromBatch`，批量调用放行、手点拒绝不变；
+  串行、失败即停、键平移行为均不变
+
 ## [v1.1.0] - 2026-11-08
 
 桌面端从「能跑」走到「像一台 Mac 应用」：自动更新按发布源烧入更新端点，原生菜单栏 /
