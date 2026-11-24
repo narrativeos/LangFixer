@@ -502,7 +502,8 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
 - **README 新增「部署：硬件要求」**：分 PC 单机（自用，桌面端规则层完全离线，
   2 核 / 4GB 普通办公机；可选 HanLP sidecar / 外部 LLM API）与服务器（团队 / 公开）
   两形态；服务器部件级需求表（api-server / HANLP sidecar / L3 worker / Caddy / 磁盘）
-  附生产实测数字；GPU 仅自持 LLM 臂可选；目录新增锚点。
+  附生产实测数字；GPU 仅自持 LLM 臂可选；HANLP / Sudachi NLP 服务标注为仓外
+  可选依赖（镜像来自姊妹项目 narrative-operator，不可达时规则层自动兜底）；目录新增锚点。
 
 ### 修复
 

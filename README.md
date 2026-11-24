@@ -86,8 +86,9 @@ api-server；窗口大小 / 位置自动持久化、下次启动恢复，桌面�
 
 桌面安装包（Tauri，Win / macOS）：本地规则层 + 词表**完全离线**，普通办公机
 （2 核 / 4GB）即用；③ LLM 讲解 / 复查可选——在「设置」配外部 API 即可，无需自备
-GPU 或跑模型。想在本机启用 level 2 NLP 层的，可自起 HanLP sidecar（Docker，
-~1.3GB 常驻）。`./setup.sh local` 的 web 形态与服务器同构，按下方服务器要求。
+GPU 或跑模型。想在本机启用 level 2 NLP 层的，可自起 HanLP sidecar（镜像来自姊妹
+项目 narrative-operator，Docker，~1.3GB 常驻）。`./setup.sh local` 的 web 形态与
+服务器同构，按下方服务器要求。
 
 ### 服务器（团队 / 公开实例）
 
@@ -97,13 +98,18 @@ OpenAI 兼容 API，零硬件成本。各部件需求与 2026-11 生产实例实
 | 部件 | 需求 | 实测（生产） |
 |---|---|---|
 | api-server（Rust 单二进制 + SQLite） | 2 核 / 1GB | 启动常驻 ~20MB，决策表 / 词典按需加载 |
-| HANLP NLP sidecar（docker） | 2 核 / 4GB | 常驻 ~1.3GB，内存大头 |
+| HANLP NLP sidecar（docker，**外部依赖不在本仓**） | 2 核 / 4GB | 常驻 ~1.3GB，内存大头 |
 | L3 深扫 worker 容器 | 1 核 / 512MB | 常驻 ~116MB |
 | Caddy 反代 | 忽略不计 | ~30MB |
 | 磁盘 | 全新装 ≥10GB 空闲 | SQLite 单库随反馈与缓存增长 |
 
 **最小配置 4 核 / 8GB / 20GB 磁盘**即可跑全部 web 形态与三级响应；生产参考机型
 为 4 核 / 16GB 云主机（同机还并跑着别的服务，整机占用约 3.7GB）。
+
+HANLP sidecar 与日文侧的 Sudachi 服务一样是**可选的外部服务**（镜像由姊妹项目
+NarrativeOS narrative-operator 构建）：不部署也能跑，中文 / 英文自动降级为本地
+词典与规则层；起法见 [`deploy/gateway/README.md`](deploy/gateway/README.md)
+「中文 NLP sidecar」节。
 
 **GPU 可选**（仅自持 LLM 臂需要，核心能力不需要）：
 
