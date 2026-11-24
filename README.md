@@ -3,51 +3,21 @@
 [![CI](https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml/badge.svg)](https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
+**线上体验** [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) · **桌面版下载** [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)
+
 **LangFixer：把「语法纠错」升级为「语法教学」。**
 检测中英文日文文本的语法错误之后，它回答教育上真正重要的问题——**这个错误为什么犯**（归因：知识缺口 / 习惯固化 / 规则缺失 / 规则遗忘 / 搭配薄弱 + 韦纳三维），**该用什么补救**（知识点讲解、CEFR 分级练习），并让系统随使用**越用越准**（特征模型训练飞轮）。
 
 ## 这是什么 / 给谁用 / 能做什么 / 做不到什么
 
 - **这是什么**：语法错误检测 + 教育归因工具——检出错误后回答「为什么犯」（归因）与「该用什么补救」（知识点讲解、CEFR 分级），并内置自学习管线（知识源导入、规则派生、训练飞轮）让系统越用越准。
-- **给谁用**：**核心审校用户** = 语言学习者与专业编校者——两者对「检测 → 归因 → 人工确认 → 采纳」这套智能体范式都是零先验，共用同一个工作台、引导与信任机制；**平台运营者**（决策表 / 词表 / 知识库 / 进化中心）经管理功能进入。
+- **给谁用**：**核心审校用户**是语言学习者与专业编校者——对「检测 → 归因 → 人工确认 → 采纳」这套范式零先验，共用同一个工作台、引导与信任机制；**平台运营者**（决策表 / 词表 / 知识库 / 进化中心）经管理功能进入。
 - **能做什么**：英文检测最成熟；中文覆盖词典规则类目（同音/形近错别字、的地得、标点排版、时间格式混用等）；日文为早期阶段。归因与讲解三语可用；本地规则层离线完全可用。按能力面展开：
-  - **检测**：中文、英文（HanLP 服务 + Rust 侧规则）、日文（Sudachi + 本地规则），每种语言均带**离线兜底**（外部 NLP 服务不可达时自动降级为本地词典/规则检测）；**三级响应**（API `level` 参数）在规则层之上按需触发 LLM 兜底：L3 特征模型（`feature-model/`，**默认开启**）门控——level 2 高置信时直接定案、弃权 / 服务不可用时对全文跑 LLM 复查（level 2）；level 3 无条件强制 LLM——特征模型高置信时直接定案（含模式化 span 定位 + 机械修正），**LLM 层收缩到纯长尾**（前端「深度重查」按钮 = force_llm，仍无条件 LLM）。~~vegaml 决策模型层~~**已退役出产品路径**（评测证实其被 L3 严格覆盖，见 [EVOLUTION.md](EVOLUTION.md) §13 #10）：代码保留为实验路径，仅 `GEC_DEC_ENABLED=1` 显式开启，默认路径 = 规则 → L3 → LLM。级联与三级响应的完整机制见下文「三级响应」。
-  - **词表**：各语言的规则词表（混淆词、过去式表、助词组合等）外置于 `lexicons/*.json`，不重新编译即可扩充；文件缺失/损坏时回退到内置默认词表。另有**领域术语库** `lexicons/terminology_{lang}.json`（`protected` 受保护术语 / `forced` 强制更正）在引擎层对所有检测臂生效：错误与被保护术语重叠即丢弃，防止把正确专业词误纠。
+  - **检测**：中文、英文（HanLP 服务 + Rust 侧规则）、日文（Sudachi + 本地规则），每种语言均带**离线兜底**（外部 NLP 服务不可达时自动降级为本地词典 / 规则检测）；API `level` 参数的**三级响应**在规则层之上按需触发 L3 特征模型门控与 LLM 兜底（机制见下文「三级响应」，~~vegaml 决策模型层~~已退役出产品路径、仅显式开启）。
+  - **词表**：各语言规则词表（混淆词、过去式表、助词组合等）外置于 `lexicons/*.json`，不重新编译即可扩充，缺失 / 损坏时回退内置默认。另有**领域术语库** `lexicons/terminology_{lang}.json`（`protected` 受保护 / `forced` 强制更正）在引擎层对所有检测臂生效，防止把正确专业词误纠。
   - **归因**：ZEN Engine（GoRules JDM 标准）决策表，输出归因标签（知识缺口 / 习惯固化 / 规则缺失 / 规则遗忘 / 搭配薄弱）+ 韦纳三维度（内外源 × 稳定性 × 可控性）+ **CEFR 难度分级（A1-C2）** + 补救措施 + 决策追踪。
-  - **交付**：Axum API 服务（Docker 化）+ Vue 3 Web UI + Tauri 2 桌面端（离线模式）；工作台 header 下方**分阶段检测进度条**实时展示本次检测各层推进与耗时（规则/决策/特征/知识召回/LLM 复核；Web 端经 `X-Progress-Id` + 轮询、桌面端经 `detect:stage` 事件，见 docs/OPERATIONS.md「检测阶段进度」）。
+  - **交付**：Axum API 服务（Docker 化）+ Vue 3 Web UI + Tauri 2 桌面端（离线模式）；工作台带**分阶段检测进度条**，实时展示各层推进与耗时（Web 端轮询、桌面端事件，见 docs/OPERATIONS.md「检测阶段进度」）。
 - **做不到什么**：**不保证全量召回**——本地规则层对中文载体审校金集召回 0%（见下文「多模态与载体审校」与 [MULTIMODAL.md](MULTIMODAL.md)），LLM 复查需自行配置端点且有成本；它不是风格编辑器，不改写内容。能力边界以各语言词表实际覆盖与测评中心实测报告为准。
-
-## 目录结构
-
-```
-LangFixer/
-├── Cargo.toml            # workspace（11 个 Rust crate）
-├── shared-model/         # 统一数据模型（Error / 归因 / 用户 / 决策表元数据）
-├── gec-core/             # GECDetector trait + GecEngine 引擎路由（rule/statistical/llm）+ 语言路由
-├── gec-zh/               # 中文检测器（HanLP /analyze + 规则，离线兜底）
-├── gec-en/               # 英文检测器（HanLP /analyze + 规则，离线兜底）
-├── gec-ja/               # 日文检测器（Sudachi /parse + 规则，离线兜底）
-├── attribution-engine/   # ZEN 决策表引擎 + 热更新 TableStore + 知识库 KnowledgeStore + 韦纳映射
-├── langfixer-llm/        # LLM 扩展（OpenAI 兼容客户端 + SSE 流式 + 提示词模板）
-├── decision-model/       # 决策模型（vegaml）【已退役出产品路径，实验代码保留】：FastAPI 服务（POST /decide，支持 VEGAML_MOCK 离线 mock）+ 微调工作流（extract/train/eval）+ gold 数据转换
-├── feature-model/        # L3 特征模型：FastAPI 服务（POST /l3-detect，支持 FEATURE_MOCK 离线 mock）+ 训练工作流 + 模式化 span 定位 / 机械修正（correct.py）+ **训练飞轮**（LLM 确认样本 → 重训练 → 热切换，自进化）
-├── api-server/           # Axum API 服务（Dockerfile 内置）
-├── desktop-app/          # Tauri 2 桌面端（离线运行）
-├── web-ui/               # Vue 3 + Vite + Pinia 前端
-├── lexicons/             # zh / en / ja 三张 GEC 规则词表（JSON，可热扩充）
-├── prompts/              # LLM 提示词模板（3 语言 × CEFR 分级 + generic + 3 语言 detect 兜底检测模板，版本化）
-├── decision-tables/      # zh / en / ja 三张 JDM 决策表（纯规则：错误类型 × 新手/置信度 → 归因策略）
-├── knowledge-base/       # 知识库：知识源注册表（sources.json）+ 知识点集合（points/{lang}.json）
-│                         #   知识点 → 知识源 1:N 关联；仓库内置仅自撰示例源（Apache-2.0），
-│                         #   用户导入的书籍属用户数据，不随发行物分发（见 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)「IP 边界」）
-└── scripts/              # build.sh / dev.sh / release.sh
-```
-
-规则与知识是分离的两层：**决策表**只承载可提取的规则（错误类型 × 新手/置信度 →
-归因策略 + 通用补救 + CEFR），随产品发布；**知识库**承载知识内容与知识源（1:N 背书
-关联），用户导入的书籍属用户数据、按 IP 边界不进发行物。一本书的端到端自学习
-（解析 → 挖掘知识点 → 派生决策表规则 → 人工确认发布）与资源包导出 / 导入 / 删除均已
-产品化，完整机制见 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)。
 
 ## 立即上手
 
@@ -62,6 +32,38 @@ LangFixer/
   ```
 
 - **从源码跑**：见「快速开始」。
+
+## 项目结构
+
+```
+LangFixer/
+├── Cargo.toml            # workspace（11 个 Rust crate）
+├── shared-model/         # 统一数据模型（Error / 归因 / 用户 / 决策表元数据）
+├── gec-core/             # GECDetector trait + GecEngine 引擎路由（rule/statistical/llm）+ 语言路由
+├── gec-zh/               # 中文检测器（HanLP /analyze + 规则，离线兜底）
+├── gec-en/               # 英文检测器（HanLP /analyze + 规则，离线兜底）
+├── gec-ja/               # 日文检测器（Sudachi /parse + 规则，离线兜底）
+├── attribution-engine/   # ZEN 决策表引擎 + 热更新 TableStore + 知识库 KnowledgeStore + 韦纳映射
+├── langfixer-llm/        # LLM 扩展（OpenAI 兼容客户端 + SSE 流式 + 提示词模板）
+├── decision-model/       # 决策模型（vegaml）：实验路径（已退役出产品），FastAPI 服务 + 微调工作流
+├── feature-model/        # L3 特征模型：FastAPI 服务 + 训练工作流 + 训练飞轮（越用越准，自进化）
+├── api-server/           # Axum API 服务（Dockerfile 内置）
+├── desktop-app/          # Tauri 2 桌面端（离线运行）
+├── web-ui/               # Vue 3 + Vite + Pinia 前端
+├── lexicons/             # zh / en / ja 三张 GEC 规则词表（JSON，可热扩充）
+├── prompts/              # LLM 提示词模板（3 语言 × CEFR 分级 + generic + 3 语言 detect 兜底检测模板，版本化）
+├── decision-tables/      # zh / en / ja 三张 JDM 决策表（纯规则：错误类型 × 新手/置信度 → 归因策略）
+├── knowledge-base/       # 知识库：知识源注册表（sources.json）+ 知识点（points/{lang}.json，1:N 背书）
+│                         #   仅内置自撰示例源（Apache-2.0）；用户导入的书籍属用户数据、
+│                         #   不随发行物分发（IP 边界见 docs/KNOWLEDGE.md）
+└── scripts/              # build.sh / dev.sh / release.sh
+```
+
+规则与知识是分离的两层：**决策表**只承载可提取的规则（错误类型 × 新手/置信度 →
+归因策略 + 通用补救 + CEFR），随产品发布；**知识库**承载知识内容与知识源（1:N 背书
+关联），用户导入的书籍属用户数据、按 IP 边界不进发行物。一本书的端到端自学习
+（解析 → 挖掘知识点 → 派生决策表规则 → 人工确认发布）与资源包导出 / 导入 / 删除均已
+产品化，完整机制见 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)。
 
 ## 快速开始
 
@@ -98,7 +100,7 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 |---|---|
 | `api-server (Rust)` | 构建并调试 API 服务（:4801），断点打在 Rust 源码 |
 | `web-ui (Vite dev server)` | 内置 node 调试器直接 launch Vite（:4805），断点打在 vite 配置 / 中间件 |
-| `desktop-app (Tauri)` | preLaunch 自动构建 + 确保 Vite 在跑（`scripts/ensure-vite.sh`，带 PID 存活检查，进程被回收会自动重新拉起），然后调试桌面端。前端在 Tauri 环境内自动切换为 `invoke()` 直连 Rust 命令（detect/analyze/决策表/explain），**完全离线**，不依赖 api-server；Vite 仅提供页面与 HMR |
+| `desktop-app (Tauri)` | preLaunch 自动构建 + 确保 Vite 在跑（`scripts/ensure-vite.sh`），然后调试桌面端。前端在 Tauri 内 `invoke()` 直连 Rust 命令，**完全离线**、不依赖 api-server；Vite 仅提供页面与 HMR |
 | `LangFixer (API + 前端)` | compound：同时调试 API 服务 + Vite |
 
 ### 桌面端窗口
@@ -142,25 +144,21 @@ LF_SERVICE / LF_PORT` 覆盖；两条命令的落地约定与红线见
 | level | 行为 | LLM 触发条件 |
 |---|---|---|
 | 1（缺省） | 规则（+ 决策模型**实验层**，仅显式开启时） | 不触发 |
-| 2 | 1 级 + **L3 特征模型门控**（若启用；L3 是唯一的 pre-LLM 门控） | L3 **弃权**（灰区 `[0.25, GEC_L3_ABSTAIN_THRESHOLD)`）或**服务不可用**时触发；L3 高置信（有错 / 明确无错）时直接定案，**不调用 LLM**；L3 未启用时回退旧语义：决策模型**实验层**（默认退役关闭）明确弃权时 |
-| 3 | 1 级 + **L3 特征模型**（若启用）+ LLM 兜底 | **无条件**触发（「漏报」兜底）；特征模型高置信时直接定案，**不调用 LLM**（LLM 收缩到纯长尾） |
+| 2 | 1 级 + **L3 特征模型门控**（默认开启；L3 是唯一的 pre-LLM 门控） | L3 **弃权**（灰区 `[0.25, GEC_L3_ABSTAIN_THRESHOLD)`）或**服务不可用**时触发；L3 高置信（有错 / 明确无错）时直接定案，**不调用 LLM**；L3 未启用时回退旧语义：决策模型**实验层**（默认退役关闭）明确弃权时 |
+| 3 | 1 级 + **L3 特征模型**（默认开启）+ LLM 兜底 | **无条件**触发（「漏报」兜底）；特征模型高置信时直接定案，**不调用 LLM**（LLM 收缩到纯长尾） |
 
 - LLM 兜底引擎按请求从运行时 LLM 参数 + 检测模板（`prompts/{lang}_detect_prompt.json`）现构建，支持设置热更新；
 - LLM 产出的错误标记 `source: "llm"`（前端错误列表展示「LLM 兜底」标签）；特征模型产出的错误标记 `source: "feature"`（前端展示「特征模型」标签，含模式化定位 + 机械修正）；
 - LLM 结果**不进 LRU 缓存**（非确定性 + 成本高）；level 1 结果照常缓存；缓存键包含规则指纹 + 模型版本（规则开关 / 决策表热更新 / 模型变更后旧结果自动失效，无需手动清理；极端情况可用 `refresh: true` 或 `POST /gec/cache/clear` 纠正，见 docs/OPERATIONS.md「检测缓存与纠正」）；
 - 触发条件命中但 LLM 未配置（无 API Key / 缺检测模板）→ **503**（提示去设置界面配置）；LLM 服务调用失败 → **502**；
 - 前端：编辑器提供「检查模式」选择器（快速检查 / 标准检查 / 深度扫描，对应 API `level` 1/2/3）与「深度重查」按钮（= level 3）。
-- **训练飞轮（闭环）**：确认采纳的 LLM 检测结果（正样本）与 LLM 复查确认干净的句子（负样本）
-  持续汇入 `feature-model/l3_data/<lang>/confirmed.jsonl`（`POST /gec/l3/collect`；桌面端 `l3_collect` 命令）；
-  积累到阈值（新增 ≥ 10 / 首次 ≥ 30，冷却 7 天）后设置界面「L3 训练飞轮」卡片提示重训练
-  （`POST /gec/l3/retrain` → feature-model `POST /l3-retrain`：合并样本重训练 + dev 评测，
-  F1 未显著退化则**热切换**模型，无需重启）——特征模型随使用变强，LLM 长尾持续收缩。
-- **采纳资产沉淀（数据资产管线）**：检测时同步写入「应用全部建议后」的纠正版
-  （`detect_history.corrected_text` 列，产品级历史恢复能力）；用户**采纳**时前端送
-  原文 + 累积修正全文，服务端切句对齐沉淀句级平行对 `adopted.jsonl`（去重、编辑密度
-  >0.4 打 `weak`、上限 20000）；用户**放弃**时沉淀片段级负偏好 `rejected.jsonl`。
-  训练侧用 `feature-model/prepare_adopted.py` 做治理（去 weak / 去基准污染 / md5 稳定
-  holdout 切分）。开关 `GEC_L3_ADOPT_COLLECT`（**api-server 形态默认关**，`=1` 开启；桌面端默认开，`=0` 关闭）。
+- **训练飞轮（闭环）**：确认采纳的 LLM 检测结果（正样本）与复查确认干净的句子（负样本）汇入
+  `feature-model/l3_data/<lang>/confirmed.jsonl`（`POST /gec/l3/collect`）；积累到阈值（新增 ≥ 10 /
+  首次 ≥ 30，冷却 7 天）后设置页「L3 训练飞轮」卡片提示重训练——重训练 + dev 评测，F1 未显著
+  退化即**热切换**模型，特征模型随使用变强、LLM 长尾持续收缩。
+- **采纳资产沉淀**：检测同步写入「应用全部建议后」的纠正版（`detect_history.corrected_text`）；
+  **采纳**时沉淀句级平行对 `adopted.jsonl`（去重、编辑密度 >0.4 打 `weak`、上限 20000），**放弃**
+  时沉淀 `rejected.jsonl`。开关 `GEC_L3_ADOPT_COLLECT`（api-server 默认关、桌面端默认开）。
 
 ## 质量评测（公开基准）
 

@@ -487,7 +487,7 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
   `docs/KNOWLEDGE.md`，41 端点 API 表迁至 `docs/API.md`；新增「立即上手」（线上体验 /
   桌面安装包 / 一行 API）与「社区与支持」；路线图瘦身，已完成项归本文件与
   EVOLUTION.md，未完成方向（游戏化 / CEC 吸收 / 多模态）保留摘要；`decision-tables/generate_tables.py`
-  的「IP 边界」引用改指 docs/KNOWLEDGE.md。
+  的「IP 边界」引用改指 docs/KNOWLEDGE.md；后续排版精修：「立即上手」前至项目结构之前并加首屏入口行，「目录结构」改「项目结构」，目录树注释行压宽去裸链接，能力 bullet 与飞轮 / 沉淀条目瘦身。
 
 ### 修复
 
