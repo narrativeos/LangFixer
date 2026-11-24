@@ -898,6 +898,17 @@ export interface AppSettings {
   media?: MediaSettingsView
   /** 生产库每日备份：enabled = 设置愿望 ∧ launchd 实存态，installed = 实存态（仅 macOS 可装） */
   db_backup?: DbBackupView
+  /** 知识层运行状态：短路门开关 + zh/en/ja 积累条数（旧服务端可能缺失，用前先判空） */
+  knowledge_status?: KnowledgeStatusView
+}
+
+/** 知识层运行状态（GET /gec/settings.knowledge_status） */
+export interface KnowledgeStatusView {
+  /** ②.5 知识短路门是否开启（GEC_KNOWLEDGE_LLM_GATE=1） */
+  llm_gate: boolean
+  zh: number
+  en: number
+  ja: number
 }
 
 /** 生产库每日备份视图（GET /gec/settings.db_backup） */

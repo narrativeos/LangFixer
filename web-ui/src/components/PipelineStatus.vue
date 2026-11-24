@@ -69,8 +69,20 @@ const items = computed<StatusItem[]>(() => {
       label: plainLayerLabel('knowledge'),
       state: store.embeddingConfigured ? 'ok' : 'missing',
       hint: store.embeddingConfigured
-        ? '易错词对与错例的检索已就绪'
+        ? `易错词对与错例的检索已就绪；积累 中文 ${store.knowledgeCounts.zh} 条 · 英文 ${store.knowledgeCounts.en} 条${
+            store.knowledgeCounts.zh === 0 ? '（中文尚无积累，知识层对中文检测暂时无法发挥价值）' : ''
+          }`
         : '未配置：易错词对的智能检索不会生效（不影响其他检查）；可在设置中配置',
+      anchor: 'embedding',
+    },
+    // ②.5 知识短路门：环境开关（GEC_KNOWLEDGE_LLM_GATE），命中知识即定案、不再花 LLM 钱
+    {
+      key: 'kgate',
+      label: '知识短路门',
+      state: store.knowledgeLlmGate ? 'ok' : 'off',
+      hint: store.knowledgeLlmGate
+        ? '开启：每句都命中知识库时直接定案，不再送 AI 复查（重复错误零 LLM 成本）'
+        : '未启用：知识已命中但模型拿不准的句子仍会送 AI 复查（服务启用 GEC_KNOWLEDGE_LLM_GATE=1 后生效）',
       anchor: 'embedding',
     },
     {

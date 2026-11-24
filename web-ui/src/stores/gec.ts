@@ -134,6 +134,10 @@ export const useGecStore = defineStore('gec', {
     llmEnabled: false,
     /** 嵌入引擎已配置（来自 GET /gec/settings 的 embedding.endpoint；未配置时 ②.5 知识向量召回静默跳过） */
     embeddingConfigured: false,
+    /** ②.5 知识短路门是否开启（GEC_KNOWLEDGE_LLM_GATE=1；GET /gec/settings 的 knowledge_status.llm_gate） */
+    knowledgeLlmGate: false,
+    /** 学习知识积累条数按语言（zh 长期为 0 = 中文积累不足，前端状态卡片如实展示） */
+    knowledgeCounts: { zh: 0, en: 0, ja: 0 } as { zh: number; en: number; ja: number },
     /** 依赖服务状态快照（GET /gec/deps；运营台「依赖服务」卡片与状态条 chip 用；
      *  桌面端 / 网关受限形态为空数组） */
     deps: [] as DepStatus[],
@@ -273,6 +277,12 @@ export const useGecStore = defineStore('gec', {
         this.decisionEnabled = !!s.decision?.enabled
         this.llmEnabled = !!s.llm?.enabled
         this.embeddingConfigured = !!s.embedding?.endpoint
+        this.knowledgeLlmGate = !!s.knowledge_status?.llm_gate
+        this.knowledgeCounts = {
+          zh: s.knowledge_status?.zh ?? 0,
+          en: s.knowledge_status?.en ?? 0,
+          ja: s.knowledge_status?.ja ?? 0,
+        }
         // 旧服务端 / 旧设置文件缺失 l3 字段时按默认开启处理
         this.l3Enabled = s.l3?.enabled ?? true
       } catch {
@@ -287,6 +297,12 @@ export const useGecStore = defineStore('gec', {
         this.decisionEnabled = !!s.decision?.enabled
         this.llmEnabled = !!s.llm?.enabled
         this.embeddingConfigured = !!s.embedding?.endpoint
+        this.knowledgeLlmGate = !!s.knowledge_status?.llm_gate
+        this.knowledgeCounts = {
+          zh: s.knowledge_status?.zh ?? 0,
+          en: s.knowledge_status?.en ?? 0,
+          ja: s.knowledge_status?.ja ?? 0,
+        }
         this.l3Enabled = s.l3?.enabled ?? true
         return this.decisionEnabled
       } catch {

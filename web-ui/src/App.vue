@@ -142,13 +142,14 @@ function onLang(v: string | number) {
   store.lang = String(v)
   store.clearResults()
 }
-// 与 PipelineStatus 的 items 同口径：本地检查 / 决策模型 / 知识查询 / 快速定案 / AI 复查
-const psTotal = 5
+// 与 PipelineStatus 的 items 同口径：本地检查 / 决策模型 / 知识查询 / 知识短路门 / 快速定案 / AI 复查
+const psTotal = 6
 const psOk = computed(
   () =>
     1 +
     (store.decisionEnabled ? 1 : 0) +
     (store.embeddingConfigured ? 1 : 0) +
+    (store.knowledgeLlmGate ? 1 : 0) +
     (store.l3Enabled ? 1 : 0) +
     (store.llmEnabled ? 1 : 0),
 )

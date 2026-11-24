@@ -137,6 +137,17 @@ pub struct ModelView {
     pub enabled: bool,
 }
 
+/// 知识层运行状态视图（`GEC_KNOWLEDGE_LLM_GATE` 现值 + 学习知识按语言计数）
+#[derive(Serialize)]
+pub struct KnowledgeStatusView {
+    /// ②.5 知识短路门是否开启（读进程环境 `GEC_KNOWLEDGE_LLM_GATE`，与 compose_detector 同口径）
+    pub llm_gate: bool,
+    /// 中文积累条数（zh 长期为 0 = 知识层中文积累不足，前端据此提示）
+    pub zh: i64,
+    pub en: i64,
+    pub ja: i64,
+}
+
 /// GET /gec/settings 响应
 #[derive(Serialize)]
 pub struct SettingsResponse {
@@ -171,6 +182,8 @@ pub struct SettingsResponse {
     pub llm_dual_api_key: String,
     /// 知识层总开关（知识向量召回 + 知识库富化 + 数据驱动归点；默认开）
     pub knowledge_enabled: bool,
+    /// 知识层运行状态：②.5 短路门开关 + 各语言知识积累条数（zh/en/ja 差距透明化）
+    pub knowledge_status: KnowledgeStatusView,
     /// 载体（图片 / PDF / Word）审校设置（与桌面端同一份定义：`media_flow::settings`）
     pub media: media_flow::settings::MediaSettings,
     /// 文档级审校作业设置（块大小 / 并发 / 缓存 / 默认预算）
@@ -316,6 +329,7 @@ fn to_response(
     registry: &gec_core::ModelRegistry,
     decision_config_source: &'static str,
     db_backup: DbBackupView,
+    knowledge_status: KnowledgeStatusView,
 ) -> SettingsResponse {
     SettingsResponse {
         hanlp_endpoint: s.hanlp_endpoint.clone(),
@@ -364,6 +378,7 @@ fn to_response(
             .unwrap_or_default(),
         llm_dual_api_key: s.llm_dual_api_key.clone(),
         knowledge_enabled: s.knowledge_enabled,
+        knowledge_status,
         media: s.media.clone(),
         doc_jobs: s.doc_jobs.clone(),
         db_backup,
@@ -418,6 +433,7 @@ pub async fn get(
         &registry,
         crate::settings::AppSettings::decision_config_source(&state.settings_path),
         db_backup_view(&state.db_path, s.db_backup_enabled),
+        knowledge_status_view(&state),
     );
     if ctx.gateway && !ctx.admin {
         mask_secrets(&mut resp);
@@ -729,7 +745,28 @@ pub async fn put(
         &registry,
         crate::settings::AppSettings::decision_config_source(&state.settings_path),
         db_backup_view(&state.db_path, next.db_backup_enabled),
+        knowledge_status_view(&state),
     )))
+}
+
+/// 知识层运行状态：短路门读当前进程环境（compose_detector 启动时同口径），
+/// 按语言计数读学习知识存储；存储异常时计数字段回 0，不影响设置读取。
+fn knowledge_status_view(state: &AppState) -> KnowledgeStatusView {
+    let mut view = KnowledgeStatusView {
+        llm_gate: std::env::var("GEC_KNOWLEDGE_LLM_GATE").ok().as_deref() == Some("1"),
+        zh: 0,
+        en: 0,
+        ja: 0,
+    };
+    for (lang, n) in state.learned_knowledge.count_by_lang().unwrap_or_default() {
+        match lang.as_str() {
+            "zh" => view.zh = n,
+            "en" => view.en = n,
+            "ja" => view.ja = n,
+            _ => {}
+        }
+    }
+    view
 }
 
 /// 每日备份视图：enabled = 设置愿望 ∧ launchd 实存态（设置不说谎）；setting 回显开关原位置；dest 供面板透明展示。

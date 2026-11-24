@@ -163,7 +163,14 @@ const rows = computed<LayerRow[]>(() => {
 const svcChips = computed(() => [
   { k: 'LLM', on: store.llmEnabled, extra: selected.value?.config?.llm_model },
   { k: '特征模型', on: store.l3Enabled, extra: undefined },
-  { k: '知识召回', on: store.embeddingConfigured, extra: undefined },
+  {
+    k: '知识召回',
+    on: store.embeddingConfigured,
+    extra: store.embeddingConfigured
+      ? `中文 ${store.knowledgeCounts.zh} · 英文 ${store.knowledgeCounts.en}`
+      : undefined,
+  },
+  { k: '知识短路门', on: store.knowledgeLlmGate, extra: undefined },
   { k: '决策模型', on: store.decisionEnabled, extra: undefined },
 ])
 

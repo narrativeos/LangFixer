@@ -119,6 +119,15 @@ impl KnowledgeStore {
         rows.collect()
     }
 
+    /// 按语言统计知识条数（状态展示用：知识层 zh/en/ja 积累差距）
+    pub fn count_by_lang(&self) -> SqlResult<Vec<(String, i64)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt =
+            conn.prepare("SELECT lang, COUNT(*) FROM learned_knowledge GROUP BY lang")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
     /// 删除知识条目
     pub fn remove(&self, id: i64) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -265,6 +274,20 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].0.text, "I saw a apple.");
         assert!(results[0].1 > 0.9);
+    }
+
+    #[test]
+    fn count_by_lang_groups() {
+        let store = KnowledgeStore::open_in_memory().unwrap();
+        store
+            .insert("en", "I saw a apple.", "article", "an", &[1.0], "manual")
+            .unwrap();
+        store
+            .insert("zh", "他说的对。", "grammar", "得", &[1.0], "manual")
+            .unwrap();
+        let mut counts = store.count_by_lang().unwrap();
+        counts.sort();
+        assert_eq!(counts, vec![("en".to_string(), 1), ("zh".to_string(), 1)]);
     }
 
     #[test]
