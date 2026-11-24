@@ -76,12 +76,28 @@ impl ApiError {
             ApiError::Internal(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+
+    /// 人读详情（去掉英文枚举前缀）：随错误体 `message` 字段下发给前端直接展示。
+    /// 程序分支仍用 `error` 字段；409 的机器码约定见 `conflict()`。
+    fn detail(&self) -> &str {
+        match self {
+            ApiError::BadRequest(s)
+            | ApiError::NotFound(s)
+            | ApiError::Unauthorized(s)
+            | ApiError::Forbidden(s)
+            | ApiError::Conflict(s)
+            | ApiError::TooManyRequests(s)
+            | ApiError::Upstream(s)
+            | ApiError::ServiceUnavailable(s)
+            | ApiError::Internal(s) => s,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = self.status();
-        let body = serde_json::json!({ "error": self.to_string() });
+        let body = serde_json::json!({ "error": self.to_string(), "message": self.detail() });
         (status, axum::Json(body)).into_response()
     }
 }

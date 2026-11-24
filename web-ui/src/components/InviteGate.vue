@@ -26,9 +26,20 @@ const DEAD_TEXT: Record<string, string> = {
   invite_invalid: '这枚邀请码无效或已被撤销。',
 }
 
+/** 与后端 normalize_username 同一规则（小写化后校验，admin 为保留名） */
+const USER_RE = /^[a-z0-9._-]{2,32}$/
+
 async function activate() {
-  if (!username.value.trim()) {
+  const uname = username.value.trim()
+  if (!uname) {
     error.value = '请填写用户名（2–32 位小写字母/数字/._-）'
+    return
+  }
+  const lower = uname.toLowerCase()
+  if (!USER_RE.test(lower) || lower === 'admin') {
+    error.value = uname.includes('@')
+      ? '用户名不能是邮箱：去掉 @ 和域名部分，或换一个普通用户名'
+      : '用户名需为 2–32 位小写字母/数字/._-'
     return
   }
   if (Array.from(password.value).length < 8) {
@@ -67,7 +78,8 @@ async function activate() {
     } else if (resp?.status === 429) {
       error.value = '尝试过于频繁，请稍后再试。'
     } else {
-      error.value = errMsg(e)
+      // 服务端错误体优先（message=人读详情，error=带枚举前缀的原文），最后才退到 axios 泛型文案
+      error.value = resp?.data?.message ?? resp?.data?.error ?? errMsg(e)
     }
   } finally {
     busy.value = false

@@ -611,6 +611,12 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
   「密钥分发」看不到密钥来源与指纹，而同一页面直接 `fetch('/auth/whoami')` 带着它们）。
   现抽出纯函数 `mergeIdentity(prev, me, login?)`，字段只在一处列举；来源与指纹只取本次 whoami
   （换实例不得留上一台的指纹），`signOut` 一并清掉。`web-ui/src/lib/auth.test.ts` 锁住语义。
+- **邀请激活页把服务端拒因吞成「Request failed with status code 400」**：用户名含 `@`（拿邮箱
+  当用户名是实际高发路径）被 `normalize_username` 拒掉，400 响应体里的人读 message 无人读，
+  `InviteGate.vue` 回退分支只显示 axios 泛型文案。现三层修：`ApiError` 错误体新增 `message`
+  字段（人读详情，去英文枚举前缀；`error` 字段维持原样兼容既有消费方）；`InviteGate.vue`
+  提交前按后端同规则预校验用户名（邮箱场景给出去掉 `@域名` 的定向提示），回退分支改读
+  `message → error → errMsg`，与 TokenGate/AccessPanel 同口径。
 
 ### 新增
 
