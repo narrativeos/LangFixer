@@ -48,11 +48,40 @@ pub const DEFAULT_ADMIN_PASSWORD: &str = "LangFixer@2026";
 /// （`gw_users`，见 `normalize_username`），用户名登录最终仍落到同一枚密钥身份。
 pub const ADMIN_USERNAME: &str = "admin";
 
-/// 用户名规范：小写字母/数字/`._-`，2–32 位，须含字母或数字；保留名 `admin`
-/// 归内建账号，不得占用（否则口令分支会撞进超管校验）。
+/// 用户名规则提示：四个入口与前端展示共用这一句。
+pub const USERNAME_RULE_HINT: &str =
+    "用户名需为 2–32 位小写字母/数字/._-（或邮箱，最长 64 位），且不能是 admin";
+
+/// 用户名规范：小写字母/数字/`._-`，2–32 位，须含字母或数字；也接受一枚邮箱
+/// （local@domain，整体最长 64 位；local 1–32 位取经典字符集，域名含至少一个点、
+/// 仅字母/数字/`-`/`.`）；邮箱同样小写化后入库。保留名 `admin` 归内建账号，
+/// 不得占用（否则口令分支会撞进超管校验）。
 pub fn normalize_username(raw: &str) -> Option<String> {
     let s = raw.trim().to_ascii_lowercase();
-    if s.len() < 2 || s.len() > 32 || s == ADMIN_USERNAME {
+    if s == ADMIN_USERNAME {
+        return None;
+    }
+    if let Some(at) = s.find('@') {
+        if s.len() < 4 || s.len() > 64 || s.matches('@').count() != 1 {
+            return None;
+        }
+        let (local, domain) = s.split_at(at);
+        let domain = &domain[1..];
+        let local_ok = !local.is_empty()
+            && local.len() <= 32
+            && local
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        let domain_ok = domain.contains('.')
+            && domain.split('.').all(|l| {
+                !l.is_empty()
+                    && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    && !l.starts_with('-')
+                    && !l.ends_with('-')
+            });
+        return (local_ok && domain_ok).then_some(s);
+    }
+    if s.len() < 2 || s.len() > 32 {
         return None;
     }
     let mut alnum = false;
@@ -1553,6 +1582,35 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn normalize_username_accepts_classic_names_and_emails() {
+        assert_eq!(normalize_username(" Xuj "), Some("xuj".into()));
+        assert_eq!(
+            normalize_username("xuj@WHU.edu"),
+            Some("xuj@whu.edu".into())
+        );
+        assert_eq!(
+            normalize_username("first.last@x.co"),
+            Some("first.last@x.co".into())
+        );
+        assert_eq!(
+            normalize_username("xuj@whu.edu "),
+            Some("xuj@whu.edu".into())
+        );
+        // 非法形态：多 @、空 local、域无点、空标号、+号、邮箱超长、保留名
+        assert_eq!(normalize_username("xuj@whu@edu.cn"), None);
+        assert_eq!(normalize_username("@whu.edu"), None);
+        assert_eq!(normalize_username("xuj@whu"), None);
+        assert_eq!(normalize_username("xuj@whu.edu."), None);
+        assert_eq!(normalize_username("a+b@x.co"), None);
+        assert_eq!(
+            normalize_username(&format!("{}@x.co", "u".repeat(60))),
+            None
+        );
+        assert_eq!(normalize_username("admin"), None);
+        assert_eq!(normalize_username("admin@x.co"), Some("admin@x.co".into()));
     }
 
     #[test]

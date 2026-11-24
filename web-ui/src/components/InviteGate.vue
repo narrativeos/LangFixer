@@ -26,20 +26,19 @@ const DEAD_TEXT: Record<string, string> = {
   invite_invalid: '这枚邀请码无效或已被撤销。',
 }
 
-/** 与后端 normalize_username 同一规则（小写化后校验，admin 为保留名） */
+/** 与后端 normalize_username 同一规则（小写化后校验，admin 为保留名）：经典用户名或邮箱 */
 const USER_RE = /^[a-z0-9._-]{2,32}$/
+const EMAIL_RE = /^[a-z0-9._-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/
 
 async function activate() {
   const uname = username.value.trim()
   if (!uname) {
-    error.value = '请填写用户名（2–32 位小写字母/数字/._-）'
+    error.value = '请填写用户名（小写字母/数字/._- 或邮箱）'
     return
   }
   const lower = uname.toLowerCase()
-  if (!USER_RE.test(lower) || lower === 'admin') {
-    error.value = uname.includes('@')
-      ? '用户名不能是邮箱：去掉 @ 和域名部分，或换一个普通用户名'
-      : '用户名需为 2–32 位小写字母/数字/._-'
+  if (!(USER_RE.test(lower) || EMAIL_RE.test(lower)) || lower === 'admin') {
+    error.value = '用户名需为 2–32 位小写字母/数字/._-，或邮箱（最长 64 位）'
     return
   }
   if (Array.from(password.value).length < 8) {
@@ -113,7 +112,7 @@ function dismiss() {
         v-model="username"
         autofocus
         :disabled="busy || dead"
-        placeholder="用户名（2–32 位小写字母/数字/._-）"
+        placeholder="用户名或邮箱（普通用户名 2–32 位）"
         autocomplete="username"
         @keyup.enter="dead ? dismiss() : activate()"
       />

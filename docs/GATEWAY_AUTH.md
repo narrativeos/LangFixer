@@ -98,7 +98,7 @@ token 直链适合发链接，但收藏夹里没有 token 的试用用户需要�
 MCP 继续用密钥。一张 `gw_users` 把两者接起来：
 
 - **一个密钥至多一个用户名**（`token_id UNIQUE`）；用户名全局唯一，规则为
-  2–32 位小写字母/数字/`._-` 且含字母数字，保留名 `admin`（入库前 `normalize_username`）；
+  2–32 位小写字母/数字/`._-` 且含字母数字，或邮箱（local@domain，最长 64 位，小写化入库），保留名 `admin`（入库前 `normalize_username`）；
 - **口令存储**与超管同口径（带盐 SHA-256，`s1$`），拒默认密码，≥ 8 字符；
 - **两条创建路径**：管理面代设（签发带 `username` 或 `POST /admin/users`，临时口令只回一次，
   `must_change=1`）与试用者自助（`POST /auth/credentials`，需登录态；首次创建带

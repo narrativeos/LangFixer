@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::auth::{
-    GatewayConfig, RotateError, gen_temp_password, hash_password, normalize_username,
+    GatewayConfig, RotateError, USERNAME_RULE_HINT, gen_temp_password, hash_password,
+    normalize_username,
 };
 use crate::routes::ApiError;
 
@@ -68,7 +69,7 @@ async fn issue_token(
     // 先校验用户名再签发：避免「密钥已发、账号建不了」的半途状态
     let uname = match body.username.as_deref() {
         Some(raw) => Some(normalize_username(raw).ok_or_else(|| {
-            ApiError::BadRequest("用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into())
+            ApiError::BadRequest(USERNAME_RULE_HINT.into())
         })?),
         None => None,
     };
@@ -167,7 +168,7 @@ async fn create_user(
     Json(body): Json<CreateUserReq>,
 ) -> Result<(StatusCode, Json<UserCreatedResp>), ApiError> {
     let uname = normalize_username(&body.username).ok_or_else(|| {
-        ApiError::BadRequest("用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into())
+        ApiError::BadRequest(USERNAME_RULE_HINT.into())
     })?;
     if !cfg
         .store

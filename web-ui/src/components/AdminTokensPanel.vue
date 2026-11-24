@@ -277,7 +277,7 @@ async function leave() {
 async function createUser(row: TokenRow) {
   const uname = accountDraft.value?.id === row.id ? accountDraft.value.username.trim() : ''
   if (!uname) {
-    toast('先填写用户名（2–32 位小写字母/数字/._-）', 'warn')
+    toast('先填写用户名（小写字母/数字/._- 或邮箱）', 'warn')
     return
   }
   acctBusy.value = true

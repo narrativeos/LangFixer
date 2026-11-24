@@ -495,6 +495,10 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
   桌面安装包 / 一行 API）与「社区与支持」；路线图瘦身，已完成项归本文件与
   EVOLUTION.md，未完成方向（游戏化 / CEC 吸收 / 多模态）保留摘要；`decision-tables/generate_tables.py`
   的「IP 边界」引用改指 docs/KNOWLEDGE.md；后续排版精修：「立即上手」前至项目结构之前并加首屏入口行，「目录结构」改「项目结构」，目录树注释行压宽去裸链接，能力 bullet 与飞轮 / 沉淀条目瘦身。
+- **用户名接受邮箱**：`normalize_username` 在经典 2–32 位字符集外放行 local@domain（整体
+  ≤ 64 位，小写化入库；local 取经典字符集 ≤ 32 位，域名须含点）；登录、邀请激活、管理面建
+  号与自助设名共用同一规则，保留名 `admin` 仅限裸名（`admin@x.co` 可用）；规则提示文案
+  收敛成单常量 `USERNAME_RULE_HINT`，前端预校验与四处入口文案同步。
 
 ### 修复
 

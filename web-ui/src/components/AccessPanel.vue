@@ -148,7 +148,7 @@ async function saveMyAccount() {
   const create = !identity.value.username
   const uname = myUname.value.trim()
   if (create && !uname) {
-    toast('先填写用户名（2–32 位小写字母/数字/._-）', 'warn')
+    toast('先填写用户名（小写字母/数字/._- 或邮箱）', 'warn')
     return
   }
   if (!create && !myPwOld.value) {

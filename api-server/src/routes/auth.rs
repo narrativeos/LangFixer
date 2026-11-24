@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use crate::auth::{
     ADMIN_TOKEN_ID, ADMIN_USERNAME, AuthContext, DEFAULT_ADMIN_PASSWORD, GatewayConfig,
-    InviteOutcome, META_OWNER_CLAIMED, RequestScope, SESSION_TTL_SECS, hash_password,
-    normalize_username, verify_password_hash,
+    InviteOutcome, META_OWNER_CLAIMED, RequestScope, SESSION_TTL_SECS, USERNAME_RULE_HINT,
+    hash_password, normalize_username, verify_password_hash,
 };
 use crate::routes::ApiError;
 
@@ -255,9 +255,8 @@ async fn invite_activate(
             "激活尝试过于频繁，请 60 秒后重试".into(),
         ));
     }
-    let uname = normalize_username(&body.username).ok_or_else(|| {
-        ApiError::BadRequest("用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into())
-    })?;
+    let uname = normalize_username(&body.username)
+        .ok_or_else(|| ApiError::BadRequest(USERNAME_RULE_HINT.into()))?;
     if body.password.chars().count() < 8 {
         return Err(ApiError::BadRequest("密码至少 8 位".into()));
     }
@@ -496,11 +495,7 @@ async fn set_credentials(
                 .username
                 .as_deref()
                 .and_then(normalize_username)
-                .ok_or_else(|| {
-                    ApiError::BadRequest(
-                        "用户名需为 2–32 位小写字母/数字/._-（且不能是 admin）".into(),
-                    )
-                })?;
+                .ok_or_else(|| ApiError::BadRequest(USERNAME_RULE_HINT.into()))?;
             cfg.store
                 .create_user(&tid, &uname, &hash_password(&body.new_password), false)
                 .map_err(ApiError::Conflict)?;
