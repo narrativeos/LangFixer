@@ -481,6 +481,14 @@ env `LLM_THINKING`，1/true/on/yes=开，缺省关）。关闭时对 JSON 契约
   合计与逐行一致）。`docs/GATEWAY_AUTH.md` D1 段与 `deploy/gateway/langfixer-retention.sh`
   同步。
 
+### 变更
+
+- README 按开源文档规范重组：知识库架构 / 导入管线 / 规则派生 / 资源包四节迁至
+  `docs/KNOWLEDGE.md`，41 端点 API 表迁至 `docs/API.md`；新增「立即上手」（线上体验 /
+  桌面安装包 / 一行 API）与「社区与支持」；路线图瘦身，已完成项归本文件与
+  EVOLUTION.md，未完成方向（游戏化 / CEC 吸收 / 多模态）保留摘要；`decision-tables/generate_tables.py`
+  的「IP 边界」引用改指 docs/KNOWLEDGE.md。
+
 ### 修复
 
 - **NLP `/analyze` 长文本拖垮服务（「挂死」真因）：按句分块串行调用**：实测坐实 sidecar

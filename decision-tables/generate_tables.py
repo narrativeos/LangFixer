@@ -8,7 +8,7 @@
   知识点 → 知识源按 1:N 关联。仓库内置的英文知识源是**自撰示例源**
   （`src-sample-en`，LangFixer 示例英语语法指南，Apache-2.0），
   用于演示数据形态与回归测试；真实书籍属用户数据，经导入管线摄取，
-  `license_scope != public` 的源不随发行物分发（见 README「IP 边界」）。
+  `license_scope != public` 的源不随发行物分发（见 docs/KNOWLEDGE.md「IP 边界」）。
 """
 import json
 
