@@ -9,7 +9,7 @@
 //! 本测试解析 `src/commands.rs` 的命令签名参数名，断言与 web-ui
 //! `api/client.ts` 的调用风格一致（查询类平铺 / 复杂写操作 body）。
 
-const SRC: &str = include_str!("../src/commands.rs");
+const SRC: &str = include_str!("../src/commands/mod.rs");
 
 /// 提取命令签名的参数名列表（跳过 `core`；兼容单行 / 多行签名）
 fn param_names(cmd: &str) -> Vec<String> {
