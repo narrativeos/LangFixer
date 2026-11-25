@@ -144,6 +144,13 @@ fn record_only_feedback(
             log_feedback(state, &req.lang, &source, &req.error, "adopt", &req.reason);
             Ok(Json(FeedbackResponse {
                 action: "adopt".to_string(),
+                // OneDesk 一类客户端不带会话：用固定 bucket 兜底，采纳的错误
+                // 类型仍按类型沉淀错题本（规则/白名单/L3 依旧不写）。
+                adopt_count: record_mistake_sid(
+                    state,
+                    req,
+                    req.session_id.as_deref().unwrap_or("review-channel"),
+                ),
                 message: format!(
                     "已记录采纳「{}」（评测通道：仅留痕，不写共享规则库）",
                     req.error.original
@@ -157,7 +164,6 @@ fn record_only_feedback(
                 // reflect-llm 子端点在评测通道不开放，不引导前端去撞 403
                 llm_reflect_ready: false,
                 agent: None,
-                adopt_count: record_mistake(state, req),
             }))
         }
         "reject" => {
@@ -505,6 +511,12 @@ fn confirm_rule_adopt(
 /// 返回此类错误累计采纳次数（含本次），供前端展示「第 N 次采纳此类错误」
 fn record_mistake(state: &AppState, req: &FeedbackRequest) -> Option<i64> {
     let sid = req.session_id.as_deref()?;
+    record_mistake_sid(state, req, sid)
+}
+
+/// 指定会话写入错题（[`record_mistake`] 的内层）：评测通道留痕模式下调用方
+/// 可给固定 bucket 兜底，保证无会话的采纳样本也能按类型进错题本。
+fn record_mistake_sid(state: &AppState, req: &FeedbackRequest, sid: &str) -> Option<i64> {
     let sentence = match req.src_text.as_deref() {
         Some(src) => shared_model::sentence_around(src, req.error.span, &req.error.original),
         None => req.error.original.clone(),
