@@ -422,6 +422,7 @@ fn build_reflection_context_cmd<'a>(
         rule_feedback,
         matched_example,
         knowledge_item,
+        whitelist_added: true,
     }
 }
 

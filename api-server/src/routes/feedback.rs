@@ -168,8 +168,10 @@ fn record_only_feedback(
         }
         "reject" => {
             log_feedback(state, &req.lang, &source, &req.error, "reject", &req.reason);
-            // 反思诊断只读（规则统计 / 示例定位），可以照回；止血与处置不执行
-            let ctx = build_reflection_context(state, &req.lang, &req.error, req.reason.as_deref());
+            // 反思诊断只读（规则统计 / 示例定位），可以照回；止血与处置不执行，
+            // 话术随之如实标注「评测通道仅留痕」
+            let mut ctx = build_reflection_context(state, &req.lang, &req.error, req.reason.as_deref());
+            ctx.whitelist_added = false;
             let report = gec_core::reflect_rejection(&ctx);
             Ok(Json(FeedbackResponse {
                 action: "reject".to_string(),
@@ -602,6 +604,7 @@ fn build_reflection_context<'a>(
         rule_feedback,
         matched_example,
         knowledge_item,
+        whitelist_added: true,
     }
 }
 

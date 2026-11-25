@@ -139,6 +139,9 @@ pub struct ReflectionContext<'a> {
     pub matched_example: Option<ExampleInfo>,
     /// 知识层：命中的知识条目（按文本在知识存储中定位）
     pub knowledge_item: Option<KnowledgeInfo>,
+    /// 本次放弃是否真的写了白名单：完整模式为 true；评测通道留痕模式为
+    /// false，各分支的止血话术随之如实改为「仅留痕」
+    pub whitelist_added: bool,
 }
 
 /// 错误来源归一：规则引擎产出的错误不带 `source` 字段（仅 decision /
@@ -167,10 +170,17 @@ pub fn reflect_rejection(ctx: &ReflectionContext) -> ReflectionReport {
         shared_model::sources::LLM => ReflectionReport {
             source,
             subject: "LLM 兜底层".to_string(),
-            diagnosis: format!(
-                "该判断由 LLM 兜底层产出，无规则 / 知识条目可归因；「{}」已加入白名单，后续检测不再报告",
-                ctx.error.original
-            ),
+            diagnosis: if ctx.whitelist_added {
+                format!(
+                    "该判断由 LLM 兜底层产出，无规则 / 知识条目可归因；「{}」已加入白名单，后续检测不再报告",
+                    ctx.error.original
+                )
+            } else {
+                format!(
+                    "该判断由 LLM 兜底层产出，无规则 / 知识条目可归因；「{}」本次仅留痕（评测通道不写白名单，后续仍会提示）",
+                    ctx.error.original
+                )
+            },
             evidence: vec![format!("错误类型：{}", ctx.error.error_type)],
             suggestions: Vec::new(),
             llm_analysis: None,
@@ -178,7 +188,11 @@ pub fn reflect_rejection(ctx: &ReflectionContext) -> ReflectionReport {
         _ => ReflectionReport {
             source,
             subject: "未知来源".to_string(),
-            diagnosis: "该错误来源未识别，无法进一步归因；已加入白名单".to_string(),
+            diagnosis: if ctx.whitelist_added {
+                "该错误来源未识别，无法进一步归因；已加入白名单".to_string()
+            } else {
+                "该错误来源未识别，无法进一步归因；本次仅留痕（评测通道不写白名单）".to_string()
+            },
             evidence: Vec::new(),
             suggestions: Vec::new(),
             llm_analysis: None,
@@ -299,7 +313,12 @@ fn reflect_rule(ctx: &ReflectionContext) -> ReflectionReport {
                 ctx.error.rule_id.clone().unwrap_or_default()
             )],
             Vec::new(),
-            "无法定位到具体规则：已加入白名单止血，若反复出现请在规则面板补充对应规则".to_string(),
+            if ctx.whitelist_added {
+                "无法定位到具体规则：已加入白名单止血，若反复出现请在规则面板补充对应规则"
+                    .to_string()
+            } else {
+                "无法定位到具体规则：评测通道仅留痕（未写白名单），若反复出现请在规则面板补充对应规则".to_string()
+            },
         ),
     };
     if let Some(reason) = ctx.reason.filter(|r| !r.trim().is_empty()) {
@@ -346,8 +365,13 @@ fn reflect_knowledge(ctx: &ReflectionContext) -> ReflectionReport {
         }
         None => (
             "知识召回层".to_string(),
-            "该错误来自知识召回层，但知识存储中未找到对应条目（可能已被删除）；已加入白名单止血"
-                .to_string(),
+            if ctx.whitelist_added {
+                "该错误来自知识召回层，但知识存储中未找到对应条目（可能已被删除）；已加入白名单止血"
+                    .to_string()
+            } else {
+                "该错误来自知识召回层，但知识存储中未找到对应条目（可能已被删除）；评测通道仅留痕（未写白名单）"
+                    .to_string()
+            },
             Vec::new(),
             Vec::new(),
         ),
@@ -441,6 +465,7 @@ mod tests {
             rule_feedback: None,
             matched_example: None,
             knowledge_item: None,
+            whitelist_added: true,
         }
     }
 
