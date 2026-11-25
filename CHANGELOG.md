@@ -38,6 +38,13 @@
 
 ### 新增
 
+- **OneDesk 反馈回流放开（评测通道留痕模式）**：fail-closed 白名单放行
+  `POST /gec/feedback`——评审身份下 handler 自动降级留痕模式
+  （`routes::feedback::record_only_feedback`）：adopt 只写反馈日志与本人会话的
+  错题本（带会话归属守卫，归属他人即 403），reject 只写反馈日志并回只读反思
+  报告；不做规则蒸馏、不写共享白名单、不沉淀 L3 材料、不起自进化 agent；
+  `/action`、`/reflect-llm`、`/history` 子端点仍 403。验收
+  `api-server/tests/gateway_feedback_record_only.rs`，语义见 docs/GATEWAY_AUTH.md。
 - **admin 账号首屏初始化（取消默认口令播种）**：新装机不再预置公开默认口令
   （文档里有这个值等于没有口令）：首次打开界面走「初始化」表单，凭安装时
   打印的超管密钥 `POST /auth/admin/init` 自设 admin 口令并当场拿到会话；

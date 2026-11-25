@@ -112,6 +112,8 @@ async fn reviewer_surface_is_allowlist_not_per_endpoint_deny() {
         ("GET", "/gec/sessions/s1/mistakes"),
         ("POST", "/gec/sessions"),
         ("DELETE", "/gec/sessions/s1"),
+        // 反馈回流：handler 在评审身份下降级留痕模式，不落共享状态（行为见 gateway_feedback_record_only）
+        ("POST", "/gec/feedback"),
         ("GET", "/gec/eval/layers"),
         ("POST", "/mcp"),
         ("GET", "/auth/whoami"),
@@ -138,7 +140,6 @@ async fn reviewer_surface_is_allowlist_not_per_endpoint_deny() {
         ("POST", "/gec/reflect/run"),
         ("POST", "/gec/round/evaluate"),
         ("POST", "/gec/llm-feedback"),
-        ("POST", "/gec/feedback"),
         ("POST", "/gec/feedback/action"),
         ("POST", "/gec/settings/test"),
         ("POST", "/gec/ops/unlock"),

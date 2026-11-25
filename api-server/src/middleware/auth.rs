@@ -188,6 +188,10 @@ async fn decide(
 ///   讲解本体，按字符数计配额（D2）；
 /// - `/gec/history*`、`/gec/sessions*`：本人历史与练习会话，跨账号可见性由
 ///   `Tenant` 归属守卫负责（这里不再判归属）；
+/// - `POST /gec/feedback`：采纳/放弃反馈回流。放行靠的是 handler 在评审身份下
+///   自动降级留痕模式（`routes::feedback::record_only_feedback`）：只写反馈日志
+///   与本人会话的错题本，不改共享规则库 / 白名单 / L3，不起自进化 agent；其
+///   `/action`、`/reflect-llm`、`/history` 子端点仍不开放（此处精确匹配）；
 /// - `GET /gec/settings`、`GET /gec/languages`：只读的配置与语言列表；
 /// - `GET /gec/eval/layers`：各层贡献度报告（只读质量透明面：直读报告档案，
 ///   评委可核对「质量来自哪一层」；评测**发起**仍属运营面）；
@@ -203,6 +207,11 @@ fn review_denied(method: &axum::http::Method, path: &str) -> Option<&'static str
         return None;
     }
     let m = method.as_str();
+    // 反馈回流：评审身份下 handler 自动降级留痕模式（见 feedback::record_only_feedback），
+    // 不落共享状态，故这里可安全放行；子端点（/action /reflect-llm /history）仍 403
+    if m == "POST" && path == "/gec/feedback" {
+        return None;
+    }
     // POST /gec/<lang>/detect（语言在路径里，见 routes/mod.rs 的 /gec/:lang/detect）
     if m == "POST"
         && path

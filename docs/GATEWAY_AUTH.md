@@ -156,6 +156,9 @@ MCP 继续用密钥。一张 `gw_users` 把两者接起来：
   生效，早于任何业务 handler）：只放行「检测 + 本人历史 + 只读说明」——
   `/auth/*`、`/mcp*`、`POST /gec/detect`、`POST /gec/:lang/detect`、`POST /gec/analyze`、
   `POST /gec/explain`(`/stream`)、`/gec/history*`、`/gec/sessions*`、
+  `POST /gec/feedback`（采纳/放弃反馈：评审身份下 handler 自动降级**留痕模式**，
+  不落共享状态，见 `routes::feedback::record_only_feedback`；其 `/action`、
+  `/reflect-llm`、`/history` 子端点仍 403）、
   `GET /gec/settings`、`GET /gec/languages`；其余一律 403。为什么不是逐端点补守卫：
   11-12 走查实测评审密钥原先可直接打通 `POST /gec/l3/retrain`（重训模型）、
   `POST /gec/agent/run`（自主档写工具跑批）、`POST /gec/eval/run`（长跑打满 LLM 网关）、

@@ -30,10 +30,11 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Json, Query, State};
+use axum::extract::{Extension, Json, Query, State};
 use serde::{Deserialize, Serialize};
 use shared_model::{Error, error_types, sources};
 
+use crate::auth::Tenant;
 use crate::routes::ApiError;
 use crate::state::AppState;
 
@@ -95,10 +96,23 @@ pub struct FeedbackResponse {
 }
 
 /// POST /gec/feedback — 检测结果统一采纳 / 放弃（全部来源层）
+///
+/// 网关评审身份（评测通道）下降级为**留痕模式**（[`record_only_feedback`]）：
+/// 可达面白名单放行本端点靠的就是这个降级——反馈只进反馈日志与本人会话的
+/// 错题本，不改共享规则库 / 白名单 / L3 材料，也不起自进化 agent（立场见
+/// [`crate::middleware::auth::review_denied`]）。超管与单机形态行为不变。
 pub async fn feedback(
     State(state): State<Arc<AppState>>,
+    Extension(tenant): Extension<Tenant>,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, ApiError> {
+    if tenant.gateway_active() {
+        // 错题本按会话归属：首次使用即绑定本账号，归属他人即 403（fail-closed）
+        if let Some(sid) = req.session_id.as_deref() {
+            tenant.guard_session(sid)?;
+        }
+        return record_only_feedback(&state, &req);
+    }
     match req.action.as_str() {
         "adopt" => {
             let mut resp = adopt(&state, &req).await?;
@@ -110,6 +124,63 @@ pub async fn feedback(
             let resp = reject(&state, &req).await?;
             collect_feedback_assets(&req, "reject");
             Ok(Json(resp))
+        }
+        other => Err(ApiError::BadRequest(format!(
+            "无效操作: {other}（应为 \"adopt\" 或 \"reject\"）"
+        ))),
+    }
+}
+
+/// 留痕模式反馈（网关评测通道专用，见 [`feedback`]）：adopt/reject 都只写
+/// 反馈日志；adopt 额外记本人会话的错题本，reject 附只读的确定性反思报告。
+/// 不执行：规则/知识蒸馏、白名单止血、L3 材料沉淀、自进化 agent。
+fn record_only_feedback(
+    state: &Arc<AppState>,
+    req: &FeedbackRequest,
+) -> Result<Json<FeedbackResponse>, ApiError> {
+    let source = gec_core::normalize_source(&req.error).to_string();
+    match req.action.as_str() {
+        "adopt" => {
+            log_feedback(state, &req.lang, &source, &req.error, "adopt", &req.reason);
+            Ok(Json(FeedbackResponse {
+                action: "adopt".to_string(),
+                message: format!(
+                    "已记录采纳「{}」（评测通道：仅留痕，不写共享规则库）",
+                    req.error.original
+                ),
+                via: Some("record".to_string()),
+                rule: None,
+                knowledge: None,
+                anomaly: None,
+                word_id: None,
+                reflection: None,
+                // reflect-llm 子端点在评测通道不开放，不引导前端去撞 403
+                llm_reflect_ready: false,
+                agent: None,
+                adopt_count: record_mistake(state, req),
+            }))
+        }
+        "reject" => {
+            log_feedback(state, &req.lang, &source, &req.error, "reject", &req.reason);
+            // 反思诊断只读（规则统计 / 示例定位），可以照回；止血与处置不执行
+            let ctx = build_reflection_context(state, &req.lang, &req.error, req.reason.as_deref());
+            let report = gec_core::reflect_rejection(&ctx);
+            Ok(Json(FeedbackResponse {
+                action: "reject".to_string(),
+                message: format!(
+                    "已记录放弃「{}」（评测通道：不写白名单，不起自进化处置）",
+                    req.error.original
+                ),
+                via: None,
+                rule: None,
+                knowledge: None,
+                anomaly: None,
+                word_id: None,
+                reflection: Some(report),
+                llm_reflect_ready: false,
+                agent: None,
+                adopt_count: None,
+            }))
         }
         other => Err(ApiError::BadRequest(format!(
             "无效操作: {other}（应为 \"adopt\" 或 \"reject\"）"
