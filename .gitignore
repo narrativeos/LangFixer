@@ -79,3 +79,6 @@ backups/
 # 可视化分析工具的本地产出（archify / design-flow 画图会话，非仓库产物）
 .archify/
 .design-flow/
+
+# logo 设计过程稿（本地会话产物，非仓库产物）
+design/
