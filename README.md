@@ -284,6 +284,7 @@ PDF / Word——「文本单元投影 + 偏移回映射」层（`media-core/` + 
 
 ## 社区与支持
 
+- **协作项目**：[OneDesk](https://github.com/onedesk/onedesk) —— 开源 AI Office 套件，其 Docs 的 AI 校对对接 LangFixer 提供的 GEC 服务，审校面板里采纳 / 拒绝的反馈会回流为训练数据；
 - **如果这个项目帮到了你**：点个 ⭐ Star 是对我们最大的支持；
 - **参与贡献**：开发环境、代码约定与提交 / 发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；
 - **问题反馈**：[GitHub Issues](https://github.com/narrativeos/LangFixer/issues)；
