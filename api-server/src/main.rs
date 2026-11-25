@@ -74,6 +74,20 @@ async fn main() {
         tracing::warn!(
             "网关形态仍监听 0.0.0.0：公网入口应只由反向代理持有，建议 LANGFIXER_BIND=127.0.0.1"
         );
+    } else if !gateway.enabled
+        && !gateway.login_gate
+        && !(host == "localhost"
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()))
+    {
+        // fail-closed（2026-11 安全修复）：单机直通 + 非回环监听就是曾把管理面
+        // 匿名敞开的错误组合，拒绝启动而不是 WARN。
+        tracing::error!(
+            host = %host,
+            "拒绝启动：LANGFIXER_LOGIN=0 直通形态不得监听非回环地址。公网/局域网部署请删掉该变量用登录门，或置 LANGFIXER_GATEWAY=1 并配 LANGFIXER_ADMIN_TOKEN（见 docs/GATEWAY_AUTH.md）"
+        );
+        std::process::exit(1);
     } else if !gateway.enabled && gateway.login_gate && host == "0.0.0.0" {
         tracing::warn!(
             "登录门形态监听 0.0.0.0：登录入口直接暴露给局域网/公网，建议 LANGFIXER_BIND=127.0.0.1 或置于反向代理之后"

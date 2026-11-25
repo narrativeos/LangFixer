@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 安全
+
+- **单机形态管理面 fail-closed（公网实例曾匿名敞开 `/admin/*` 与业务端点的修复）**：
+  `LANGFIXER_LOGIN=0` 直通不再覆盖 `/admin/*`，匿名请求（含 `POST /admin/tokens` 签发）
+  一律 401 + `login_required`；启动自检拒配：单机直通形态监听非回环地址直接拒绝启动
+  （原先仅 WARN），公网/局域网部署必须用登录门或 `LANGFIXER_GATEWAY=1`。线上实例需按
+  `deploy/gateway/README.md` 改 env 为网关形态并重启后方可恢复带鉴权服务；验收见
+  `api-server/tests/admin_gate.rs`，语义见 docs/GATEWAY_AUTH.md；网关形态 fail-closed
+  的 401 改为带 `{"error","login_required"}` JSON 体，桌面/网页客户端可直接展示拒因。
+
 ### 变更
 
 - 「产品定位」补机构线：新增「个人与机构是两条平行线」段（前者＝自家机器上的

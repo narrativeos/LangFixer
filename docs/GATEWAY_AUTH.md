@@ -12,7 +12,15 @@
 | 单机（默认） | 不设 `LANGFIXER_GATEWAY` | 默认开启登录门：新装机**不预置口令**，首次打开界面用超管密钥初始化 admin 账号（`POST /auth/admin/init`），或设 `LANGFIXER_ADMIN_PASSWORD` 显式配置；此后内建 `admin` 账号密码登录，未登录的业务请求一律 401 + `login_required`；`LANGFIXER_LOGIN=0` 回到「零变化」直通（与接入前完全一致，仅「设置写入」在 owner 认领后要求登录态，见下节）；已验证超管可在「接入」页（或 `POST /auth/password`）改密，旧密码即时作废 |
 | 网关 | `LANGFIXER_GATEWAY=1` | 全部业务端点要求评审令牌；`/admin/*` 只认超管令牌 |
 
-配置见 `.env.example`。进程环境优先于 `.env`；`.env` 不入库（已在 `.gitignore`）。
+配置见 `.env.example`；进程环境优先于 `.env`；`.env` 不入库（已在 `.gitignore`）。
+
+两条 fail-closed 底线（2026-11 安全修复，单机形态）：
+
+- **管理面与直通开关无关**：`LANGFIXER_LOGIN=0` 的「零变化」直通只覆盖业务端点；
+  `/admin/*` 匿名一律 401 + `login_required`（超管 Bearer / 已登录会话照常）。
+  公网实例曾因直通把管理面匿名敞开设过密钥（见 CHANGELOG），验收见 `tests/admin_gate.rs`；
+- **启动自检拒配**：单机直通（登录门关）+ 非回环 `LANGFIXER_BIND` 是同一事故的配置根因，
+  现在直接拒绝启动并给出改法（改用登录门或 `LANGFIXER_GATEWAY=1`），不再是 WARN。
 
 ## 身份模型：一张令牌表 = 唯一身份原语
 

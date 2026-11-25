@@ -49,6 +49,17 @@ pub async fn gate(State(cfg): State<Arc<GatewayConfig>>, mut req: Request, next:
             )
                 .into_response();
         }
+        // 管理面 fail-closed，与登录门开关无关：`LANGFIXER_LOGIN=0` 的「零变化」直通
+        // 只覆盖业务端点；/admin/*（签发/吊销密钥、轮换超管钥匙、用量统计）匿名
+        // 一律 401——公网实例曾因直通把管理面整片敞开（2026-11 安全修复）。
+        if !authed && (path == "/admin" || path.starts_with("/admin/")) {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                [(header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"unauthorized: 管理面需要登录","login_required":true}"#,
+            )
+                .into_response();
+        }
         admit(
             &mut req,
             &cfg,
@@ -166,7 +177,15 @@ async fn decide(
         return (None, next.run(req).await);
     }
 
-    (None, axum::http::StatusCode::UNAUTHORIZED.into_response())
+    (
+        None,
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"unauthorized: 需要评审令牌或登录态","login_required":true}"#,
+        )
+            .into_response(),
+    )
 }
 
 /// 评审身份的可达面（网关形态，**fail-closed 白名单**）。
