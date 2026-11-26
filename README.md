@@ -7,7 +7,7 @@
 **LangFixer：会教你为什么做错的语法检查器。**
 除了指出中 / 英 / 日文本里的错误，它还讲**这个错为什么会犯**，并给出知识点讲解和分级练习——目标不是「改对这一句」，而是「消灭这一类错」，这就是把语法纠错做成语法教学；你采纳的反馈会沉为训练数据，**越用越准**。个人装在自己机器上完全离线用；团队和机构自部署在内部网络，词表、术语与知识规则按自己的领域持续定制，文本默认不出域。
 
-**线上体验** [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) · **桌面版下载** [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)
+**线上体验** [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) · **桌面版下载** [GitHub Releases](https://github.com/narrativeos/LangFixer/releases) · [AtomGit 镜像](https://atomgit.com/futuremeng/LangFixer/releases)（国内直连更快）
 
 ## 目录
 
@@ -71,7 +71,7 @@ LangFixer 把它在产品里走成了检测 → 反馈 → 反思 → 训练 →
 
 ## 快速开始
 
-**马上体验**：浏览器打开 [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) 即用，无需安装；桌面端完全离线可用（本地规则层），安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)。
+**马上体验**：浏览器打开 [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) 即用，无需安装；桌面端完全离线可用（本地规则层），安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)，国内网络也可直接从 [AtomGit 发行版](https://atomgit.com/futuremeng/LangFixer/releases)下载同款产物。
 
 **一行 API**（对已启动的本机 api-server，默认 `:4801`）：
 
