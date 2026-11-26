@@ -80,7 +80,8 @@ web_build() {
     say "npm install（首次会慢）"
     (cd "$REPO_ROOT/web-ui" && npm install --no-audit --no-fund >/dev/null)
   fi
-  (cd "$REPO_ROOT/web-ui" && npm run build >"$TMP/web-build.log" 2>&1) || {
+  # --base：服务器形态把产品挂在 /app/ 下（根留给官网落地页 site/）；桌面端构建不走这里
+  (cd "$REPO_ROOT/web-ui" && npm run build -- --base="$LF_WEB_BASE" >"$TMP/web-build.log" 2>&1) || {
     tail -15 "$TMP/web-build.log" >&2
     die "前端构建失败，见 $TMP/web-build.log"
   }
@@ -89,15 +90,19 @@ web_build() {
 }
 
 web_deploy() {
+  # dist 一律进 app/：web 根根的 /index.html 是官网落地页（site/），不再被 dist 覆盖。
   # 静态资源先落 /tmp 再解包，index.html 最后 mv 原子替换：避免刷新撞上
   # 「新 HTML 指向还没上传的 js」这种半更新态
-  say "铺到 $LF_SSH:$LF_WEB_ROOT"
+  say "铺到 $LF_SSH:$LF_WEB_APP"
   tar -C "$REPO_ROOT/web-ui/dist" --exclude index.html -czf "$TMP/web.tgz" .
   scp -q "$TMP/web.tgz" "$LF_SSH:/tmp/langfixer-web.tgz"
-  ssh_root "install -d $LF_WEB_ROOT && tar -xzf /tmp/langfixer-web.tgz -C $LF_WEB_ROOT && rm -f /tmp/langfixer-web.tgz" 2>&1 |
+  ssh_root "install -d $LF_WEB_APP && tar -xzf /tmp/langfixer-web.tgz -C $LF_WEB_APP && rm -f /tmp/langfixer-web.tgz" 2>&1 |
     grep -v 'LIBARCHIVE.xattr' || true
   ssh_root "cat > /tmp/langfixer-index.html" <"$REPO_ROOT/web-ui/dist/index.html"
-  ssh_root "mv /tmp/langfixer-index.html $LF_WEB_ROOT/index.html && chmod 644 $LF_WEB_ROOT/index.html"
+  ssh_root "mv /tmp/langfixer-index.html $LF_WEB_APP/index.html && chmod 644 $LF_WEB_APP/index.html"
+  # 官网落地页与产品同一趟同步（site/ 是纯静态单文件页，直接盖根）
+  scp -q "$REPO_ROOT/site/index.html" "$REPO_ROOT/site/en.html" "$LF_SSH:$LF_WEB_ROOT/"
+  ssh_root "chmod 644 $LF_WEB_ROOT/index.html $LF_WEB_ROOT/en.html"
   web_probe
 }
 

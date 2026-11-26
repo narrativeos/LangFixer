@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangFixer —— The grammar checker that teaches you why you got it wrong</title>
+<meta name="description" content="LangFixer is an open-source grammar checker and grammar teacher. It flags errors in Chinese, English and Japanese text, explains why each mistake happens, and gives knowledge-point lessons and levelled practice. Fully offline desktop, self-hostable server. Apache-2.0.">
+<meta property="og:title" content="LangFixer —— The grammar checker that teaches you why you got it wrong">
+<meta property="og:description" content="Beyond flagging errors in Chinese, English and Japanese text, it explains why each mistake happens — the goal is not to fix this sentence, but to eliminate this class of mistakes.">
+<meta property="og:type" content="website">
+<link rel="alternate" hreflang="zh-CN" href="https://langfixer.jiulu.ltd/">
+<link rel="alternate" hreflang="en" href="https://langfixer.jiulu.ltd/en.html">
+<style>
+:root{
+  --ink:#0b0d10;
+  --ink-2:#3d434c;
+  --ink-3:#6b7280;
+  --accent:#4f46e5;
+  --accent-ink:#4338ca;
+  --accent-soft:rgba(79,70,229,.09);
+  --bg:#ffffff;
+  --surface:#f5f6fc;
+  --hairline:#e5e7f0;
+  --radius:18px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Helvetica","Noto Sans",sans-serif;
+  color:var(--ink);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent-ink);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3{letter-spacing:-.02em;line-height:1.15;margin:0}
+p{margin:0}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+
+/* nav */
+nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--hairline)}
+.nav-in{display:flex;align-items:center;gap:28px;height:64px}
+.logo{font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--ink)}
+.logo:hover{text-decoration:none}
+.logo b{color:var(--accent)}
+.nav-links{display:flex;gap:24px;margin-left:auto;font-weight:550}
+.nav-links a{color:var(--ink-2)}
+.nav-links a:hover{color:var(--ink);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;border-radius:12px;font-weight:650;padding:10px 20px;border:1px solid transparent;cursor:pointer;font-size:15px}
+.btn-dark{background:var(--ink);color:#fff}
+.btn-dark:hover{background:#22262c;text-decoration:none;color:#fff}
+.btn-ghost{border-color:var(--hairline);color:var(--ink)}
+.btn-ghost:hover{border-color:var(--ink-3);text-decoration:none}
+.btn-sm{padding:7px 14px;font-size:14px;border-radius:10px}
+
+/* hero */
+.hero{padding:96px 0 0;text-align:center}
+.kicker{font-weight:650;font-size:14px;color:var(--accent-ink)}
+.kicker .dot{color:var(--ink-3);margin:0 8px}
+h1{margin:18px auto 0;max-width:820px;font-size:clamp(34px,5.4vw,56px);font-weight:750}
+h1 em{font-style:normal;color:var(--accent)}
+.sub{margin:22px auto 0;max-width:740px;font-size:19px;color:var(--ink-2)}
+.cta{margin-top:36px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.cta .btn{padding:13px 26px;font-size:16px}
+.meta{margin-top:18px;color:var(--ink-3);font-size:14px}
+
+/* strip */
+.strip{border-top:1px solid var(--hairline);border-bottom:1px solid var(--hairline);margin-top:76px;background:var(--surface)}
+.strip-in{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;padding:18px 24px;color:var(--ink-3);font-size:14px;font-weight:550}
+.pill{border:1px solid var(--hairline);background:#fff;border-radius:999px;padding:4px 14px;font-weight:650;color:var(--ink);font-size:13px;letter-spacing:.02em}
+
+/* sections */
+section{padding:96px 0}
+.eyebrow{font-weight:700;font-size:14px;letter-spacing:.06em;color:var(--accent-ink)}
+h2{margin-top:12px;font-size:clamp(26px,3.6vw,40px);font-weight:750;max-width:780px}
+.lede{margin-top:14px;max-width:740px;color:var(--ink-2);font-size:18px}
+
+.grid{margin-top:48px;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.card{border:1px solid var(--hairline);border-radius:var(--radius);padding:26px;background:#fff}
+.card .emoji{font-size:26px;display:block;margin-bottom:14px}
+.card h3{font-size:17px;font-weight:700}
+.card p{margin-top:8px;color:var(--ink-2);font-size:15px}
+
+/* dark band */
+.dark{background:var(--ink);color:#fff}
+.dark h2{color:#fff}
+.dark .eyebrow{color:#a5b4fc}
+.dark .lede{color:#b9c2cf}
+.dark .card{background:#14171c;border-color:#272c34}
+.dark .card h3{color:#fff}
+.dark .card p{color:#aeb7c4}
+
+/* honesty */
+.honesty{border:1px solid var(--hairline);border-radius:var(--radius);padding:30px;background:var(--surface)}
+.honesty h3{font-size:18px}
+.honesty ul{margin:14px 0 0;padding-left:22px;color:var(--ink-2)}
+.honesty li{margin-top:8px}
+.honesty a{font-weight:600}
+
+/* download */
+.dl-grid{margin-top:48px;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.dl{border:1px solid var(--hairline);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:6px}
+.dl h3{font-size:19px}
+.dl .os{font-size:14px;color:var(--ink-3)}
+.dl ul{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.dl a.dl-a{border:1px solid var(--hairline);border-radius:10px;padding:9px 14px;font-weight:650;color:var(--ink);font-size:14.5px;text-align:center}
+.dl a.dl-a:hover{border-color:var(--accent);color:var(--accent-ink);text-decoration:none;background:var(--accent-soft)}
+.dl-note{margin-top:22px;color:var(--ink-3);font-size:14px}
+
+/* footer */
+footer{border-top:1px solid var(--hairline);padding:56px 0 64px;color:var(--ink-3);font-size:14px}
+.f-top{display:flex;gap:40px;justify-content:space-between;flex-wrap:wrap;align-items:flex-start}
+.f-mark{font-size:18px;font-weight:800;color:var(--ink)}
+.f-mark b{color:var(--accent)}
+.f-links{display:flex;gap:22px;flex-wrap:wrap;font-weight:550}
+.f-legal{margin-top:28px;max-width:860px}
+.f-legal p{margin-top:10px}
+
+@media (prefers-reduced-motion:no-preference){
+  .reveal{opacity:0;transform:translateY(14px);transition:opacity .5s ease,transform .5s ease}
+  .reveal.on{opacity:1;transform:none}
+}
+@media (max-width:900px){
+  .grid,.dl-grid{grid-template-columns:1fr 1fr}
+  .nav-links{display:none}
+}
+@media (max-width:620px){
+  .grid,.dl-grid{grid-template-columns:1fr}
+  section{padding:64px 0}
+}
+</style>
+</head>
+<body>
+
+<nav></nav>
+  <div class="wrap nav-in">
+    <a class="logo" href="/" aria-label="LangFixer home">Lang<b>Fixer</b></a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#positioning">Positioning</a>
+      <a href="/app/">Try online</a>
+      <a href="https://github.com/narrativeos/LangFixer/releases">Download</a>
+      <a href="https://github.com/narrativeos/LangFixer">GitHub</a>
+      <a href="/" lang="zh-CN">中文</a>
+    </div>
+    <a class="btn btn-dark btn-sm" href="/app/">Try online</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="kicker">Free &amp; open source<span class="dot">·</span>Apache-2.0<span class="dot">·</span>macOS · Windows · Self-hosted</p>
+    <h1>The grammar checker that teaches you <em>why you got it wrong</em>.</h1>
+    <p class="sub">Beyond flagging errors in Chinese, English and Japanese text, it explains why each mistake happens and offers knowledge-point lessons and levelled practice — the goal is not to fix this sentence, but to eliminate this class of mistakes.</p>
+    <div class="cta">
+      <a class="btn btn-dark" href="/app/">Open the web app</a>
+      <a class="btn btn-ghost" href="https://github.com/narrativeos/LangFixer/releases">Download the desktop app</a>
+    </div>
+    <p class="meta">The desktop app runs <b>fully offline</b> · Your text stays local by default · Feedback you accept feeds training data — it gets <b>better with use</b></p>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="strip-in">
+    Grammar checking that teaches
+    <span class="pill">Chinese</span><span class="pill">English</span><span class="pill">Japanese</span>
+    <span class="pill">ZEN decision-table attribution</span><span class="pill">CEFR A1–C2 levels</span>
+    <span class="pill">FSRS spaced repetition</span><span class="pill">Tauri 2 offline desktop</span><span class="pill">Docker self-hosting</span>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <p class="eyebrow">Features</p>
+    <h2>From fixing this sentence to eliminating this class of mistakes.</h2>
+    <p class="lede">After detection it answers "why does this error happen" and "how to fix it for good"; feedback you accept becomes training data, so capability grows from your domain's data, not from model scale.</p>
+    <div class="grid">
+      <div class="card reveal">
+        <span class="emoji">🔍</span>
+        <h3>Detection</h3>
+        <p>Chinese, English and Japanese. The rule layer runs fully offline — if external tokenizer services are unreachable it degrades to local dictionaries and rules. Lexicons are external JSON: extend them without recompiling, plus domain glossaries that prevent false corrections.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🧭</span>
+        <h3>Attribution</h3>
+        <p>ZEN decision tables (GoRules JDM standard) emit error labels, Weiner's three dimensions (locus × stability × controllability), CEFR A1–C2 difficulty and remediation steps — every decision traceable.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">📚</span>
+        <h3>Knowledge base</h3>
+        <p>Import a knowledge source → mine knowledge points → derive decision-table rules → publish after human review. End-to-end self-learning from a single book is productized.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🎓</span>
+        <h3>Teaching</h3>
+        <p>Personalized LLM explanations (prompts per language × CEFR level) plus a mistake notebook with FSRS review — a complete learning loop.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🔄</span>
+        <h3>Training flywheel</h3>
+        <p>Accepted corrections become training samples; at threshold the feature model retrains, a dev-set eval gate blocks regressions, and the new model hot-swaps — the LLM long tail keeps shrinking.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🖼</span>
+        <h3>Document review</h3>
+        <p>Review images, PDFs and Word files directly: annotations are overlaid on the original and never modify it, with expert correction sheets replayable and exportable for editorial and publishing workflows.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🖥</span>
+        <h3>Offline desktop</h3>
+        <p>A Tauri 2 desktop app that runs fully offline; an Axum API server (Dockerized) plus a Vue 3 web app — desktop and server share one core engine.</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🔐</span>
+        <h3>Local &amp; private</h3>
+        <p>Individuals run it offline on their own machine; teams self-host inside their network, tailoring lexicons, glossaries and knowledge rules to their domain. Your text never leaves the boundary by default.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="positioning" class="dark">
+  <div class="wrap">
+    <p class="eyebrow">Positioning</p>
+    <h2>In industry terms, it comes down to two words.</h2>
+    <p class="lede">Capability grows from accumulated domain data, not from stacking model scale.</p>
+    <div class="grid">
+      <div class="card reveal">
+        <h3>A self-learning flywheel</h3>
+        <p>A full loop of detect → feedback → reflection → training → evaluation: accepted corrections flow into training samples automatically; at threshold the model retrains and hot-swaps if the dev-set gate sees no regression. "Better with use" is an architectural property, not a slogan.</p>
+      </div>
+      <div class="card reveal">
+        <h3>Local and private</h3>
+        <p>The desktop app is fully offline; the server form is self-hosted. Rules and the feature model run on your machines, and text goes out only when you explicitly configure an LLM endpoint. The gateway's logging policy has a hard line: user text is never recorded.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="honesty">
+  <div class="wrap">
+    <p class="eyebrow">Straight talk</p>
+    <h2>What it cannot do.</h2>
+    <div class="honesty reveal" style="margin-top:36px">
+      <h3>We do not claim full recall.</h3>
+      <ul>
+        <li>On the Chinese document-review gold set the local rule layer has <b>0% recall</b> — the real capability boundary is each language's lexicon coverage and the benchmark reports from the eval center; see MULTIMODAL.md in the repository.</li>
+        <li>Japanese detection is at an <b>early stage</b>; English is the most mature; Chinese covers dictionary-rule categories (homophone and look-alike typos, de-particle usage, punctuation spacing, time-format mixing and more).</li>
+        <li>LLM review and explanations require <b>your own endpoint and budget</b>; the offline rule layer is unaffected when none is configured.</li>
+        <li>It is <b>not a style editor</b> — it corrects errors, it does not rewrite or polish your content.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <p class="eyebrow">Get LangFixer</p>
+    <h2>Open it in a browser, or install a fully offline desktop app.</h2>
+    <div class="dl-grid">
+      <div class="dl reveal">
+        <h3>Web app</h3>
+        <p class="os">In your browser, nothing to install</p>
+        <ul>
+          <li><a class="dl-a" href="/app/">Open the web app →</a></li>
+        </ul>
+      </div>
+      <div class="dl reveal">
+        <h3>macOS</h3>
+        <p class="os">Tauri 2 · Apple silicon and Intel</p>
+        <ul>
+          <li><a class="dl-a" href="https://github.com/narrativeos/LangFixer/releases/latest">Download from GitHub Releases →</a></li>
+        </ul>
+      </div>
+      <div class="dl reveal">
+        <h3>Windows</h3>
+        <p class="os">Tauri 2 · installer</p>
+        <ul>
+          <li><a class="dl-a" href="https://github.com/narrativeos/LangFixer/releases/latest">Download from GitHub Releases →</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="dl-note">In mainland China the <a href="https://atomgit.com/futuremeng/LangFixer/releases">AtomGit mirror</a> may be faster. For team self-hosting (Axum API + Docker) see the repository README.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="f-top">
+      <span class="f-mark">Lang<b>Fixer</b></span>
+      <div class="f-links">
+        <a href="/app/">Web app</a>
+        <a href="https://github.com/narrativeos/LangFixer">GitHub</a>
+        <a href="https://atomgit.com/futuremeng/LangFixer">AtomGit mirror</a>
+        <a href="https://github.com/narrativeos/LangFixer/releases">Releases</a>
+        <a href="https://github.com/narrativeos/LangFixer/issues">Issues</a>
+        <a href="https://github.com/narrativeos/LangFixer/blob/main/LICENSE">Apache-2.0</a>
+      </div>
+    </div>
+    <div class="f-legal">
+      <p>LangFixer is open source under Apache-2.0. The desktop app runs fully offline; the public gateway never records user text — the web app does not store or log the text you submit.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+{
+  const els=document.querySelectorAll('.reveal');
+  const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){e.target.classList.add('on');io.unobserve(e.target);}});
+  for(const el of els)io.observe(el);
+}
+</script>
+</body>
+</html>

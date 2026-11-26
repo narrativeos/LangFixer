@@ -15,7 +15,9 @@ LF_SSH="${LF_SSH:-47.94.172.217}"                  # root 直连；也可给 ~/.
 LF_URL="${LF_URL:-https://langfixer.jiulu.ltd}"   # 公网入口（只由 Caddy 持有）
 LF_DIR="${LF_DIR:-/srv/langfixer}"                # 服务根：bin/ data/ *.env 都在这（web 根之外）
 LF_SRC="${LF_SRC:-$LF_DIR/src}"                   # 编译树：**不是** git 树，由 git archive 铺
-LF_WEB_ROOT="${LF_WEB_ROOT:-/dnmp/www/langfixer}" # Caddy 容器挂载的静态根，只放 dist
+LF_WEB_ROOT="${LF_WEB_ROOT:-/dnmp/www/langfixer}" # Caddy 容器挂载的静态根：根放官网页（site/），产品 dist 放 app/
+LF_WEB_APP="${LF_WEB_APP:-$LF_WEB_ROOT/app}"      # 网页产品 dist 的落位（对应 Caddy 的 handle /app/*）
+LF_WEB_BASE="${LF_WEB_BASE:-/app/}"               # 服务器形态前端构建用的 vite --base（桌面版仍是默认 /，不受影响）
 LF_SERVICE="${LF_SERVICE:-langfixer}"
 LF_PORT="${LF_PORT:-4801}"
 LF_LOCAL_URL="${LF_LOCAL_URL:-http://127.0.0.1:$LF_PORT}"
@@ -128,12 +130,15 @@ server_report() {
   ssh_root "echo $b64 | base64 -d >/tmp/.lf-smoke.sh && bash /tmp/.lf-smoke.sh; rc=\$?; rm -f /tmp/.lf-smoke.sh; exit \$rc"
 }
 
-# 公网入口（Caddy + dist）
+# 公网入口（Caddy：根 = 官网页，/app/ = 网页产品）
 web_probe() {
   local code
   code="$(curl -sL -o /dev/null -m 20 -w '%{http_code}' "$LF_URL/" 2>/dev/null || echo 000)"
-  [ "$code" = 200 ] || die "静态入口 $LF_URL/ 回 $code"
-  say "静态入口 $LF_URL/ → 200"
+  [ "$code" = 200 ] || die "官网入口 $LF_URL/ 回 $code"
+  say "官网入口 $LF_URL/ → 200"
+  code="$(curl -sL -o /dev/null -m 20 -w '%{http_code}' "$LF_URL/app/" 2>/dev/null || echo 000)"
+  [ "$code" = 200 ] || die "网页产品入口 $LF_URL/app/ 回 $code"
+  say "网页产品入口 $LF_URL/app/ → 200"
 }
 
 # ── 编译哨兵 ─────────────────────────────────────────────────────────────

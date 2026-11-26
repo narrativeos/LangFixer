@@ -44,7 +44,8 @@ LF_SERVICE / LF_PORT` 传入。
 | `/srv/langfixer/{decision-tables,lexicons,prompts}` | 运行时资产 | `models/` 8G gguf 与决策模型**不上传**（`GEC_OFFLINE=1`、`GEC_DEC_ENABLED=0`） |
 | `/srv/langfixer/data/{langfixer.db,auth.db}` | 产品库 / 身份库 | 首次启动自动建表 |
 | `/srv/langfixer/langfixer.env` | 环境文件 | 模板 `langfixer.env.example`，`chmod 600` |
-| `/dnmp/www/langfixer/` | web-ui/dist 静态 | 在 Caddy 容器挂载的 web 根内，**只放 dist** |
+| `/dnmp/www/langfixer/index.html · en.html` | 官网落地页（仓库 `site/`，纯静态单文件） | 在 web 根根；`update.sh server` 每趟同步，不再被 dist 覆盖 |
+| `/dnmp/www/langfixer/app/` | web-ui dist | 用 `vite build --base=/app/` 构建，Caddy `handle /app/*` 服务；在 Caddy 容器挂载的 web 根内 |
 
 源码编译放 `/srv/langfixer/src`（web 根之外——`/dnmp/www` 被 Caddy 挂载，源码、`.env`、
 数据库一律不得入内）。

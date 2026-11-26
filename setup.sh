@@ -36,24 +36,28 @@ done
 
 [ "$MODE" != "--help" ] || { usage && exit 0; }
 
-# ── 前端 dist 铺静态根（web 根里只放 dist：源码 / env / 库一律不得入内） ──
+# ── 前端 dist 铺 app/ + 官网页铺根（web 根里只放静态：源码 / env / 库一律不得入内） ──
 deploy_web() {
-  step "前端：构建 dist → $LF_SSH:$LF_WEB_ROOT"
+  step "前端：构建 dist → $LF_SSH:$LF_WEB_APP（官网页铺 $LF_WEB_ROOT 根）"
   if [ ! -d "$REPO_ROOT/web-ui/node_modules" ]; then
     say "npm install（首次会慢）"
     (cd "$REPO_ROOT/web-ui" && npm install --no-audit --no-fund >/dev/null)
   fi
-  (cd "$REPO_ROOT/web-ui" && npm run build >"$TMP/web-build.log" 2>&1) ||
+  # --base：服务器形态把产品挂在 /app/ 下（根留给官网落地页 site/）；桌面端构建不走这里
+  (cd "$REPO_ROOT/web-ui" && npm run build -- --base="$LF_WEB_BASE" >"$TMP/web-build.log" 2>&1) ||
     die "前端构建失败，见 $TMP/web-build.log：$(tail -5 "$TMP/web-build.log" | tr '\n' ' ')"
   say "dist 入口 $(grep -o 'index-[A-Za-z0-9_-]*\.js' "$REPO_ROOT/web-ui/dist/index.html" | head -1)"
   # 先 tar 落 /tmp 再解包，**index.html 用 mv 原子替换**：静态资源先就位、入口最后切，
   # 避免刷新拿到「新 HTML + 还没有的 js」这种半更新态
   tar -C "$REPO_ROOT/web-ui/dist" --exclude index.html -czf "$TMP/web.tgz" .
   scp -q "$TMP/web.tgz" "$LF_SSH:/tmp/langfixer-web.tgz"
-  ssh_root "install -d $LF_WEB_ROOT && tar -xzf /tmp/langfixer-web.tgz -C $LF_WEB_ROOT && rm -f /tmp/langfixer-web.tgz" 2>&1 |
+  ssh_root "install -d $LF_WEB_APP && tar -xzf /tmp/langfixer-web.tgz -C $LF_WEB_APP && rm -f /tmp/langfixer-web.tgz" 2>&1 |
     grep -v 'LIBARCHIVE.xattr' || true
   ssh_root "cat > /tmp/langfixer-index.html" <"$REPO_ROOT/web-ui/dist/index.html"
-  ssh_root "mv /tmp/langfixer-index.html $LF_WEB_ROOT/index.html && chmod 644 $LF_WEB_ROOT/index.html"
+  ssh_root "mv /tmp/langfixer-index.html $LF_WEB_APP/index.html && chmod 644 $LF_WEB_APP/index.html"
+  # 官网落地页（site/ 纯静态单文件页）盖根；/ 从此是官网，产品入口在 /app/
+  scp -q "$REPO_ROOT/site/index.html" "$REPO_ROOT/site/en.html" "$LF_SSH:$LF_WEB_ROOT/"
+  ssh_root "chmod 644 $LF_WEB_ROOT/index.html $LF_WEB_ROOT/en.html"
   web_probe
 }
 

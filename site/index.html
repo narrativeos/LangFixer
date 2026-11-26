@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangFixer —— 会教你为什么做错的语法检查器</title>
+<meta name="description" content="LangFixer 是开源的语法纠错与语法教学工具。指出中 / 英 / 日文本里的错误,还讲这个错为什么会犯,并给出知识点讲解和分级练习。桌面端完全离线,服务器可自部署。Apache-2.0 开源。">
+<meta property="og:title" content="LangFixer —— 会教你为什么做错的语法检查器">
+<meta property="og:description" content="除了指出中 / 英 / 日文本里的错误,它还讲这个错为什么会犯,并给出知识点讲解和分级练习——目标不是「改对这一句」,而是「消灭这一类错」。">
+<meta property="og:type" content="website">
+<link rel="alternate" hreflang="zh-CN" href="https://langfixer.jiulu.ltd/">
+<link rel="alternate" hreflang="en" href="https://langfixer.jiulu.ltd/en.html">
+<style>
+:root{
+  --ink:#0b0d10;
+  --ink-2:#3d434c;
+  --ink-3:#6b7280;
+  --accent:#4f46e5;
+  --accent-ink:#4338ca;
+  --accent-soft:rgba(79,70,229,.09);
+  --bg:#ffffff;
+  --surface:#f5f6fc;
+  --hairline:#e5e7f0;
+  --radius:18px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Noto Sans",sans-serif;
+  color:var(--ink);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent-ink);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3{letter-spacing:-.02em;line-height:1.15;margin:0}
+p{margin:0}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+
+/* nav */
+nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--hairline)}
+.nav-in{display:flex;align-items:center;gap:28px;height:64px}
+.logo{font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--ink)}
+.logo:hover{text-decoration:none}
+.logo b{color:var(--accent)}
+.nav-links{display:flex;gap:24px;margin-left:auto;font-weight:550}
+.nav-links a{color:var(--ink-2)}
+.nav-links a:hover{color:var(--ink);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;border-radius:12px;font-weight:650;padding:10px 20px;border:1px solid transparent;cursor:pointer;font-size:15px}
+.btn-dark{background:var(--ink);color:#fff}
+.btn-dark:hover{background:#22262c;text-decoration:none;color:#fff}
+.btn-ghost{border-color:var(--hairline);color:var(--ink)}
+.btn-ghost:hover{border-color:var(--ink-3);text-decoration:none}
+.btn-sm{padding:7px 14px;font-size:14px;border-radius:10px}
+
+/* hero */
+.hero{padding:96px 0 0;text-align:center}
+.kicker{font-weight:650;font-size:14px;color:var(--accent-ink)}
+.kicker .dot{color:var(--ink-3);margin:0 8px}
+h1{margin:18px auto 0;max-width:820px;font-size:clamp(34px,5.4vw,58px);font-weight:750}
+h1 em{font-style:normal;color:var(--accent)}
+.sub{margin:22px auto 0;max-width:720px;font-size:19px;color:var(--ink-2)}
+.cta{margin-top:36px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.cta .btn{padding:13px 26px;font-size:16px}
+.meta{margin-top:18px;color:var(--ink-3);font-size:14px}
+
+/* strip */
+.strip{border-top:1px solid var(--hairline);border-bottom:1px solid var(--hairline);margin-top:76px;background:var(--surface)}
+.strip-in{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;padding:18px 24px;color:var(--ink-3);font-size:14px;font-weight:550}
+.pill{border:1px solid var(--hairline);background:#fff;border-radius:999px;padding:4px 14px;font-weight:650;color:var(--ink);font-size:13px;letter-spacing:.02em}
+
+/* sections */
+section{padding:96px 0}
+.eyebrow{font-weight:700;font-size:14px;letter-spacing:.06em;color:var(--accent-ink)}
+h2{margin-top:12px;font-size:clamp(26px,3.6vw,40px);font-weight:750;max-width:760px}
+.lede{margin-top:14px;max-width:720px;color:var(--ink-2);font-size:18px}
+
+.grid{margin-top:48px;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.card{border:1px solid var(--hairline);border-radius:var(--radius);padding:26px;background:#fff}
+.card .emoji{font-size:26px;display:block;margin-bottom:14px}
+.card h3{font-size:17px;font-weight:700}
+.card p{margin-top:8px;color:var(--ink-2);font-size:15px}
+
+/* dark band */
+.dark{background:var(--ink);color:#fff}
+.dark h2{color:#fff}
+.dark .eyebrow{color:#a5b4fc}
+.dark .lede{color:#b9c2cf}
+.dark .card{background:#14171c;border-color:#272c34}
+.dark .card h3{color:#fff}
+.dark .card p{color:#aeb7c4}
+
+/* honesty */
+.honesty{border:1px solid var(--hairline);border-radius:var(--radius);padding:30px;background:var(--surface)}
+.honesty h3{font-size:18px}
+.honesty ul{margin:14px 0 0;padding-left:22px;color:var(--ink-2)}
+.honesty li{margin-top:8px}
+.honesty a{font-weight:600}
+
+/* download */
+.dl-grid{margin-top:48px;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.dl{border:1px solid var(--hairline);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:6px}
+.dl h3{font-size:19px}
+.dl .os{font-size:14px;color:var(--ink-3)}
+.dl ul{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.dl a.dl-a{border:1px solid var(--hairline);border-radius:10px;padding:9px 14px;font-weight:650;color:var(--ink);font-size:14.5px;text-align:center}
+.dl a.dl-a:hover{border-color:var(--accent);color:var(--accent-ink);text-decoration:none;background:var(--accent-soft)}
+.dl-note{margin-top:22px;color:var(--ink-3);font-size:14px}
+
+/* footer */
+footer{border-top:1px solid var(--hairline);padding:56px 0 64px;color:var(--ink-3);font-size:14px}
+.f-top{display:flex;gap:40px;justify-content:space-between;flex-wrap:wrap;align-items:flex-start}
+.f-mark{font-size:18px;font-weight:800;color:var(--ink)}
+.f-mark b{color:var(--accent)}
+.f-links{display:flex;gap:22px;flex-wrap:wrap;font-weight:550}
+.f-legal{margin-top:28px;max-width:860px}
+.f-legal p{margin-top:10px}
+
+@media (prefers-reduced-motion:no-preference){
+  .reveal{opacity:0;transform:translateY(14px);transition:opacity .5s ease,transform .5s ease}
+  .reveal.on{opacity:1;transform:none}
+}
+@media (max-width:900px){
+  .grid,.dl-grid{grid-template-columns:1fr 1fr}
+  .nav-links{display:none}
+}
+@media (max-width:620px){
+  .grid,.dl-grid{grid-template-columns:1fr}
+  section{padding:64px 0}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="logo" href="/" aria-label="LangFixer 首页">Lang<b>Fixer</b></a>
+    <div class="nav-links">
+      <a href="#features">特性</a>
+      <a href="#positioning">产品定位</a>
+      <a href="/app/">在线体验</a>
+      <a href="https://github.com/narrativeos/LangFixer/releases">下载</a>
+      <a href="https://github.com/narrativeos/LangFixer">GitHub</a>
+      <a href="/en.html" lang="en">English</a>
+    </div>
+    <a class="btn btn-dark btn-sm" href="/app/">在线体验</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="kicker">免费开源<span class="dot">·</span>Apache-2.0<span class="dot">·</span>macOS · Windows · 自部署</p>
+    <h1>会教你<em>为什么做错</em>的<br>语法检查器。</h1>
+    <p class="sub">除了指出中 / 英 / 日文本里的错误,它还讲这个错为什么会犯,并给出知识点讲解和分级练习——目标不是「改对这一句」,而是「消灭这一类错」。</p>
+    <div class="cta">
+      <a class="btn btn-dark" href="/app/">打开在线版</a>
+      <a class="btn btn-ghost" href="https://github.com/narrativeos/LangFixer/releases">下载桌面版</a>
+    </div>
+    <p class="meta">桌面端 <b>完全离线</b>运行 · 文本默认不出域 · 采纳的反馈沉为训练数据,<b>越用越准</b></p>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="strip-in">
+    把纠错做成教学
+    <span class="pill">中文</span><span class="pill">英文</span><span class="pill">日文</span>
+    <span class="pill">ZEN 决策表归因</span><span class="pill">CEFR A1–C2 分级</span>
+    <span class="pill">FSRS 间隔复习</span><span class="pill">Tauri 2 离线桌面</span><span class="pill">Docker 自部署</span>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <p class="eyebrow">特性一览</p>
+    <h2>从「改对这一句」到「消灭这一类错」。</h2>
+    <p class="lede">检测之后,还回答「这个错为什么会犯」和「该怎么补」;你采纳的反馈沉为训练数据,能力的增长来自领域数据的沉淀。</p>
+    <div class="grid">
+      <div class="card reveal">
+        <span class="emoji">🔍</span>
+        <h3>检测</h3>
+        <p>中 / 英 / 日三语,规则层完全离线可用——外部分词服务不可达时自动降级为本地词典 / 规则;词表外置 JSON,不重编译即可扩充,另有领域术语库防误纠。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🧭</span>
+        <h3>归因</h3>
+        <p>ZEN 决策表(GoRules JDM 标准)输出归因标签 + 韦纳三维(内外源 × 稳定性 × 可控性)+ CEFR A1–C2 难度分级 + 补救措施,全程决策可追踪。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">📚</span>
+        <h3>知识库</h3>
+        <p>知识源导入 → 挖掘知识点 → 派生决策表规则 → 人工确认发布——一本书的端到端自学习已产品化。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🎓</span>
+        <h3>教学</h3>
+        <p>LLM 个性化讲解(提示词按语言 × CEFR 分级)+ 错题本与 FSRS 复习,构成学习闭环。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🔄</span>
+        <h3>训练飞轮</h3>
+        <p>确认采纳汇入训练样本,积累到阈值重训练 + dev 评测、F1 不退化即热切换——特征模型随使用变强,LLM 长尾持续收缩。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🖼</span>
+        <h3>载体审校</h3>
+        <p>图片 / PDF / Word 直接审校,在原件上叠加标注、永不改原件,可重演专家正误表并导出——编校 / 出版 / 内容平台可用在自己的稿流程。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🖥</span>
+        <h3>离线桌面</h3>
+        <p>Tauri 2 桌面端完全离线运行;Axum API 服务(Docker 化)+ Vue 3 Web,桌面与服务器共享同一套核心引擎。</p>
+      </div>
+      <div class="card reveal">
+        <span class="emoji">🔐</span>
+        <h3>本地私域</h3>
+        <p>个人装在自己机器上完全离线用;团队与机构自部署在内部网络,词表、术语与知识规则按自己的领域持续定制,文本默认不出域。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="positioning" class="dark">
+  <div class="wrap">
+    <p class="eyebrow">产品定位</p>
+    <h2>用业界通用术语概括,是两个词。</h2>
+    <p class="lede">能力的增长来自领域数据的沉淀,而非模型规模堆砌。</p>
+    <div class="grid">
+      <div class="card reveal">
+        <h3>自学习飞轮</h3>
+        <p>检测 → 反馈 → 反思 → 训练 → 测评的完整回路:采纳确认自动汇入训练样本,积累到阈值重训练,dev 评测门槛不退化即热切换。「越用越准」是架构属性,而非宣传语。</p>
+      </div>
+      <div class="card reveal">
+        <h3>本地私域</h3>
+        <p>桌面端完全离线,服务器形态自部署;规则层与特征模型跑在自己的机器上,文本只在显式配置了 LLM 端点时才外送复查。网关形态的日志与保留策略以「不记录用户文本」为红线。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="honesty">
+  <div class="wrap">
+    <p class="eyebrow">坦诚相告</p>
+    <h2>做不到什么。</h2>
+    <div class="honesty reveal" style="margin-top:36px">
+      <h3>我们不宣称全量召回。</h3>
+      <ul>
+        <li>本地规则层对<b>中文载体审校金集召回 0%</b>——能力边界以各语言词表实际覆盖与测评中心实测报告为准,详见仓库内 MULTIMODAL.md。</li>
+        <li>日文检测处于<b>早期阶段</b>;英文检测最成熟;中文覆盖词典规则类目(同音/形近错别字、的地得、标点排版、时间格式混用等)。</li>
+        <li>LLM 复查与讲解需<b>自行配置端点且有成本</b>;不配置不影响离线规则层能力。</li>
+        <li>它<b>不是风格编辑器</b>,不改写内容——只纠错,不润色。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <p class="eyebrow">获取 LangFixer</p>
+    <h2>浏览器打开即用,或装一个完全离线的桌面端。</h2>
+    <div class="dl-grid">
+      <div class="dl reveal">
+        <h3>在线版</h3>
+        <p class="os">浏览器打开,无需安装</p>
+        <ul>
+          <li><a class="dl-a" href="/app/">打开在线版 →</a></li>
+        </ul>
+      </div>
+      <div class="dl reveal">
+        <h3>macOS</h3>
+        <p class="os">Tauri 2 · Apple 硅与 Intel</p>
+        <ul>
+          <li><a class="dl-a" href="https://github.com/narrativeos/LangFixer/releases/latest">从 GitHub Releases 下载 →</a></li>
+        </ul>
+      </div>
+      <div class="dl reveal">
+        <h3>Windows</h3>
+        <p class="os">Tauri 2 · 安装包</p>
+        <ul>
+          <li><a class="dl-a" href="https://github.com/narrativeos/LangFixer/releases/latest">从 GitHub Releases 下载 →</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="dl-note">国内网络可走 <a href="https://atomgit.com/futuremeng/LangFixer/releases">AtomGit 镜像</a>,直连更快。团队与机构自部署见仓库 README(Axum API + Docker)。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="f-top">
+      <span class="f-mark">Lang<b>Fixer</b></span>
+      <div class="f-links">
+        <a href="/app/">在线版</a>
+        <a href="https://github.com/narrativeos/LangFixer">GitHub</a>
+        <a href="https://atomgit.com/futuremeng/LangFixer">AtomGit 镜像</a>
+        <a href="https://github.com/narrativeos/LangFixer/releases">Releases</a>
+        <a href="https://github.com/narrativeos/LangFixer/issues">Issues</a>
+        <a href="https://github.com/narrativeos/LangFixer/blob/main/LICENSE">Apache-2.0</a>
+      </div>
+    </div>
+    <div class="f-legal">
+      <p>LangFixer 以 Apache-2.0 许可开源。桌面端完全离线运行;评测网关以「不记录用户文本」为红线——在线版不存储、不记录你提交的文本。</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+{
+  const els=document.querySelectorAll('.reveal');
+  const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){e.target.classList.add('on');io.unobserve(e.target);}});
+  for(const el of els)io.observe(el);
+}
+</script>
+</body>
+</html>

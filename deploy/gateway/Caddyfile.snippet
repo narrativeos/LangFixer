@@ -1,8 +1,9 @@
 # 追加到 /dnmp/services/caddy/config/caddyfile（该栈的 Caddyfile 路径），然后
 # `docker exec caddy caddy reload --config /config/caddyfile`（不要 restart，保持其他站点在线）。
 # 说明：
-# - root 指向 /www/langfixer（= 宿主 /dnmp/www/langfixer，compose 已挂载）；
-#   web-ui/dist 的内容直接放该目录。源码与数据库放 /srv/langfixer，不进 web 根。
+# - root 指向 /www/langfixer（= 宿主 /dnmp/www/langfixer，compose 已挂载）：
+#   根放官网落地页（仓库 site/ 的 index.html / en.html），web-ui dist 铺在 app/ 子目录；
+#   源码与数据库放 /srv/langfixer，不进 web 根。
 # - 反代目标是 docker 网桥宿主侧地址（dnmp_default 网关），api-server 只绑这里；
 #   网络若重建，用 docker network inspect dnmp_default 重新取网关值。
 # - 证书走全局 alidns DNS-01；jiulu.ltd 区在本账号（langfixer A 记录已存在），
@@ -24,6 +25,11 @@ https://langfixer.jiulu.ltd {
     }
     handle /mcp* {
         reverse_proxy 172.18.0.1:4801
+    }
+    # 网页产品挂在 /app/（dist 用 vite --base=/app/ 构建，铺在 app/ 子目录）
+    handle /app/* {
+        try_files {path} /app/index.html
+        file_server
     }
     handle {
         try_files {path} /index.html
