@@ -1,13 +1,25 @@
-# LangFixer
+<h1 align="center">LangFixer</h1>
 
-[![CI](https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml/badge.svg)](https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml)
-[![version](https://img.shields.io/github/v/tag/narrativeos/LangFixer?label=version&color=blue)](https://github.com/narrativeos/LangFixer/releases)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+<p align="center"><b>会教你为什么做错的语法检查器。</b><br>
+除了指出中 / 英 / 日文本里的错误，它还讲这个错为什么会犯，并给出知识点讲解和分级练习——目标不是「改对这一句」，而是「消灭这一类错」。</p>
 
-**LangFixer：会教你为什么做错的语法检查器。**
-除了指出中 / 英 / 日文本里的错误，它还讲**这个错为什么会犯**，并给出知识点讲解和分级练习——目标不是「改对这一句」，而是「消灭这一类错」，这就是把语法纠错做成语法教学；你采纳的反馈会沉为训练数据，**越用越准**。个人装在自己机器上完全离线用；团队和机构自部署在内部网络，词表、术语与知识规则按自己的领域持续定制，文本默认不出域。
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/narrativeos/LangFixer/releases"><img src="https://img.shields.io/github/v/tag/narrativeos/LangFixer?label=version&color=blue" alt="version"></a>
+  <a href="https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml"><img src="https://github.com/narrativeos/LangFixer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
-**线上体验** [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) · **桌面版下载** [GitHub Releases](https://github.com/narrativeos/LangFixer/releases) · [AtomGit 镜像](https://atomgit.com/futuremeng/LangFixer/releases)（国内直连更快）
+<p align="center">
+  <a href="https://langfixer.jiulu.ltd/"><b>线上体验</b></a> ·
+  <a href="https://github.com/narrativeos/LangFixer/releases"><b>桌面版下载</b></a> ·
+  <a href="https://atomgit.com/futuremeng/LangFixer/releases"><b>AtomGit 镜像</b></a> ·
+  <a href="#产品定位"><b>产品定位</b></a> ·
+  <a href="#快速开始"><b>快速开始</b></a>
+</p>
+
+LangFixer 把语法纠错做成语法教学：指出错误之后，还回答「这个错为什么会犯」和「该怎么补」；你采纳的反馈会沉为训练数据，**越用越准**。个人装在自己机器上完全离线用；团队和机构自部署在内部网络，词表、术语与知识规则按自己的领域持续定制，文本默认不出域。
+
+**获取**：macOS / Windows 桌面安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)（国内网络可走 [AtomGit 镜像](https://atomgit.com/futuremeng/LangFixer/releases)，直连更快）· 浏览器打开 [langfixer.jiulu.ltd](https://langfixer.jiulu.ltd/) 即用，无需安装。
 
 ## 目录
 
@@ -31,15 +43,13 @@
 
 **给谁用**：个人——语言学习者与专业编校者，对「检测 → 归因 → 人工确认 → 采纳」这套范式零先验，共用同一个工作台、引导与信任机制；团队与机构——自部署后词表、决策表与知识库按自己的领域持续定制，邀请制账号全组共用；平台运营者（决策表 / 词表 / 知识库 / 进化中心）经管理功能进入。
 
-| 特性 | 说明 |
-|---|---|
-| 🔍 检测 | 中 / 英 / 日三语，规则层完全离线可用（外部 HanLP / Sudachi 服务不可达时自动降级为本地词典 / 规则）；词表外置 JSON 不重编译即可扩充，另有领域术语库防误纠 |
-| 🧭 归因 | ZEN 决策表（GoRules JDM 标准）输出归因标签 + 韦纳三维（内外源 × 稳定性 × 可控性）+ **CEFR A1–C2 难度分级** + 补救措施 + 决策追踪 |
-| 📚 知识库 | 知识源导入 → 挖掘知识点 → 派生决策表规则 → 人工确认发布，一本书的端到端自学习已产品化（[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)） |
-| 🎓 教学 | LLM 个性化讲解（提示词按语言 × CEFR 分级）+ 错题本与 FSRS 复习学习闭环 |
-| 🔄 训练飞轮 | 确认采纳汇入 L3 训练样本，积累到阈值重训练 + dev 评测、F1 不退化即热切换——特征模型随使用变强、LLM 长尾持续收缩 |
-| 🖼 载体审校 | 图片 / PDF / Word 直接审校：在原件上**叠加标注、永不改原件**，可重演专家正误表并导出——编校 / 出版 / 内容平台可用在自己的稿流程 |
-| 🖥 离线桌面 | Tauri 2 桌面端完全离线运行；Axum API 服务（Docker 化）+ Vue 3 Web，两端共享同一套核心引擎 |
+- 🔍 **检测**：中 / 英 / 日三语，规则层完全离线可用——外部 HanLP / Sudachi 服务不可达时自动降级为本地词典 / 规则；词表外置 JSON，不重编译即可扩充，另有领域术语库防误纠。
+- 🧭 **归因**：ZEN 决策表（GoRules JDM 标准）输出归因标签 + 韦纳三维（内外源 × 稳定性 × 可控性）+ **CEFR A1–C2 难度分级** + 补救措施，全程决策可追踪。
+- 📚 **知识库**：知识源导入 → 挖掘知识点 → 派生决策表规则 → 人工确认发布——一本书的端到端自学习已产品化（[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)）。
+- 🎓 **教学**：LLM 个性化讲解（提示词按语言 × CEFR 分级）+ 错题本与 FSRS 复习，构成学习闭环。
+- 🔄 **训练飞轮**：确认采纳汇入 L3 训练样本，积累到阈值重训练 + dev 评测、F1 不退化即热切换——特征模型随使用变强，LLM 长尾持续收缩。
+- 🖼 **载体审校**：图片 / PDF / Word 直接审校，在原件上**叠加标注、永不改原件**，可重演专家正误表并导出——编校 / 出版 / 内容平台可用在自己的稿流程。
+- 🖥 **离线桌面**：Tauri 2 桌面端完全离线运行；Axum API 服务（Docker 化）+ Vue 3 Web，两端共享同一套核心引擎。
 
 **做不到什么**：**不保证全量召回**——本地规则层对中文载体审校金集召回 0%（见下文「路线图」与 [MULTIMODAL.md](MULTIMODAL.md)）；LLM 复查需自行配置端点且有成本；它不是风格编辑器，不改写内容。能力边界以各语言词表实际覆盖与测评中心实测报告为准。
 
