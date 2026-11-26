@@ -27,24 +27,53 @@ pub fn release_source() -> &'static str {
     env!("LANGFIXER_RELEASE_SOURCE")
 }
 
-/// 该源对应的 latest.json 更新清单地址
-pub fn endpoints() -> Vec<reqwest::Url> {
+/// 该源对应的 latest.json 更新清单地址（AtomGit 源需先解析最新 tag，见 atomgit_manifest）
+pub async fn endpoints() -> Vec<reqwest::Url> {
     // 测试钩子（仅编译期生效）：构建时设 LANGFIXER_UPDATE_TEST_ENDPOINT 可烧入
     // 自定义端点，用于端到端自测自动更新链路；正式发布不设置该变量，行为不变。
     if let Some(url) = option_env!("LANGFIXER_UPDATE_TEST_ENDPOINT") {
         return vec![url.parse().expect("测试更新 URL 应合法")];
     }
-    let url = match release_source() {
-        "gitea" => {
-            "https://gitea.jiulu.ltd/narrativeos/LangFixer/releases/latest/download/latest.json"
+    match release_source() {
+        "gitea" => vec![static_url(
+            "https://gitea.jiulu.ltd/narrativeos/LangFixer/releases/latest/download/latest.json",
+        )],
+        "atomgit" => atomgit_manifest().await,
+        _ => vec![static_url(
+            "https://github.com/narrativeos/LangFixer/releases/latest/download/latest.json",
+        )],
+    }
+}
+
+fn static_url(url: &'static str) -> reqwest::Url {
+    url.parse().expect("内置更新 URL 应合法")
+}
+
+/// AtomGit 资产下载 URL 必须带显式 tag（实测 GET 匿名可用）；
+/// `releases/latest/download` 别名实测返回网页壳而非文件。故走两跳：先用 v5 API
+/// 查最新 release 的 tag，再拼清单地址。查询失败退回 latest 别名 URL（仅损失一次
+/// 检查机会，不致错更）。
+async fn atomgit_manifest() -> Vec<reqwest::Url> {
+    let api = "https://api.atomgit.com/api/v5/repos/futuremeng/LangFixer/releases/latest";
+    let resolved = async {
+        let resp = reqwest::get(api).await.ok()?;
+        let body: serde_json::Value = resp.json().await.ok()?;
+        let tag = body.get("tag_name")?.as_str()?;
+        reqwest::Url::parse(&format!(
+            "https://atomgit.com/futuremeng/LangFixer/releases/download/{tag}/latest.json"
+        ))
+        .ok()
+    }
+    .await;
+    match resolved {
+        Some(url) => vec![url],
+        None => {
+            tracing::warn!("AtomGit 解析最新发行版失败，退回 latest 别名清单 URL");
+            vec![static_url(
+                "https://atomgit.com/futuremeng/LangFixer/releases/latest/download/latest.json",
+            )]
         }
-        // TODO: atomgit 的 release 资产下载 URL 格式待验证，不支持时改用 raw 文件托管
-        "atomgit" => {
-            "https://atomgit.com/futuremeng/LangFixer/releases/latest/download/latest.json"
-        }
-        _ => "https://github.com/narrativeos/LangFixer/releases/latest/download/latest.json",
-    };
-    vec![url.parse().expect("内置更新 URL 应合法")]
+    }
 }
 
 /// 启动 30 秒后做首次检查，之后每 6 小时一次；`asked` 记录本会话已询问/已
@@ -73,7 +102,7 @@ pub async fn check_update_now(app: AppHandle) -> Result<(), String> {
 async fn check_and_install(app: &AppHandle, asked: &mut Option<String>, force: bool) {
     let updater = match app
         .updater_builder()
-        .endpoints(endpoints())
+        .endpoints(endpoints().await)
         .and_then(|b| b.build())
     {
         Ok(u) => u,

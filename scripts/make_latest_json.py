@@ -16,7 +16,7 @@ SOURCE, TAG, DIR = sys.argv[1], sys.argv[2], sys.argv[3]
 BASES = {
     "github": "https://github.com/narrativeos/LangFixer/releases/download",
     "gitea": "https://gitea.jiulu.ltd/narrativeos/LangFixer/releases/download",
-    # TODO: atomgit 的 release 资产下载 URL 格式待验证，不支持时改用 raw 文件托管
+    # AtomGit 资产下载地址已验证即此格式（GET 匿名可用；latest 别名不可用，见 update.rs）
     "atomgit": "https://atomgit.com/futuremeng/LangFixer/releases/download",
 }
 

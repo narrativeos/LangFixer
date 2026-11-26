@@ -73,3 +73,4 @@ fi
 echo "==> 发布构建完成。后续步骤:"
 echo "   1) scripts/publish.sh          # 推送分支与标签到各源（可指定单个源）"
 echo "   2) 把 dist/<源>/$TAG/ 下的安装包与 latest.json 上传为该标签在各源的 release 资产"
+echo "      AtomGit: ATOMGIT_TOKEN=<私人令牌> scripts/publish_atomgit.py $TAG dist/atomgit/$TAG"
