@@ -31,6 +31,7 @@ pub const DEPS: &[(&str, &str)] = &[
     ("char_gate", "字级判别侧车（可选）"),
     ("stat", "深度纠错服务（统计 GEC 臂）"),
     ("hanlp", "文本处理服务（HanLP）"),
+    ("studio", "文档指标服务（studio sidecar，可选）"),
     ("llm", "AI 复查网关（LLM）"),
     ("embedding", "向量检索服务"),
 ];
@@ -102,6 +103,7 @@ fn find_endpoint(s: &AppSettings, id: &str) -> String {
         "char_gate" => char_gate_endpoint(s),
         "stat" => stat_endpoint(s),
         "hanlp" => s.hanlp_endpoint.clone(),
+        "studio" => studio_endpoint(s),
         "llm" => s.llm.base_url.clone(),
         "embedding" => s.embedding.endpoint.clone(),
         _ => String::new(),
@@ -116,6 +118,21 @@ fn char_gate_endpoint(_s: &AppSettings) -> String {
 /// 统计 GEC 臂地址（单一来源：gec-core StatisticalConfig，默认 4803）
 fn stat_endpoint(_s: &AppSettings) -> String {
     gec_core::statistical::StatisticalConfig::from_env().endpoint
+}
+
+/// studio sidecar 地址（单一来源：gec-zh StudioConfig；env-only，照 stat/hanlp 先例）
+fn studio_endpoint(_s: &AppSettings) -> String {
+    gec_zh::config::StudioConfig::from_env().endpoint
+}
+
+/// studio 为可选增强：`STUDIO_ENDPOINT` 未配置 = 未接入（不探测不报红；
+/// 客户端侧仍按默认 4808 探测，命中即正常显示增强，见 docs/OPERATIONS.md）
+fn studio_off_reason() -> Option<String> {
+    std::env::var("STUDIO_ENDPOINT")
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+        .then(|| "未配置（STUDIO_ENDPOINT 未设），文档级增强未接入".to_string())
 }
 
 /// 统计臂「不参与检测」的判定（off 短路，不探测不报红）：
@@ -314,6 +331,26 @@ async fn probe(_state: &AppState, id: &str, s: &AppSettings) -> (bool, String, u
                     target: id.to_string(),
                     ok: true,
                     message: "侧车在线".to_string(),
+                    latency_ms: 0,
+                    skipped: false,
+                }
+            } else {
+                gec_core::settings_test::TestResult {
+                    target: id.to_string(),
+                    ok: false,
+                    message: format!("{url} 无响应"),
+                    latency_ms: 0,
+                    skipped: false,
+                }
+            }
+        }
+        "studio" => {
+            let url = format!("{}/healthz", studio_endpoint(s).trim_end_matches('/'));
+            if probe_http(&url).await {
+                gec_core::settings_test::TestResult {
+                    target: id.to_string(),
+                    ok: true,
+                    message: "sidecar 在线（/healthz）".to_string(),
                     latency_ms: 0,
                     skipped: false,
                 }
@@ -656,6 +693,23 @@ pub async fn recheck(state: &Arc<AppState>, id: &str) {
             it.hint = None;
         });
         return;
+    }
+    // studio 可选增强：未配置 / 离线 → off 短路（不探测不报红）
+    if id == "studio" {
+        let reason = if s.offline_mode {
+            Some("离线模式（offline_mode=true），本项按需跳过".to_string())
+        } else {
+            studio_off_reason()
+        };
+        if let Some(reason) = reason {
+            update(state, id, |it| {
+                it.endpoint = endpoint;
+                it.state = "off";
+                it.reason = Some(reason);
+                it.hint = None;
+            });
+            return;
+        }
     }
     // off 短路
     match id {

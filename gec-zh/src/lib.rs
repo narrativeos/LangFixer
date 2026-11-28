@@ -9,7 +9,9 @@ pub mod config;
 pub mod detector;
 pub mod offline;
 pub mod rules;
+pub mod studio;
 
-pub use config::DetectorConfig;
+pub use config::{DetectorConfig, StudioConfig};
 pub use detector::ChineseDetector;
 pub use offline::OfflineChineseDetector;
+pub use studio::StudioClient;

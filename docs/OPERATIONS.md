@@ -14,6 +14,7 @@
 | `GEC_SETTINGS_FILE` | `langfixer-settings.json` | 运行时设置文件（`GET/PUT /gec/settings` 读写）；**优先级高于下方环境变量**，存在且可解析时整体覆盖 |
 | `HANLP_ENDPOINT` | `http://127.0.0.1:8000` | NLP 服务（NarrativeOS narrative-operator-nlp，中文+英文共用） |
 | `SUDACHI_ENDPOINT` | `http://localhost:4802` | 日文 Sudachi 分词服务 |
+| `STUDIO_ENDPOINT` | `http://127.0.0.1:4808` | 文档级指标 sidecar（NarrativeStudio studio-serve，姊妹仓镜像，可选增强）。已纳入依赖监督（`GET /gec/deps`「文档指标服务」，外部只探测不拉起；**未配置或 `GEC_OFFLINE` 时显示 off 不报红**；不可达 = 报告文档级区显示「未连接」，检测正确性不受影响）。指标契约 vendored 于 `contract/studio-metrics.v1.json`，用 `scripts/sync-studio-contract.sh` 从 narrative-docs 刷新 |
 | `GEC_OFFLINE` | — | `1` 时全部检测器强制离线模式 |
 | `GEC_ENGINE_{ZH,EN,JA}` | `rule` | 该语言的检测引擎：`rule`（默认）/ `statistical`（统计模型为主 + 规则兜底，结果合并）/ `llm`（预留） |
 | `GEC_STAT_ENDPOINT` | `http://127.0.0.1:4803` | 统计 GEC 服务（Harper / HuggingFace transformers server 类，`POST /gec`；MacBERT-CSC 臂见 jev-gec `serve/csc_server.py` :4807）。已纳入依赖监督（`GET /gec/deps` 第 7 项「深度纠错服务」，外部只探测不拉起；未配地址或 `GEC_ENGINE_*` 非 statistical 时显示 off 不报红） |
@@ -87,5 +88,6 @@
 | `4804` | vegaml 决策模型服务（`POST /decide`；**实验层，默认不启动**——该层已退役出产品路径） | `GEC_DEC_ENDPOINT` / `decision-model` 的 `DEC_PORT` |
 | `4805` | Vite dev server（前端开发 + Tauri devUrl） | `web-ui/vite.config.ts` / `tauri.conf.json` |
 | `4806` | L3 特征模型服务（`POST /l3-detect`；飞轮：`POST /l3-retrain` / `GET /l3/status`） | `GEC_L3_ENDPOINT` / `feature-model` 的 `L3_PORT` |
+| `4808` | 文档级指标 sidecar（NarrativeStudio `studio-serve`，姊妹仓镜像，可选增强；`GET /healthz` `POST /metrics` `POST /diff-report` `GET /reference`） | `STUDIO_ENDPOINT` |
 
 外部依赖（不在本仓库、端口不纳入本约定）：HanLP NLP 服务（NarrativeOS，`HANLP_ENDPOINT`，默认 `127.0.0.1:8000`）、LLM 服务（`LLM_BASE_URL`，远端 OpenAI 兼容端点）。

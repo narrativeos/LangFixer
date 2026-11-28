@@ -10,6 +10,39 @@ pub const DEFAULT_HANLP_ENDPOINT: &str = "http://127.0.0.1:8000";
 /// 超时留 25 倍余量，块间事件循环空出、健康探针不再饿死。
 pub const DEFAULT_NLP_CHUNK_CHARS: usize = 150;
 
+/// NarrativeStudio sidecar（`studio-serve`）默认地址。端口 4808：4801–4807 已被
+/// 本仓库与 jev-gec 服务占用（见 docs/OPERATIONS.md 端口表）。
+pub const DEFAULT_STUDIO_ENDPOINT: &str = "http://127.0.0.1:4808";
+
+/// studio sidecar 接入配置——**可选增强**：文档级指标与前后对比报告走这里；
+/// 不可达 / 离线时一切优雅降级，检测正确性不受影响。
+#[derive(Debug, Clone)]
+pub struct StudioConfig {
+    /// sidecar 地址，如 `http://127.0.0.1:4808`
+    pub endpoint: String,
+    /// 请求超时
+    pub timeout: Duration,
+    /// 为 true 时不探活、不发请求，一律按「未连接」处理（跟随 `GEC_OFFLINE`）
+    pub offline_only: bool,
+}
+
+impl StudioConfig {
+    /// 从环境变量读取：`STUDIO_ENDPOINT`（sidecar 地址）、`GEC_OFFLINE=1`（强制离线）
+    pub fn from_env() -> Self {
+        let endpoint = std::env::var("STUDIO_ENDPOINT")
+            .ok()
+            .unwrap_or_else(|| DEFAULT_STUDIO_ENDPOINT.to_string());
+        let offline_only = std::env::var("GEC_OFFLINE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        Self {
+            endpoint,
+            timeout: Duration::from_secs(10),
+            offline_only,
+        }
+    }
+}
+
 /// 检测器配置
 #[derive(Debug, Clone)]
 pub struct DetectorConfig {

@@ -1,0 +1,77 @@
+{
+  "$comment": "Studio Sidecar 指标契约 v1（草案）。单一事实源：NarrativeStudio sidecar 与 LangFixer 宿主实现对齐测试均指向本文件。口径变化必须升 formula_rev 并递增 contract_version，不得原地改口径。",
+  "contract_version": "1.0.0-draft",
+  "status": "draft",
+  "endpoints": {
+    "healthz": "GET /healthz -> { contract_version, version, capabilities: [doc-metrics, diff-report, reference] }",
+    "metrics": "POST /metrics { text, format?, digest? } -> { contract_version, sidecar_version, text_digest, coverage, metrics: { <metric_id>: MetricValue } }",
+    "diffReport": "POST /diff-report { before, after, findings?, format? } -> { markdown, html? }",
+    "reference": "GET /reference -> 本表全量（宿主启动与热更新时拉取，离线用本地快照）"
+  },
+  "wireRules": {
+    "noVerdicts": "sidecar 只回数字与口径，不回判断文案；grade/verdict 措辞由宿主生成",
+    "unitAndRev": "每个 MetricValue 必须携带 unit + formula_rev；human_ref 必须携带 round + status",
+    "noCrossRoundMath": "不同 round / formula_rev 的数值不得混算倍数",
+    "reportOnly": "report_only=true 的指标永不进 findings 生成路径",
+    "attribution": "punct.dash_per_1k 由 sidecar 归属；对白破折号检测不上 wire，不参与指纹",
+    "cacheKey": "text_digest + contract_version + formula_rev；版本向量 studio 字段变化必须漂移文档级层缓存"
+  },
+  "metricValueShape": {
+    "value": "number|null（null = 本场景不适用，附 note）",
+    "unit": "ratio | chars | per_1000 | count | share",
+    "formula_rev": "int（公式口径版本）",
+    "grade": "A|B|C|X|F",
+    "owner": "studio | langfixer",
+    "report_only": "bool",
+    "human_ref": "{ value, round, status: pending|measured } | null"
+  },
+  "metrics": {
+    "sentence.len_cv": { "unit": "ratio", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "studio-analysis voice.sentence_cv", "human_ref": { "value": null, "round": null, "status": "pending" } },
+    "sentence.len_sd": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice/pacing.sentence_stdev" },
+    "sentence.avg_chars": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.avg_sentence_chars" },
+    "sentence.min_chars": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.shortest_sentence" },
+    "sentence.max_chars": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.longest_sentence" },
+    "sentence.band_share": { "unit": "share", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": true, "source": "planned: 短≤12/中25-45/长≥60", "bands": [6, 12, 25, 45, 60] },
+    "clause.len_sd": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "planned: 逗号小句长 stdev" },
+    "paragraph.len_sd": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.paragraph_stdev" },
+    "paragraph.avg_chars": { "unit": "chars", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.avg_paragraph_chars" },
+    "paragraph.single_share": { "unit": "share", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.single_sentence_paragraphs / paragraph_count" },
+    "section.count": { "unit": "count", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "pacing.segment_count" },
+    "section.len_cv": { "unit": "ratio", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "derived: pacing.points[].char_count 的 CV" },
+    "lexical.mtld": { "unit": "ratio", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "planned" },
+    "lexical.mattr": { "unit": "ratio", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "planned" },
+
+    "punct.dash_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": false, "source": "voice.marks ——", "note": "宿主按方向出建议；对白破折号不计入" },
+    "punct.dunhao_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": false, "source": "voice.marks 、" },
+    "punct.semicolon_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": false, "source": "voice.marks ；" },
+    "punct.colon_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": true, "source": "voice.marks ：", "note": "总量指纹；结论提示冒号是语义层 semantic.conclusion_colon" },
+    "punct.quote_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "F", "owner": "studio", "report_only": false, "source": "voice.marks “（前引号，每对计一次）" },
+    "punct.all_per_1k": { "unit": "per_1000", "formula_rev": 1, "grade": "C", "owner": "studio", "report_only": true, "source": "voice.marks 14 类合计 / 千字（text-only 输入下 t0 计数未测量，不用它）" },
+
+    "sentence.antithesis_contrast": { "unit": "per_1000", "formula_rev": 1, "grade": "A", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+    "sentence.leadin_colon": { "unit": "per_1000", "formula_rev": 1, "grade": "A", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+    "sentence.cliche_opener": { "unit": "per_1000", "formula_rev": 1, "grade": "A", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+    "sentence.dunhao_run": { "unit": "count", "formula_rev": 1, "grade": "B", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+    "sentence.long_attributive": { "unit": "count", "formula_rev": 1, "grade": "B", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+    "sentence.iso_adjacent": { "unit": "count", "formula_rev": 1, "grade": "B", "owner": "langfixer", "report_only": false, "via_sidecar": false },
+
+    "semantic.synonym_rename": { "grade": "B", "owner": "langfixer", "via_sidecar": false, "note": "closed-criteria LLM prompt；段级计数由宿主汇总" },
+    "semantic.connective_chain": { "grade": "B", "owner": "langfixer", "via_sidecar": false, "note": "最长明确承接连环数" },
+    "semantic.conclusion_colon": { "grade": "B", "owner": "langfixer", "via_sidecar": false },
+    "semantic.iso_triple": { "grade": "F", "owner": "langfixer", "via_sidecar": false },
+
+    "x.ordinal_heading": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.restatement_bridge": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.leadin_list": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.abstraction_shift": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.number_density": { "grade": "X", "owner": "studio", "report_only": true, "source": "planned: 精确数字密度/千字" },
+    "x.blacklist_jargon": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.connective_markers": { "grade": "X", "owner": "langfixer", "report_only": true },
+    "x.rhythm_artificiality": { "grade": "X", "owner": "studio", "report_only": true, "note": "句长离散度差异：实测无差异，禁止据此改句长" }
+  },
+  "gaps": [
+    "sentence.band_share", "clause.len_sd",
+    "lexical.mtld", "lexical.mattr", "x.number_density",
+    "全部 human_ref 均为 pending：由配对语料实验（NS 导入人类书目 × 同题 AI 重写）产出"
+  ]
+}
