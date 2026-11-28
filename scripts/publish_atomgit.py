@@ -13,6 +13,7 @@ AtomGit 不支持 git push 发布 release，走 api.atomgit.com 的 v5 REST（Gi
 """
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -20,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.atomgit.com/api/v5"
+HERE = Path(__file__).resolve().parent
 OWNER = os.environ.get("ATOMGIT_OWNER", "futuremeng")
 REPO = os.environ.get("ATOMGIT_REPO", "LangFixer")
 
@@ -85,12 +87,46 @@ def main():
     else:
         sys.exit(f"!! 查询 release 失败: HTTP {code} {raw[:500]!r}")
 
-    attached = {a.get("name") for a in (release.get("assets") or [])}
+    # 已有资产（如 release.sh 手工上传的 mac 包与 .sig）落盘，供 latest.json
+    # 合并全部平台键；releases/download 直链实测匿名可用（见 update.rs）。
+    for a in release.get("assets") or []:
+        name = a.get("name")
+        if not name:
+            continue
+        dest = src_dir / name
+        if dest.exists():
+            continue
+        url = f"https://atomgit.com/{OWNER}/{REPO}/releases/download/{tag}/{urllib.parse.quote(name)}"
+        code, raw = request(url)
+        if code == 200:
+            dest.write_bytes(raw)
+            print(f"==> 拉回已有资产 {name}（{len(raw) / 1024 / 1024:.1f} MB）")
+        else:
+            print(f"!! 拉回 {name} 失败: HTTP {code}（latest.json 可能缺平台键）")
+
+    # 重算清单：目录里此时有全部平台的 .sig，产物 URL 指向 AtomGit 自身资产
+    subprocess.run([sys.executable, str(HERE / "make_latest_json.py"),
+                    "atomgit", tag, str(src_dir)], check=True)
+
+    assets = release.get("assets") or []
+    attached = {a.get("name"): (a.get("attach_file_id") or a.get("id")) for a in assets}
+    files = sorted(p for p in src_dir.iterdir() if p.is_file())
     for p in files:
         name = p.name
         if name in attached:
-            print(f"==> 跳过 {name}（已上传）")
-            continue
+            if name != "latest.json":
+                print(f"==> 跳过 {name}（已上传）")
+                continue
+            # 清单必须替换：同名双资产会让下载 URL 歧义，旧清单也会让用户拿不到新版
+            attach_id = attached[name]
+            if attach_id is None:
+                sys.exit(f"!! 无法定位旧 {name} 的附件 ID（响应字段变化？）：{assets}")
+            q = urllib.parse.urlencode({"access_token": token})
+            code, raw = api(f"/repos/{OWNER}/{REPO}/releases/{urllib.parse.quote(tag, '')}"
+                            f"/attach_files/{attach_id}?{q}", method="DELETE")
+            if code // 100 != 2:
+                sys.exit(f"!! 删除旧 {name} 失败: HTTP {code} {raw[:300]!r}")
+            print(f"==> 已删除旧 {name}")
         q = urllib.parse.urlencode({"access_token": token, "file_name": name})
         url = f"{API}/repos/{OWNER}/{REPO}/releases/{urllib.parse.quote(tag, '')}/upload_url?{q}"
         code, raw = request(url)
