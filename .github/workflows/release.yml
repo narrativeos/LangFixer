@@ -84,8 +84,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p packages
+          find target/release/bundle -type f -name 'LangFixer*' \
+            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' \) \
+            -exec cp -p {} packages/ \;
           find target/release/bundle -type f \
-            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' -o -name '*.sig' \) \
+            \( -name 'LangFixer*.AppImage.sig' -o -name 'LangFixer*-setup.exe.sig' -o -name 'LangFixer*.msi.sig' \) \
             -exec cp -p {} packages/ \;
           ls -l packages
 
@@ -138,8 +141,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p packages
+          find target/release/bundle -type f -name 'LangFixer*' \
+            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' \) \
+            -exec cp -p {} packages/ \;
           find target/release/bundle -type f \
-            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' -o -name '*.sig' \) \
+            \( -name 'LangFixer*.AppImage.sig' -o -name 'LangFixer*-setup.exe.sig' -o -name 'LangFixer*.msi.sig' \) \
             -exec cp -p {} packages/ \;
           ls -l packages
       - uses: actions/upload-artifact@v4
@@ -191,8 +197,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p packages
+          find target/release/bundle -type f -name 'LangFixer*' \
+            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' \) \
+            -exec cp -p {} packages/ \;
           find target/release/bundle -type f \
-            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' -o -name '*.sig' \) \
+            \( -name 'LangFixer*.AppImage.sig' -o -name 'LangFixer*-setup.exe.sig' -o -name 'LangFixer*.msi.sig' \) \
             -exec cp -p {} packages/ \;
           ls -l packages
       - uses: actions/upload-artifact@v4
@@ -206,8 +215,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -246,8 +253,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -277,8 +282,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
