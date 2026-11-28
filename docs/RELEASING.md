@@ -48,6 +48,21 @@
    某源领先本地时先 `git pull --rebase <remote> <branch>` 再重跑。
 5. **上传 release 资产**：把 `dist/<源>/vX.Y.Z/` 下的安装包与 `latest.json`
    上传为该标签在各源的 release 附件。
+6. **补 Windows / Linux 安装包（仅 GitHub 源）**：mac 机器打不出跨平台产物，
+   由 `.github/workflows/release.yml` 负责。推送标签时自动触发；也可在
+   标签已存在时手动运行该工作流（`workflow_dispatch`，填标签名）。要点：
+   - 构建机需配置仓库 secret `TAURI_SIGNING_PRIVATE_KEY`（内容 =
+     `~/.config/langfixer/updater.key`，密码空则不配
+     `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），否则 `tauri build` 直接失败。
+   - 发布源在 `desktop-app/build.rs` 默认烧入 `github`，与 GitHub Release
+     的消费方一致；Gitea / AtomGit 的 Windows / Linux 产物暂未自动化，
+     仍按手工流程处理。
+   - publish 任务会把该标签已有资产（如步骤 5 的 mac 包）拉到一起重算
+     `latest.json`，保证清单同时含 darwin / windows / linux 平台键，再只上传
+     新产物与清单，已有 mac 资产原样保留。
+   - **顺序**：mac 资产先上传、CI 合并清单收尾。若标签推送时 CI 先跑完而
+     mac 资产还没就位（清单当时缺 darwin 键），mac 资产传完后再重跑一次
+     release.yml 即可重算覆盖。
 
 ## 发布后检查
 

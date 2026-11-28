@@ -1,0 +1,131 @@
+name: Release
+
+# 发布流水线：补 scripts/release.sh（mac 本机多源构建）之外的平台产物。
+# mac 安装包仍由 release.sh 在开发机上按 github/gitea/atomgit 三源分别烧入构建；
+# CI 只负责 Windows / Linux——发布源在 build.rs 默认烧入 github，与 GitHub Release
+# 的消费方一致。产物（含 .sig）合入该标签已有的 GitHub Release，latest.json
+# 由 scripts/make_latest_json.py 基于「已上传资产 + 本次新产物」重算，保证清单
+# 覆盖全部平台。密钥缺失时 tauri build 会直接失败（createUpdaterArtifacts 已开），
+# 故构建前先显式检查 secret。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布标签（如 v1.2.0）
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 安装包 (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: ubuntu-22.04
+            label: Linux
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      # 必须检出标签对应的提交：workflow_dispatch 补历史版本时，HEAD 可能已领先标签，
+      # 用分支代码打出的包与 tag 名不符。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: 检查更新签名密钥
+        shell: bash
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::缺少仓库 secret TAURI_SIGNING_PRIVATE_KEY（内容为 ~/.config/langfixer/updater.key）。tauri.conf.json 已开启 createUpdaterArtifacts，无私钥时 tauri build 会直接失败。"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+
+      # 与 ci.yml 同一套依赖；webkit2gtk 必须是 4.1（Tauri 2 不支持 4.0）
+      - name: Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # tauri build 的 beforeBuildCommand 只跑 vite build，不装依赖，故先 npm ci
+      - name: 前端依赖
+        shell: bash
+        run: npm ci --no-audit --no-fund --prefix web-ui
+
+      - name: tauri build
+        shell: bash
+        working-directory: desktop-app
+        run: npx --yes @tauri-apps/cli@2 build
+
+      - name: 收集产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packages
+          find target/release/bundle -type f \
+            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' -o -name '*.sig' \) \
+            -exec cp -p {} packages/ \;
+          ls -l packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.label }}
+          path: packages/
+
+  publish:
+    name: 合入 GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: 合并产物与 latest.json 并上传
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          dir="dist/github/$TAG"
+          mkdir -p "$dir"
+          # release 不存在则创建；tag 带 -rc/-preview 等后缀按预发布处理
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY"; then
+            case "$TAG" in
+              *-*) gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag --prerelease ;;
+              *)   gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag ;;
+            esac
+          fi
+          # 把该 release 已有资产（如 release.sh 先上传的 mac 包与 .sig）拉到同一目录，
+          # make_latest_json.py 扫描全部 .sig 才能产出含 darwin 键的完整清单。
+          # 首次运行且 release 尚无资产时下载报错属正常，忽略。
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --clobber || true
+          cp -p packages/* "$dir/"
+          python3 scripts/make_latest_json.py github "$TAG" "$dir"
+          # 只上传新产物与重算后的 latest.json，已有 mac 资产原样保留
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" packages/* "$dir/latest.json" --clobber
