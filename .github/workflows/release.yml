@@ -66,15 +66,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # tauri build 的 beforeBuildCommand 只跑 vite build，不装依赖，故先 npm ci
-      - name: 前端依赖
+      # 前端在步骤里显式构建：GitHub 检出多套一层 workspace 目录，
+      # tauri.conf.json 的 beforeBuildCommand（npm --prefix ../web-ui run build）
+      # 会把相对路径解析到仓库外，故下方用内联 --config 将其改为空操作。
+      - name: 前端构建
         shell: bash
-        run: npm ci --no-audit --no-fund --prefix web-ui
+        run: |
+          cd web-ui
+          npm ci --no-audit --no-fund
+          npm run build
 
       - name: tauri build
         shell: bash
         working-directory: desktop-app
-        run: npx --yes @tauri-apps/cli@2 build
+        run: npx --yes @tauri-apps/cli@2 build --config '{"build":{"beforeBuildCommand":"node --version"}}'
 
       - name: 收集产物
         shell: bash
