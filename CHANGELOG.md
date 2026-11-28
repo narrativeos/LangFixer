@@ -21,8 +21,8 @@
   安装包与 Linux AppImage（含 updater `.sig`），并合入该标签的 GitHub
   Release；publish 任务下载已有资产后由 `scripts/make_latest_json.py` 重算
   `latest.json`，清单首次同时覆盖 darwin / windows-x86_64 / linux-x86_64
-  平台键（v1.2.0 可先传 mac 包再 dispatch 补全）。mac 包仍由
-  `scripts/release.sh` 本机三源构建；流程与密钥配置见 docs/RELEASING.md。
+  平台键（已对 v1.2.0 实跑补全：NSIS setup.exe + AppImage + 三平台清单）。mac 包
+  仍由 `scripts/release.sh` 本机三源构建；流程与密钥配置见 docs/RELEASING.md。
 - 「产品定位」补机构线：新增「个人与机构是两条平行线」段（前者＝自家机器上的
   离线私人工具，后者＝内网里的编校基础设施：文本不出域、按本机构领域与行规定制、
   反馈沉为机构自有资产）；特性表载体审校行从「文本单元投影 + 偏移回映射」改为

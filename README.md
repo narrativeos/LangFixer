@@ -19,7 +19,7 @@
 
 LangFixer 把语法纠错做成语法教学：指出错误之后，还回答「这个错为什么会犯」和「该怎么补」；你采纳的反馈会沉为训练数据，**越用越准**。个人装在自己机器上完全离线用；团队和机构自部署在内部网络，词表、术语与知识规则按自己的领域持续定制，文本默认不出域。
 
-**获取**：macOS / Windows 桌面安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)（国内网络可走 [AtomGit 镜像](https://atomgit.com/futuremeng/LangFixer/releases)，直连更快）· 浏览器打开 [langfixer.jiulu.ltd/app](https://langfixer.jiulu.ltd/app/) 即用，无需安装。
+**获取**：macOS / Windows / Linux 桌面安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)（Linux 为 AppImage；国内网络可走 [AtomGit 镜像](https://atomgit.com/futuremeng/LangFixer/releases)，直连更快，镜像暂以 macOS 包为主）· 浏览器打开 [langfixer.jiulu.ltd/app](https://langfixer.jiulu.ltd/app/) 即用，无需安装。
 
 ## 目录
 
@@ -81,7 +81,7 @@ LangFixer 把它在产品里走成了检测 → 反馈 → 反思 → 训练 →
 
 ## 快速开始
 
-**马上体验**：浏览器打开 [langfixer.jiulu.ltd/app](https://langfixer.jiulu.ltd/app/) 即用，无需安装；桌面端完全离线可用（本地规则层），安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)，国内网络也可直接从 [AtomGit 发行版](https://atomgit.com/futuremeng/LangFixer/releases)下载同款产物。
+**马上体验**：浏览器打开 [langfixer.jiulu.ltd/app](https://langfixer.jiulu.ltd/app/) 即用，无需安装；桌面端完全离线可用（本地规则层），macOS / Windows / Linux 安装包见 [GitHub Releases](https://github.com/narrativeos/LangFixer/releases)，国内网络也可直接从 [AtomGit 发行版](https://atomgit.com/futuremeng/LangFixer/releases)下载（镜像当前以 macOS 包为主）。
 
 **一行 API**（对已启动的本机 api-server，默认 `:4801`）：
 
