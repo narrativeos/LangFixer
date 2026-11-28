@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SOURCES=(github gitea atomgit)
+SOURCES=(github atomgit)   # Gitea 只作代码源，不发产物
 VERSION="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')"
 TAG="v$VERSION"
 
@@ -74,4 +74,4 @@ echo "==> 发布构建完成。后续步骤:"
 echo "   1) scripts/publish.sh          # 推送分支与标签到各源（可指定单个源）"
 echo "   2) 把 dist/<源>/$TAG/ 下的安装包与 latest.json 上传为该标签在各源的 release 资产"
 echo "      AtomGit: ATOMGIT_TOKEN=<私人令牌> scripts/publish_atomgit.py $TAG dist/atomgit/$TAG"
-echo "      GitHub 源另触发 .github/workflows/release.yml 补 Windows/Linux 包并重算 latest.json（见 docs/RELEASING.md）"
+echo "      推送后 .github/workflows/release.yml 会自动补 GitHub/AtomGit 两源的 Windows/Linux 包并重算 latest.json（见 docs/RELEASING.md）"

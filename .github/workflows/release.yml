@@ -2,8 +2,8 @@ name: Release
 
 # 发布流水线：补 scripts/release.sh（mac 本机三源构建）之外的平台产物。
 # 发布源在构建时烧入二进制（desktop-app/build.rs），因此 Windows / Linux 包
-# 按 github / gitea / atomgit 三源各打一份，分别发到对应源的 release，用户从
-# 哪个源下载就从哪个源更新。每源的 publish 任务会把该标签已有资产（如
+# 按 github / atomgit 两个发布源各打一份，分别发到对应源的 release，用户从
+# 哪个源下载就从哪个源更新（Gitea 只作代码源，不发产物）。每源的 publish 任务会把该标签已有资产（如
 # release.sh 先传的 mac 包）拉回重算 latest.json，保证清单覆盖全部平台键。
 # mac 安装包仍由 release.sh 在开发机构建；密钥缺失会在对应任务里显式报错。
 on:
@@ -95,62 +95,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: packages-github-${{ matrix.osLabel }}
-          path: packages/
-
-  build-gitea:
-    name: 安装包 (gitea / ${{ matrix.osLabel }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, osLabel: Windows }
-          - { os: ubuntu-22.04, osLabel: Linux }
-    runs-on: ${{ matrix.os }}
-    env:
-      LANGFIXER_RELEASE_SOURCE: gitea
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web-ui/package-lock.json
-      - name: Linux 系统依赖
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: 前端构建
-        shell: bash
-        run: |
-          cd web-ui
-          npm ci --no-audit --no-fund
-          npm run build
-      - name: tauri build
-        shell: bash
-        working-directory: desktop-app
-        run: npx --yes @tauri-apps/cli@2 build --config '{"build":{"beforeBuildCommand":"node --version"}}'
-      - name: 收集产物
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p packages
-          find target/release/bundle -type f -name 'LangFixer*' \
-            \( -name '*.AppImage' -o -name '*-setup.exe' -o -name '*.msi' \) \
-            -exec cp -p {} packages/ \;
-          find target/release/bundle -type f \
-            \( -name 'LangFixer*.AppImage.sig' -o -name 'LangFixer*-setup.exe.sig' -o -name 'LangFixer*.msi.sig' \) \
-            -exec cp -p {} packages/ \;
-          ls -l packages
-      - uses: actions/upload-artifact@v4
-        with:
-          name: packages-gitea-${{ matrix.osLabel }}
           path: packages/
 
   build-atomgit:
@@ -246,35 +190,6 @@ jobs:
           python3 scripts/make_latest_json.py github "$TAG" "$dir"
           # 只上传新产物与重算后的 latest.json，已有 mac 资产原样保留
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" packages/* "$dir/latest.json" --clobber
-
-  publish-gitea:
-    name: 发布到 Gitea Release
-    needs: build-gitea
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: packages-gitea-*
-          path: packages
-          merge-multiple: true
-
-      - name: 发布（创建/补齐 release、重算并替换 latest.json）
-        shell: bash
-        env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GITEA_TOKEN:-}" ]; then
-            echo "::error::缺少仓库 secret GITEA_TOKEN（Gitea 个人设置→应用，write:repository）。"
-            exit 1
-          fi
-          dir="dist/gitea/$TAG"
-          mkdir -p "$dir"
-          cp packages/* "$dir/"
-          python3 scripts/publish_gitea.py "$TAG" "$dir"
 
   publish-atomgit:
     name: 发布到 AtomGit Release
